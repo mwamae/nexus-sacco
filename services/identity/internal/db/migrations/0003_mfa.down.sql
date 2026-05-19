@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS mfa_challenges;
+ALTER TABLE users DROP COLUMN IF EXISTS mfa_method;
