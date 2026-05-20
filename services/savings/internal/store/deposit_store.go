@@ -366,8 +366,8 @@ func (s *DepositStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostDepInput
 		   SET current_balance   = $2,
 		       available_balance = $2,
 		       last_activity_at  = now(),
-		       last_deposit_at   = CASE WHEN $3 > 0 THEN now() ELSE last_deposit_at END,
-		       last_withdrawal_at = CASE WHEN $3 < 0 THEN now() ELSE last_withdrawal_at END
+		       last_deposit_at   = CASE WHEN $3::numeric > 0 THEN now() ELSE last_deposit_at END,
+		       last_withdrawal_at = CASE WHEN $3::numeric < 0 THEN now() ELSE last_withdrawal_at END
 		 WHERE id = $1 AND current_balance = $4
 	`, in.Account.ID, newBalance, signed, in.Account.CurrentBalance)
 	if err != nil {

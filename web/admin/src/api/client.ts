@@ -1697,6 +1697,7 @@ export type DepositProduct = {
   early_withdrawal_penalty_pct: string;
   below_min_balance_fee: string;
   dormancy_fee_monthly: string;
+  interest_eligible: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -1920,5 +1921,326 @@ export async function getDepositStatement(accountId: string, from?: string, to?:
   if (from) p.set('from', from);
   if (to) p.set('to', to);
   const r = await api.get(`/v1/deposit-accounts/${accountId}/statement` + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Interest engine (Phase 4)
+// ═══════════════════════════════════════════════════════════════════
+
+export type InterestRunStatus =
+  | 'draft' | 'computing' | 'preview' | 'approved'
+  | 'posting' | 'posted' | 'locked' | 'cancelled';
+
+export type InterestPayoutMethod = 'credit_savings' | 'buy_shares' | 'external';
+
+export type InterestRun = {
+  id: string;
+  run_no: string;
+  financial_year_label: string;
+  fy_start: string;
+  fy_end: string;
+  status: InterestRunStatus;
+  agm_rate_pct: string;
+  agm_resolution_ref: string;
+  agm_resolution_date: string;
+  wht_rate_pct: string;
+  product_ids: string[];
+  member_count?: number;
+  total_weighted_balance?: string;
+  total_gross_interest?: string;
+  total_wht?: string;
+  total_net_interest?: string;
+  notes?: string;
+  created_at: string;
+  created_by: string;
+  computed_at?: string;
+  submitted_at?: string;
+  workflow_instance_id?: string;
+  approved_at?: string;
+  approved_by?: string;
+  posted_at?: string;
+  posted_by?: string;
+  locked_at?: string;
+  cancelled_at?: string;
+  cancellation_reason?: string;
+};
+
+export type InterestRunLine = {
+  id: string;
+  run_id: string;
+  account_id: string;
+  member_id: string;
+  product_id: string;
+  days_in_fy: number;
+  days_with_snapshots: number;
+  sum_of_daily_balances: string;
+  weighted_avg_balance: string;
+  rate_applied_pct: string;
+  wht_rate_pct: string;
+  gross_interest: string;
+  wht_amount: string;
+  net_interest: string;
+  payout_method: InterestPayoutMethod;
+  payout_target_account_id?: string;
+  payout_external_channel?: string;
+  payout_external_ref?: string;
+  posted_at?: string;
+  posted_txn_id?: string;
+  share_txn_id?: string;
+};
+
+export type InterestRunDetail = {
+  run: InterestRun;
+  lines: InterestRunLine[];
+};
+
+export type WHTScheduleRow = {
+  member_id: string;
+  member_no: string;
+  member_name: string;
+  gross_amount: string;
+  wht_amount: string;
+};
+
+export type WHTSchedule = {
+  fy_label: string;
+  rows: WHTScheduleRow[];
+  total_wht: string;
+};
+
+export type TaxPayableEntry = {
+  id: string;
+  source_kind: string;
+  source_id?: string;
+  member_id: string;
+  member_no: string;
+  member_name: string;
+  fy_label: string;
+  gross_amount: string;
+  wht_rate_pct: string;
+  wht_amount: string;
+  posted_at: string;
+};
+
+export type WHTCertificate = {
+  member_id: string;
+  fy_label: string;
+  entries: TaxPayableEntry[];
+  totals: { gross_amount: string; wht_amount: string; net_amount: string };
+};
+
+export async function listInterestRuns(opts: { status?: string; fy?: string; limit?: number; offset?: number } = {}): Promise<{ items: InterestRun[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.fy) p.set('fy', opts.fy);
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get('/v1/interest-runs' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+
+export async function createInterestRun(input: {
+  financial_year_label?: string;
+  fy_start: string;
+  fy_end: string;
+  agm_rate_pct: string;
+  agm_resolution_ref: string;
+  agm_resolution_date: string;
+  wht_rate_pct?: string;
+  product_ids: string[];
+  notes?: string;
+}): Promise<InterestRun> {
+  const r = await api.post('/v1/interest-runs', input);
+  return r.data.data;
+}
+
+export async function getInterestRun(id: string): Promise<InterestRunDetail> {
+  const r = await api.get(`/v1/interest-runs/${id}`);
+  return r.data.data;
+}
+
+export async function computeInterestRun(id: string): Promise<InterestRunDetail> {
+  const r = await api.post(`/v1/interest-runs/${id}/compute`);
+  return r.data.data;
+}
+
+export async function updateInterestLine(lineId: string, input: {
+  payout_method: InterestPayoutMethod;
+  payout_target_account_id?: string;
+  payout_external_channel?: string;
+  payout_external_ref?: string;
+}): Promise<void> {
+  await api.patch(`/v1/interest-run-lines/${lineId}`, input);
+}
+
+export async function submitInterestRun(id: string): Promise<{ workflow_instance_id: string; status: string }> {
+  const r = await api.post(`/v1/interest-runs/${id}/submit`);
+  return r.data.data;
+}
+
+export async function approveInterestRun(id: string, comment?: string): Promise<InterestRun> {
+  const r = await api.post(`/v1/interest-runs/${id}/approve`, { comment: comment ?? '' });
+  return r.data.data;
+}
+
+export async function postInterestRun(id: string): Promise<InterestRunDetail> {
+  const r = await api.post(`/v1/interest-runs/${id}/post`);
+  return r.data.data;
+}
+
+export async function lockInterestRun(id: string): Promise<InterestRun> {
+  const r = await api.post(`/v1/interest-runs/${id}/lock`);
+  return r.data.data;
+}
+
+export async function cancelInterestRun(id: string, reason: string): Promise<InterestRun> {
+  const r = await api.post(`/v1/interest-runs/${id}/cancel`, { reason });
+  return r.data.data;
+}
+
+export async function getWHTSchedule(fy: string): Promise<WHTSchedule> {
+  const r = await api.get(`/v1/wht-schedule?fy=${encodeURIComponent(fy)}`);
+  return r.data.data;
+}
+
+export async function getWHTCertificate(memberId: string, fy: string): Promise<WHTCertificate> {
+  const r = await api.get(`/v1/wht-certificate/${memberId}?fy=${encodeURIComponent(fy)}`);
+  return r.data.data;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Dividend engine (Phase 5)
+// ═══════════════════════════════════════════════════════════════════
+
+export type DividendRunStatus = InterestRunStatus; // same set
+export type DividendCalcMethod = 'closing_balance' | 'average_monthly' | 'pro_rated';
+
+export type DividendRun = {
+  id: string;
+  run_no: string;
+  financial_year_label: string;
+  fy_start: string;
+  fy_end: string;
+  status: DividendRunStatus;
+  calc_method: DividendCalcMethod;
+  agm_rate_pct: string;
+  agm_resolution_ref: string;
+  agm_resolution_date: string;
+  wht_rate_pct: string;
+  member_count?: number;
+  total_share_basis?: string;
+  total_gross_dividend?: string;
+  total_wht?: string;
+  total_net_dividend?: string;
+  notes?: string;
+  created_at: string;
+  created_by: string;
+  computed_at?: string;
+  submitted_at?: string;
+  workflow_instance_id?: string;
+  approved_at?: string;
+  posted_at?: string;
+  locked_at?: string;
+  cancelled_at?: string;
+  cancellation_reason?: string;
+};
+
+export type DividendRunLine = {
+  id: string;
+  run_id: string;
+  share_account_id: string;
+  member_id: string;
+  calc_method: DividendCalcMethod;
+  shares_basis: string;
+  par_value_at_run: string;
+  capital_basis: string;
+  days_held_in_fy?: number;
+  days_in_fy: number;
+  rate_applied_pct: string;
+  wht_rate_pct: string;
+  gross_dividend: string;
+  wht_amount: string;
+  net_dividend: string;
+  payout_method: InterestPayoutMethod;
+  payout_target_account_id?: string;
+  payout_external_channel?: string;
+  payout_external_ref?: string;
+  posted_at?: string;
+  posted_deposit_txn_id?: string;
+  posted_share_txn_id?: string;
+};
+
+export type DividendRunDetail = {
+  run: DividendRun;
+  lines: DividendRunLine[];
+};
+
+export async function listDividendRuns(opts: { status?: string; fy?: string; limit?: number; offset?: number } = {}): Promise<{ items: DividendRun[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.fy) p.set('fy', opts.fy);
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get('/v1/dividend-runs' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+
+export async function createDividendRun(input: {
+  financial_year_label?: string;
+  fy_start: string;
+  fy_end: string;
+  calc_method: DividendCalcMethod;
+  agm_rate_pct: string;
+  agm_resolution_ref: string;
+  agm_resolution_date: string;
+  wht_rate_pct?: string;
+  notes?: string;
+}): Promise<DividendRun> {
+  const r = await api.post('/v1/dividend-runs', input);
+  return r.data.data;
+}
+
+export async function getDividendRun(id: string): Promise<DividendRunDetail> {
+  const r = await api.get(`/v1/dividend-runs/${id}`);
+  return r.data.data;
+}
+
+export async function computeDividendRun(id: string): Promise<DividendRunDetail> {
+  const r = await api.post(`/v1/dividend-runs/${id}/compute`);
+  return r.data.data;
+}
+
+export async function updateDividendLine(lineId: string, input: {
+  payout_method: InterestPayoutMethod;
+  payout_target_account_id?: string;
+  payout_external_channel?: string;
+  payout_external_ref?: string;
+}): Promise<void> {
+  await api.patch(`/v1/dividend-run-lines/${lineId}`, input);
+}
+
+export async function submitDividendRun(id: string): Promise<{ workflow_instance_id: string; status: string }> {
+  const r = await api.post(`/v1/dividend-runs/${id}/submit`);
+  return r.data.data;
+}
+
+export async function approveDividendRun(id: string, comment?: string): Promise<DividendRun> {
+  const r = await api.post(`/v1/dividend-runs/${id}/approve`, { comment: comment ?? '' });
+  return r.data.data;
+}
+
+export async function postDividendRun(id: string): Promise<DividendRunDetail> {
+  const r = await api.post(`/v1/dividend-runs/${id}/post`);
+  return r.data.data;
+}
+
+export async function lockDividendRun(id: string): Promise<DividendRun> {
+  const r = await api.post(`/v1/dividend-runs/${id}/lock`);
+  return r.data.data;
+}
+
+export async function cancelDividendRun(id: string, reason: string): Promise<DividendRun> {
+  const r = await api.post(`/v1/dividend-runs/${id}/cancel`, { reason });
   return r.data.data;
 }

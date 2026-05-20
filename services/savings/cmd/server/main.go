@@ -70,6 +70,8 @@ func main() {
 	shareStore := store.NewShareStore(pool.Pool)
 	productStore := store.NewDepositProductStore(pool.Pool)
 	depositStore := store.NewDepositStore(pool.Pool)
+	interestStore := store.NewInterestStore(pool.Pool)
+	dividendStore := store.NewDividendStore(pool.Pool)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
@@ -92,6 +94,33 @@ func main() {
 		Products: productStore,
 		Deposits: depositStore,
 		Logger:   logger,
+	}
+	interestH := &handler.InterestHandler{
+		DB:                  pool,
+		Tenants:             tenants,
+		Members:             members,
+		Products:            productStore,
+		Deposits:            depositStore,
+		Shares:              shareStore,
+		Interest:            interestStore,
+		Logger:              logger,
+		WorkflowURL:         cfg.WorkflowURL,
+		SavingsSelfURL:      cfg.SavingsURL,
+		WorkflowProcessKind: "interest_run_approval",
+		HTTP:                &http.Client{Timeout: 10 * time.Second},
+	}
+	dividendH := &handler.DividendHandler{
+		DB:                  pool,
+		Tenants:             tenants,
+		Members:             members,
+		Deposits:            depositStore,
+		Shares:              shareStore,
+		Dividends:           dividendStore,
+		Logger:              logger,
+		WorkflowURL:         cfg.WorkflowURL,
+		SavingsSelfURL:      cfg.SavingsURL,
+		WorkflowProcessKind: "dividend_run_approval",
+		HTTP:                &http.Client{Timeout: 10 * time.Second},
 	}
 
 	// CLI: run daily balance snapshot for a single tenant.
@@ -123,6 +152,8 @@ func main() {
 		Share:       shareH,
 		Deposit:     depositH,
 		Product:     productH,
+		Interest:    interestH,
+		Dividend:    dividendH,
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,

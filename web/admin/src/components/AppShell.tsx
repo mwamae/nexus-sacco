@@ -42,6 +42,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
         { href: '/orgs', label: 'Organisations', icon: 'building', show: hasPermission('members:view') && !onPlatform },
         { href: '/shares', label: 'Shares', icon: 'bank', show: hasPermission('shares:view') && !onPlatform },
         { href: '/deposits', label: 'Deposits', icon: 'bank', show: hasPermission('savings:view') && !onPlatform },
+        { href: '/interest-runs', label: 'Interest runs', icon: 'refresh', show: hasPermission('interest:view') && !onPlatform },
+        { href: '/dividend-runs', label: 'Dividend runs', icon: 'refresh', show: hasPermission('dividends:view') && !onPlatform },
       ],
     },
     {

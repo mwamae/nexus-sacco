@@ -15,6 +15,8 @@ type Deps struct {
 	Share       *ShareHandler
 	Deposit     *DepositHandler
 	Product     *ProductHandler
+	Interest    *InterestHandler
+	Dividend    *DividendHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -96,7 +98,41 @@ func Routes(d Deps) http.Handler {
 				r.With(middleware.RequirePermission("deposits:reverse")).Post("/reverse", d.Deposit.Reverse)
 				r.With(middleware.RequirePermission("savings:approve")).Post("/adjust", d.Deposit.Adjust)
 			})
+
+			// ─────────── Interest engine ───────────
+			r.With(middleware.RequirePermission("interest:view")).Get("/interest-runs", d.Interest.ListRuns)
+			r.With(middleware.RequirePermission("interest:run")).Post("/interest-runs", d.Interest.CreateRun)
+			r.With(middleware.RequirePermission("interest:view")).Get("/interest-runs/{run_id}", d.Interest.GetRunWithLines)
+			r.With(middleware.RequirePermission("interest:run")).Post("/interest-runs/{run_id}/compute", d.Interest.Compute)
+			r.With(middleware.RequirePermission("interest:run")).Patch("/interest-run-lines/{line_id}", d.Interest.UpdateLinePayout)
+			r.With(middleware.RequirePermission("interest:run")).Post("/interest-runs/{run_id}/submit", d.Interest.Submit)
+			r.With(middleware.RequirePermission("interest:approve")).Post("/interest-runs/{run_id}/approve", d.Interest.Approve)
+			r.With(middleware.RequirePermission("interest:post")).Post("/interest-runs/{run_id}/post", d.Interest.Post)
+			r.With(middleware.RequirePermission("interest:post")).Post("/interest-runs/{run_id}/lock", d.Interest.Lock)
+			r.With(middleware.RequirePermission("interest:run")).Post("/interest-runs/{run_id}/cancel", d.Interest.Cancel)
+
+			// ─────────── WHT reports ───────────
+			r.With(middleware.RequirePermission("interest:view")).Get("/wht-schedule", d.Interest.WHTSchedule)
+			r.With(middleware.RequirePermission("interest:view")).Get("/wht-certificate/{member_id}", d.Interest.WHTCertificate)
+
+			// ─────────── Dividend engine ───────────
+			r.With(middleware.RequirePermission("dividends:view")).Get("/dividend-runs", d.Dividend.ListRuns)
+			r.With(middleware.RequirePermission("dividends:run")).Post("/dividend-runs", d.Dividend.CreateRun)
+			r.With(middleware.RequirePermission("dividends:view")).Get("/dividend-runs/{run_id}", d.Dividend.GetRun)
+			r.With(middleware.RequirePermission("dividends:run")).Post("/dividend-runs/{run_id}/compute", d.Dividend.Compute)
+			r.With(middleware.RequirePermission("dividends:run")).Patch("/dividend-run-lines/{line_id}", d.Dividend.UpdateLinePayout)
+			r.With(middleware.RequirePermission("dividends:run")).Post("/dividend-runs/{run_id}/submit", d.Dividend.Submit)
+			r.With(middleware.RequirePermission("dividends:approve")).Post("/dividend-runs/{run_id}/approve", d.Dividend.Approve)
+			r.With(middleware.RequirePermission("dividends:approve")).Post("/dividend-runs/{run_id}/post", d.Dividend.Post)
+			r.With(middleware.RequirePermission("dividends:approve")).Post("/dividend-runs/{run_id}/lock", d.Dividend.Lock)
+			r.With(middleware.RequirePermission("dividends:run")).Post("/dividend-runs/{run_id}/cancel", d.Dividend.Cancel)
 		})
+
+		// Workflow callbacks — public-ish (no auth) since the workflow
+		// service POSTs from the same network. Each validates by looking
+		// up the run via workflow_instance_id.
+		r.Post("/interest-runs/callback", d.Interest.WorkflowCallback)
+		r.Post("/dividend-runs/callback", d.Dividend.WorkflowCallback)
 	})
 	return r
 }

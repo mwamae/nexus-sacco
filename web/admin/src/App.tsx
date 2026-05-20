@@ -21,6 +21,8 @@ import WorkflowDefinitions from './pages/WorkflowDefinitions';
 import Shares from './pages/Shares';
 import Deposits from './pages/Deposits';
 import DepositProducts from './pages/DepositProducts';
+import InterestRunsPage from './pages/InterestRuns';
+import DividendRunsPage from './pages/DividendRuns';
 
 function Gate() {
   const { status } = useAuth();
@@ -56,6 +58,8 @@ function Gate() {
   else if (path === '/shares' || path.startsWith('/shares/')) page = <Shares />;
   else if (path === '/deposit-products' || path.startsWith('/deposit-products/')) page = <DepositProducts />;
   else if (path === '/deposits' || path.startsWith('/deposits/')) page = <Deposits />;
+  else if (path === '/interest-runs' || path.startsWith('/interest-runs/')) page = <InterestRunsPage />;
+  else if (path === '/dividend-runs' || path.startsWith('/dividend-runs/')) page = <DividendRunsPage />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;
