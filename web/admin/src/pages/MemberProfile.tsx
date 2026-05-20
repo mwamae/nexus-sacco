@@ -25,6 +25,7 @@ import {
 } from '../api/client';
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
+import { MemberStatusCard } from '../components/MemberStatusCard';
 import { Icon, type IconName } from '../components/Icon';
 
 const DOC_LABELS: Record<DocumentKind, string> = {
@@ -166,7 +167,12 @@ export default function MemberProfile() {
               {tab === 'overview' && (
                 <OverviewTab m={m} currency={currency} canSeeAudit={canSeeAudit} onJump={navigateTab} />
               )}
-              {tab === 'profile'  && <ProfileTab m={m} />}
+              {tab === 'profile'  && (
+                <>
+                  <ProfileTab m={m} />
+                  <MemberStatusCard memberId={m.id} currentStatus={m.status} onChanged={reload} />
+                </>
+              )}
               {tab === 'people'   && <PeopleTab m={m} />}
               {tab === 'accounts' && <AccountsTab currency={currency} />}
               {tab === 'documents' && (

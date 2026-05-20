@@ -922,7 +922,17 @@ export async function inviteAccept(token: string, newPassword: string): Promise<
 // ─── Members ───
 // /api/v1/members* is proxied to the member service by Vite.
 
-export type MemberStatus = 'pending' | 'active' | 'suspended' | 'closed' | 'rejected';
+export type MemberStatus =
+  | 'pending' | 'active' | 'dormant' | 'suspended'
+  | 'blacklisted' | 'exited' | 'deceased' | 'rejected';
+
+export type MemberStatusReason =
+  | 'onboarding_approval' | 'onboarding_rejection'
+  | 'dormancy_inactivity' | 'reactivation_request'
+  | 'loan_default' | 'compliance_hold' | 'disciplinary_action'
+  | 'fraud_investigation' | 'regulatory_directive'
+  | 'member_request' | 'admin_action'
+  | 'deceased_notification' | 'system_correction' | 'other';
 export type IDDocKind = 'national_id' | 'passport' | 'alien_id';
 export type Gender = 'male' | 'female' | 'other' | 'undisclosed';
 export type RelationKind = 'next_of_kin' | 'beneficiary';
@@ -1049,6 +1059,130 @@ export async function rejectMember(id: string, reason: string): Promise<void> {
 
 export async function setMemberStatus(id: string, status: 'active' | 'suspended' | 'closed'): Promise<void> {
   await api.post(`/v1/members/${id}/status`, { status });
+}
+
+// ─── Member status lifecycle (8-status model) ───
+
+export type StatusTransition = {
+  From: MemberStatus;
+  To: MemberStatus;
+  Sensitive: boolean;
+  Note: string;
+};
+
+export type AllowedAction = { action: string; allowed: boolean };
+
+export type MemberStatusActions = {
+  current: MemberStatus;
+  system_behavior: string;
+  visibility: 'normal' | 'restricted' | 'archive';
+  transitions: StatusTransition[];
+  open_proposals: MemberStatusProposal[];
+  allowed_actions: AllowedAction[];
+};
+
+export type MemberStatusChange = {
+  id: string;
+  member_id: string;
+  from_status?: MemberStatus;
+  to_status: MemberStatus;
+  reason_category: MemberStatusReason;
+  reason_note?: string;
+  has_supporting_doc: boolean;
+  supporting_doc_mime?: string;
+  changed_by?: string;
+  changed_at: string;
+  workflow_instance_id?: string;
+  review_date?: string;
+};
+
+export type MemberStatusProposal = {
+  id: string;
+  member_id: string;
+  workflow_instance_id: string;
+  proposed_status: MemberStatus;
+  reason_category: MemberStatusReason;
+  reason_note?: string;
+  has_supporting_doc: boolean;
+  review_date?: string;
+  proposed_by?: string;
+  proposed_at: string;
+  resolved_at?: string;
+  resolution?: string;
+};
+
+export type StatusChangeResponse = {
+  mode: 'applied' | 'proposed';
+  member?: ApiMember;
+  status_change?: MemberStatusChange;
+  proposal?: MemberStatusProposal;
+  workflow_instance_id?: string;
+};
+
+export type DormancyCandidate = {
+  member_id: string;
+  member_no: string;
+  full_name: string;
+  last_activity_at?: string;
+  days_inactive: number;
+};
+
+export type RecentStatusChange = MemberStatusChange & {
+  member_no: string;
+  full_name: string;
+};
+
+export type MemberStatusSummary = {
+  by_status: Partial<Record<MemberStatus, number>>;
+  dormancy_pipeline: DormancyCandidate[];
+  recent_changes: RecentStatusChange[];
+  dormancy_threshold_days: number;
+};
+
+export async function getMemberStatusActions(memberId: string): Promise<MemberStatusActions> {
+  const r = await api.get(`/v1/members/${memberId}/status-actions`);
+  return r.data.data;
+}
+
+export async function listMemberStatusHistory(memberId: string): Promise<MemberStatusChange[]> {
+  const r = await api.get(`/v1/members/${memberId}/status-history`);
+  return r.data.data ?? [];
+}
+
+export async function changeMemberStatus(memberId: string, input: {
+  target_status: MemberStatus;
+  reason_category: MemberStatusReason;
+  reason_note?: string;
+  review_date?: string;
+  supporting_doc_path?: string;
+  supporting_doc_mime?: string;
+}): Promise<StatusChangeResponse> {
+  const r = await api.post(`/v1/members/${memberId}/status-change`, input);
+  return r.data.data;
+}
+
+export async function uploadStatusSupportingDoc(memberId: string, file: Blob): Promise<{ storage_path: string; mime: string; size_bytes: number }> {
+  const form = new FormData();
+  form.append('file', file, (file as File).name ?? `support.${(file.type || 'application/pdf').split('/')[1] ?? 'bin'}`);
+  const r = await api.post(`/v1/members/${memberId}/status-supporting-doc`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return r.data.data;
+}
+
+export async function getMemberStatusSummary(): Promise<MemberStatusSummary> {
+  const r = await api.get('/v1/members/status/summary');
+  return r.data.data;
+}
+
+export async function previewDormancyRun(): Promise<{ threshold_days: number; candidates: DormancyCandidate[] }> {
+  const r = await api.post('/v1/members/dormancy/preview');
+  return r.data.data;
+}
+
+export async function runDormancy(): Promise<{ threshold_days: number; candidates: DormancyCandidate[]; applied?: MemberStatusChange[] }> {
+  const r = await api.post('/v1/members/dormancy/run');
+  return r.data.data;
 }
 
 export async function uploadMemberDocument(

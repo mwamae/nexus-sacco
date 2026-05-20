@@ -50,20 +50,23 @@ type ApplyInput struct {
 // The caller has already validated the transition via domain.ValidateTransition.
 func (s *StatusChangeStore) ApplyTx(ctx context.Context, tx pgx.Tx, in ApplyInput) (*domain.MemberStatusChange, error) {
 	// Status flip + side-effect column updates in a single statement.
+	// The $2::member_status casts are required because pgx can't infer
+	// the parameter type when the same placeholder is compared against
+	// multiple enum literals.
 	if _, err := tx.Exec(ctx, `
 		UPDATE members SET
-		  status              = $2,
+		  status              = $2::member_status,
 		  status_changed_at   = now(),
-		  blacklist_reason    = CASE WHEN $2 = 'blacklisted' THEN NULLIF($3,'') ELSE blacklist_reason END,
-		  blacklist_authorized_by = CASE WHEN $2 = 'blacklisted' THEN $4 ELSE blacklist_authorized_by END,
-		  blacklisted_at      = CASE WHEN $2 = 'blacklisted' AND blacklisted_at IS NULL THEN now() ELSE blacklisted_at END,
-		  deceased_at         = CASE WHEN $2 = 'deceased' AND deceased_at IS NULL THEN now() ELSE deceased_at END,
-		  exit_initiated_at   = CASE WHEN $2 = 'exited' AND exit_initiated_at IS NULL THEN now() ELSE exit_initiated_at END,
-		  exit_completed_at   = CASE WHEN $2 = 'exited' THEN now() ELSE exit_completed_at END,
-		  dormancy_warning_sent_at = CASE WHEN $2 = 'active' THEN NULL ELSE dormancy_warning_sent_at END,
-		  last_activity_at    = CASE WHEN $2 = 'active' AND last_activity_at IS NULL THEN now() ELSE last_activity_at END
+		  blacklist_reason    = CASE WHEN $2::member_status = 'blacklisted' THEN NULLIF($3,'') ELSE blacklist_reason END,
+		  blacklist_authorized_by = CASE WHEN $2::member_status = 'blacklisted' THEN $4 ELSE blacklist_authorized_by END,
+		  blacklisted_at      = CASE WHEN $2::member_status = 'blacklisted' AND blacklisted_at IS NULL THEN now() ELSE blacklisted_at END,
+		  deceased_at         = CASE WHEN $2::member_status = 'deceased' AND deceased_at IS NULL THEN now() ELSE deceased_at END,
+		  exit_initiated_at   = CASE WHEN $2::member_status = 'exited' AND exit_initiated_at IS NULL THEN now() ELSE exit_initiated_at END,
+		  exit_completed_at   = CASE WHEN $2::member_status = 'exited' THEN now() ELSE exit_completed_at END,
+		  dormancy_warning_sent_at = CASE WHEN $2::member_status = 'active' THEN NULL ELSE dormancy_warning_sent_at END,
+		  last_activity_at    = CASE WHEN $2::member_status = 'active' AND last_activity_at IS NULL THEN now() ELSE last_activity_at END
 		WHERE id = $1
-	`, in.MemberID, in.ToStatus, in.ReasonNote, in.ChangedBy); err != nil {
+	`, in.MemberID, string(in.ToStatus), in.ReasonNote, in.ChangedBy); err != nil {
 		return nil, fmt.Errorf("update member status: %w", err)
 	}
 	var c domain.MemberStatusChange

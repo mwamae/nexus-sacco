@@ -14,6 +14,7 @@ import (
 type Deps struct {
 	Member      *MemberHandler
 	Org         *OrgHandler
+	Status      *StatusHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -79,7 +80,21 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/mandate", d.Org.SetMandate)
 			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/banking", d.Org.UpsertBanking)
 			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/contacts", d.Org.ReplaceContacts)
+
+			// ─────────── Member status lifecycle ───────────
+			r.With(middleware.RequirePermission("members:view")).Get("/members/{id}/status-actions", d.Status.Actions)
+			r.With(middleware.RequirePermission("members:view")).Get("/members/{id}/status-history", d.Status.History)
+			r.With(middleware.RequirePermission("members:edit")).Post("/members/{id}/status-change", d.Status.Change)
+			r.With(middleware.RequirePermission("members:edit")).Post("/members/{id}/status-supporting-doc", d.Status.UploadSupportingDoc)
+			r.With(middleware.RequirePermission("members:view")).Get("/members/{id}/status-history/{change_id}/doc", d.Status.DownloadSupportingDoc)
+			r.With(middleware.RequirePermission("members:view")).Get("/members/status/summary", d.Status.Summary)
+			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/preview", d.Status.DormancyPreview)
+			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/run", d.Status.DormancyRun)
 		})
+
+		// Workflow callback — public-ish (no auth) but constrained: only
+		// resolves proposals it knows about, and only the first time.
+		r.Post("/members/status/callback", d.Status.WorkflowCallback)
 	})
 	return r
 }

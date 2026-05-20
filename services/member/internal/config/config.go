@@ -30,6 +30,12 @@ type Config struct {
 
 	// Read header / connection timeouts (apply to the HTTP server).
 	ReadHeaderTimeout time.Duration
+
+	// Workflow integration — used for sensitive status changes.
+	WorkflowURL         string
+	MemberSelfURL       string
+	WorkflowProcessKind string
+	DefaultDormancyDays int
 }
 
 func Load() (*Config, error) {
@@ -56,6 +62,18 @@ func Load() (*Config, error) {
 	}
 	if cfg.MaxUploadBytes <= 0 {
 		cfg.MaxUploadBytes = 5 << 20 // 5 MiB
+	}
+
+	cfg.WorkflowURL = getEnv("WORKFLOW_SERVICE_URL", "http://localhost:8083")
+	cfg.MemberSelfURL = getEnv("MEMBER_SELF_URL", "http://localhost:8082")
+	cfg.WorkflowProcessKind = getEnv("MEMBER_STATUS_WORKFLOW_KIND", "member_status_change")
+	if v := os.Getenv("MEMBER_DEFAULT_DORMANCY_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.DefaultDormancyDays = n
+		}
+	}
+	if cfg.DefaultDormancyDays <= 0 {
+		cfg.DefaultDormancyDays = 365
 	}
 	return cfg, nil
 }

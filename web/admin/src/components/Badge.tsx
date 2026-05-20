@@ -17,13 +17,18 @@ export function Badge({
 }
 
 const STATUS_TONE: Record<string, Tone> = {
-  // Member statuses
+  // Member lifecycle statuses
   active: 'pos',
   pending: 'warn',
+  dormant: 'info',
   suspended: 'neg',
+  blacklisted: 'neg',
+  exited: 'neutral',
+  deceased: 'neutral',
+  rejected: 'neg',
+  // Legacy member statuses (still in the wild for older rows)
   locked: 'neg',
   closed: 'neutral',
-  rejected: 'neg',
   // Tenant statuses (the ones not shared with members)
   trial: 'info',
   expired: 'warn',

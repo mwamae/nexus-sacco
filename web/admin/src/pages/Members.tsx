@@ -113,7 +113,7 @@ export default function Members() {
           <span className="card-sub">{members?.length ?? 0} shown</span>
           <div className="card-hd-actions">
             <div className="fchips">
-              {(['all', 'pending', 'active', 'rejected', 'suspended'] as Filter[]).map((f) => (
+              {(['all', 'pending', 'active', 'dormant', 'suspended', 'blacklisted', 'exited', 'deceased', 'rejected'] as Filter[]).map((f) => (
                 <button
                   key={f}
                   type="button"

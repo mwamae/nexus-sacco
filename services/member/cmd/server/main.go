@@ -30,6 +30,7 @@ import (
 
 func main() {
 	migrate := flag.Bool("migrate", false, "run database migrations and exit")
+	runDormancy := flag.String("run-dormancy", "", "run the dormancy detector for the named tenant slug and exit")
 	flag.Parse()
 
 	if *migrate {
@@ -82,6 +83,7 @@ func main() {
 	signatories := store.NewOrgSignatoryStore(pool.Pool)
 	banking := store.NewOrgBankingStore(pool.Pool)
 	contacts := store.NewOrgContactStore(pool.Pool)
+	statusStore := store.NewStatusChangeStore(pool.Pool)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
@@ -94,9 +96,36 @@ func main() {
 		Signatories: signatories, Banking: banking, Contacts: contacts,
 		Audit: auditStore, Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
 	}
+	statusH := &handler.StatusHandler{
+		DB: pool, Members: members, Status: statusStore, Audit: auditStore,
+		Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
+		WorkflowURL:         cfg.WorkflowURL,
+		MemberSelfURL:       cfg.MemberSelfURL,
+		WorkflowProcessKind: cfg.WorkflowProcessKind,
+		DefaultDormancyDays: cfg.DefaultDormancyDays,
+		HTTP:                &http.Client{Timeout: 10 * time.Second},
+	}
+
+	// CLI: run the dormancy detector for a single tenant and exit.
+	// Useful as a cron handle — `member -run-dormancy=tujenge` from a
+	// systemd timer / Kubernetes CronJob until a proper scheduler exists.
+	if *runDormancy != "" {
+		t, err := tenants.BySlug(ctx, *runDormancy)
+		if err != nil {
+			logger.Error("dormancy: tenant lookup", "slug", *runDormancy, "err", err)
+			os.Exit(1)
+		}
+		n, err := handler.RunDormancyForTenant(ctx, statusH, t.ID)
+		if err != nil {
+			logger.Error("dormancy: run failed", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("dormancy run complete", "tenant", t.Slug, "applied", n)
+		return
+	}
 
 	router := handler.Routes(handler.Deps{
-		Member: memH, Org: orgH, TenantStore: tenants, Issuer: issuer,
+		Member: memH, Org: orgH, Status: statusH, TenantStore: tenants, Issuer: issuer,
 		AppDomain: cfg.AppDomain, Logger: logger,
 	})
 
