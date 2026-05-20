@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS wf_delegations;
+DROP TABLE IF EXISTS wf_actions;
+DROP TABLE IF EXISTS wf_instances;
+DROP TABLE IF EXISTS wf_levels;
+DROP TABLE IF EXISTS wf_definitions;
+DROP TYPE  IF EXISTS wf_quorum;
+DROP TYPE  IF EXISTS wf_action_kind;
+DROP TYPE  IF EXISTS wf_level_status;
+DROP TYPE  IF EXISTS wf_status;

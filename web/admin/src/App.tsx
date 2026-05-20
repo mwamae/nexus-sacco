@@ -16,6 +16,8 @@ import TenantSettings from './pages/TenantSettings';
 import Organizations from './pages/Organizations';
 import OrganizationOnboarding from './pages/OrganizationOnboarding';
 import OrganizationProfile from './pages/OrganizationProfile';
+import ApprovalsInbox from './pages/ApprovalsInbox';
+import WorkflowDefinitions from './pages/WorkflowDefinitions';
 
 function Gate() {
   const { status } = useAuth();
@@ -46,6 +48,8 @@ function Gate() {
   else if (path === '/orgs/new') page = <OrganizationOnboarding />;
   else if (path === '/orgs') page = <Organizations />;
   else if (path.startsWith('/orgs/')) page = <OrganizationProfile />;
+  else if (path === '/approvals' || path.startsWith('/approvals/')) page = <ApprovalsInbox />;
+  else if (path === '/workflows' || path.startsWith('/workflows/')) page = <WorkflowDefinitions />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;

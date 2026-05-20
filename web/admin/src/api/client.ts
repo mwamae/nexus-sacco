@@ -1086,3 +1086,173 @@ export function extractError(e: unknown, fallback = 'Something went wrong'): str
   const err = e as AxiosError<{ error?: ApiError }>;
   return err?.response?.data?.error?.message || err?.message || fallback;
 }
+
+// ─── Workflow engine ───
+
+export type WFStatus =
+  | 'pending' | 'in_progress' | 'approved' | 'rejected'
+  | 'returned' | 'awaiting_info' | 'escalated' | 'cancelled' | 'expired';
+
+export type WFLevelStatus =
+  | 'waiting' | 'in_progress' | 'approved' | 'rejected'
+  | 'returned' | 'awaiting_info' | 'escalated' | 'skipped';
+
+export type WFActionKind =
+  | 'create' | 'approve' | 'reject' | 'return' | 'request_info'
+  | 'resume' | 'escalate' | 'reassign' | 'cancel'
+  | 'callback_fired' | 'sla_breached';
+
+export type WFQuorum = 'any_one' | 'all';
+
+export type WFLevelDef = {
+  id?: string;
+  level_order: number;
+  name: string;
+  approver_roles: string[];
+  approver_user_ids: string[];
+  quorum: WFQuorum;
+  condition_expr?: unknown;
+  sla_hours?: number;
+  escalation_role?: string;
+  escalation_user_id?: string;
+};
+
+export type WFDefinition = {
+  id: string;
+  tenant_id: string;
+  process_kind: string;
+  name: string;
+  description?: string;
+  version: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+  levels: WFLevelDef[];
+};
+
+export type WFLevelState = {
+  order: number;
+  name: string;
+  status: WFLevelStatus;
+  approver_roles: string[];
+  approver_user_ids?: string[];
+  quorum: WFQuorum;
+  condition?: unknown;
+  sla_hours?: number;
+  sla_due_at?: string;
+  approved_by?: string[];
+  entered_at?: string;
+  completed_at?: string;
+  escalation_role?: string;
+  escalation_user_id?: string;
+};
+
+export type WFInstance = {
+  id: string;
+  tenant_id: string;
+  definition_id: string;
+  process_kind: string;
+  subject_kind: string;
+  subject_id: string;
+  status: WFStatus;
+  current_level: number;
+  context: Record<string, unknown>;
+  callback_url?: string;
+  callback_status?: string;
+  callback_delivered_at?: string;
+  initiator_id?: string;
+  started_at: string;
+  completed_at?: string;
+  levels: WFLevelState[];
+};
+
+export type WFAction = {
+  id: string;
+  instance_id: string;
+  level_order?: number;
+  action: WFActionKind;
+  actor_id?: string;
+  actor_role?: string;
+  comments?: string;
+  metadata?: unknown;
+  created_at: string;
+};
+
+export type WFInstanceDetail = WFInstance & { actions: WFAction[] };
+
+export type WFDashboard = {
+  total: number;
+  by_status: Partial<Record<WFStatus, number>>;
+  by_process_kind: Record<string, number>;
+  sla_breach_count: number;
+  avg_tat_seconds: number;
+};
+
+export async function listWorkflowDefinitions(p: { process_kind?: string; only_active?: boolean } = {}): Promise<WFDefinition[]> {
+  const r = await api.get('/v1/workflows', { params: { process_kind: p.process_kind, only_active: p.only_active ? 1 : undefined } });
+  return r.data.data ?? [];
+}
+
+export async function getWorkflowDefinition(id: string): Promise<WFDefinition> {
+  const r = await api.get(`/v1/workflows/${id}`);
+  return r.data.data;
+}
+
+export type CreateWFDefinitionInput = {
+  process_kind: string;
+  name: string;
+  description?: string;
+  active?: boolean;
+  levels: Omit<WFLevelDef, 'id' | 'level_order'>[];
+};
+
+export async function createWorkflowDefinition(input: CreateWFDefinitionInput): Promise<WFDefinition> {
+  const r = await api.post('/v1/workflows', input);
+  return r.data.data;
+}
+
+export async function setWorkflowActivation(id: string, active: boolean): Promise<void> {
+  await api.post(`/v1/workflows/${id}/activation`, { active });
+}
+
+export async function getWorkflowDashboard(): Promise<WFDashboard> {
+  const r = await api.get('/v1/workflows/dashboard');
+  return r.data.data;
+}
+
+export async function listWorkflowInstances(p: {
+  status?: WFStatus; process_kind?: string; subject_kind?: string; subject_id?: string; limit?: number; offset?: number;
+} = {}): Promise<{ instances: WFInstance[]; total: number }> {
+  const r = await api.get('/v1/workflow-instances', { params: p });
+  return { ...r.data.data, instances: r.data.data.instances ?? [] };
+}
+
+export async function getWorkflowInstance(id: string): Promise<WFInstanceDetail> {
+  const r = await api.get(`/v1/workflow-instances/${id}`);
+  return r.data.data;
+}
+
+export type WFActionRequest = {
+  action: 'approve' | 'reject' | 'return' | 'request_info' | 'resume' | 'escalate' | 'reassign' | 'cancel';
+  comments?: string;
+  reassign_to?: string;
+  acting_as_role?: string;
+};
+
+export async function actOnInstance(id: string, req: WFActionRequest): Promise<WFInstance> {
+  const r = await api.post(`/v1/workflow-instances/${id}/actions`, req);
+  return r.data.data;
+}
+
+export async function createWorkflowInstance(input: {
+  process_kind: string;
+  definition_id?: string;
+  subject_kind: string;
+  subject_id: string;
+  context?: Record<string, unknown>;
+  callback_url?: string;
+}): Promise<WFInstance> {
+  const r = await api.post('/v1/workflow-instances', input);
+  return r.data.data;
+}

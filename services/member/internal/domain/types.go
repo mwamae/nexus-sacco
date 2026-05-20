@@ -11,12 +11,69 @@ import (
 type MemberStatus string
 
 const (
-	StatusPending   MemberStatus = "pending"
-	StatusActive    MemberStatus = "active"
-	StatusSuspended MemberStatus = "suspended"
-	StatusClosed    MemberStatus = "closed"
-	StatusRejected  MemberStatus = "rejected"
+	StatusPending     MemberStatus = "pending"
+	StatusActive      MemberStatus = "active"
+	StatusDormant     MemberStatus = "dormant"
+	StatusSuspended   MemberStatus = "suspended"
+	StatusBlacklisted MemberStatus = "blacklisted"
+	StatusExited      MemberStatus = "exited"
+	StatusDeceased    MemberStatus = "deceased"
+	StatusRejected    MemberStatus = "rejected"
+
+	// Deprecated aliases kept so old call sites keep compiling — they
+	// point at the new states they collapsed into.
+	StatusClosed = StatusExited
 )
+
+type StatusReason string
+
+const (
+	ReasonOnboardingApproval   StatusReason = "onboarding_approval"
+	ReasonOnboardingRejection  StatusReason = "onboarding_rejection"
+	ReasonDormancyInactivity   StatusReason = "dormancy_inactivity"
+	ReasonReactivationRequest  StatusReason = "reactivation_request"
+	ReasonLoanDefault          StatusReason = "loan_default"
+	ReasonComplianceHold       StatusReason = "compliance_hold"
+	ReasonDisciplinaryAction   StatusReason = "disciplinary_action"
+	ReasonFraudInvestigation   StatusReason = "fraud_investigation"
+	ReasonRegulatoryDirective  StatusReason = "regulatory_directive"
+	ReasonMemberRequest        StatusReason = "member_request"
+	ReasonAdminAction          StatusReason = "admin_action"
+	ReasonDeceasedNotification StatusReason = "deceased_notification"
+	ReasonSystemCorrection     StatusReason = "system_correction"
+	ReasonOther                StatusReason = "other"
+)
+
+type MemberStatusChange struct {
+	ID                 uuid.UUID    `json:"id"`
+	MemberID           uuid.UUID    `json:"member_id"`
+	FromStatus         MemberStatus `json:"from_status,omitempty"`
+	ToStatus           MemberStatus `json:"to_status"`
+	ReasonCategory     StatusReason `json:"reason_category"`
+	ReasonNote         string       `json:"reason_note,omitempty"`
+	SupportingDocPath  string       `json:"-"`
+	SupportingDocMIME  string       `json:"supporting_doc_mime,omitempty"`
+	HasSupportingDoc   bool         `json:"has_supporting_doc"`
+	ChangedBy          *uuid.UUID   `json:"changed_by,omitempty"`
+	ChangedAt          time.Time    `json:"changed_at"`
+	WorkflowInstanceID *uuid.UUID   `json:"workflow_instance_id,omitempty"`
+	ReviewDate         *time.Time   `json:"review_date,omitempty"`
+}
+
+type MemberStatusProposal struct {
+	ID                 uuid.UUID    `json:"id"`
+	MemberID           uuid.UUID    `json:"member_id"`
+	WorkflowInstanceID uuid.UUID    `json:"workflow_instance_id"`
+	ProposedStatus     MemberStatus `json:"proposed_status"`
+	ReasonCategory     StatusReason `json:"reason_category"`
+	ReasonNote         string       `json:"reason_note,omitempty"`
+	HasSupportingDoc   bool         `json:"has_supporting_doc"`
+	ReviewDate         *time.Time   `json:"review_date,omitempty"`
+	ProposedBy         *uuid.UUID   `json:"proposed_by,omitempty"`
+	ProposedAt         time.Time    `json:"proposed_at"`
+	ResolvedAt         *time.Time   `json:"resolved_at,omitempty"`
+	Resolution         string       `json:"resolution,omitempty"`
+}
 
 type IDDocKind string
 

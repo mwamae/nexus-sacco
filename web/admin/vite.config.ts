@@ -12,6 +12,7 @@ export default defineConfig(({ mode }) => {
   const appDomain = env.VITE_APP_DOMAIN || 'nexussacco.local';
   const identityTarget = env.VITE_API_TARGET || 'http://localhost:8081';
   const memberTarget = env.VITE_MEMBER_TARGET || 'http://localhost:8082';
+  const workflowTarget = env.VITE_WORKFLOW_TARGET || 'http://localhost:8083';
 
   // More specific keys must come before the catch-all so vite-proxy
   // routes /api/v1/members* to the member service, not identity.
@@ -29,6 +30,16 @@ export default defineConfig(({ mode }) => {
         },
         '/api/v1/orgs': {
           target: memberTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/workflows': {
+          target: workflowTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/workflow-instances': {
+          target: workflowTarget,
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },

@@ -43,6 +43,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
       ],
     },
     {
+      section: 'Approvals',
+      items: [
+        { href: '/approvals', label: 'Inbox', icon: 'check', show: hasPermission('workflow:view') && !onPlatform },
+        { href: '/workflows', label: 'Definitions', icon: 'settings', show: hasPermission('workflow:configure') && !onPlatform },
+      ],
+    },
+    {
       section: 'Administration',
       items: [
         { href: '/users', label: 'Staff', icon: 'users', show: hasPermission('users:view') },
@@ -226,6 +233,8 @@ function breadcrumbs(path: string, tenantLabel: string): string[] {
   else if (path === '/tenants/new') trail.push('Platform', 'New tenant');
   else if (path.startsWith('/tenants/')) trail.push('Platform', 'Tenant profile');
   else if (path === '/settings') trail.push('Administration', 'Settings');
+  else if (path === '/approvals' || path.startsWith('/approvals/')) trail.push('Approvals', 'Inbox');
+  else if (path === '/workflows' || path.startsWith('/workflows/')) trail.push('Approvals', 'Definitions');
   else if (path.startsWith('/users')) trail.push('Administration', 'Staff');
   else if (path.startsWith('/roles')) trail.push('Administration', 'Roles & permissions');
   else trail.push(path);

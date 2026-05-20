@@ -5,6 +5,7 @@ SHELL := /bin/bash
 COMPOSE := docker compose
 IDENTITY_DIR := services/identity
 MEMBER_DIR := services/member
+WORKFLOW_DIR := services/workflow
 
 ifneq (,$(wildcard ./.env))
   include .env
@@ -39,9 +40,10 @@ psql: ## Open psql in the dev DB
 	$(COMPOSE) exec postgres psql -U $(POSTGRES_USER) $(POSTGRES_DB)
 
 .PHONY: migrate
-migrate: ## Run pending migrations (identity + member)
+migrate: ## Run pending migrations (identity + member + workflow)
 	cd $(IDENTITY_DIR) && go run ./cmd/server -migrate
 	cd $(MEMBER_DIR)   && go run ./cmd/server -migrate
+	cd $(WORKFLOW_DIR) && go run ./cmd/server -migrate
 
 .PHONY: migrate-identity
 migrate-identity: ## Run only identity migrations
@@ -50,6 +52,10 @@ migrate-identity: ## Run only identity migrations
 .PHONY: migrate-member
 migrate-member: ## Run only member migrations
 	cd $(MEMBER_DIR) && go run ./cmd/server -migrate
+
+.PHONY: migrate-workflow
+migrate-workflow: ## Run only workflow migrations
+	cd $(WORKFLOW_DIR) && go run ./cmd/server -migrate
 
 .PHONY: seed
 seed: ## Create platform super-admin from .env
@@ -69,6 +75,10 @@ run: ## Run identity locally (not in docker)
 .PHONY: run-member
 run-member: ## Run member service locally (not in docker)
 	cd $(MEMBER_DIR) && go run ./cmd/server
+
+.PHONY: run-workflow
+run-workflow: ## Run workflow service locally
+	cd $(WORKFLOW_DIR) && go run ./cmd/server
 
 .PHONY: test
 test: ## Run all Go tests
