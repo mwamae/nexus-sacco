@@ -464,6 +464,335 @@ export async function updateOperations(patch: Partial<TenantOperations>): Promis
   return r.data.data;
 }
 
+// ─── Organisations (non-individual members) ───
+
+export type OrgKind =
+  | 'group' | 'chama' | 'ltd' | 'sole_prop'
+  | 'ngo' | 'church' | 'sacco' | 'cooperative' | 'school';
+
+export type OrgStatus = 'pending' | 'active' | 'suspended' | 'closed' | 'rejected' | 'dormant';
+export type RiskCategory = 'low' | 'medium' | 'high';
+export type KYCReviewStatus = 'not_started' | 'in_review' | 'verified' | 'rejected';
+export type SignatoryClass = 'mandatory' | 'optional' | 'alternate';
+export type DocVerification = 'pending' | 'verified' | 'rejected';
+export type ContactKind = 'primary' | 'finance' | 'hr_payroll' | 'compliance';
+
+export type OrgDocKind =
+  | 'registration_certificate' | 'cr12' | 'kra_pin_certificate'
+  | 'memorandum_articles' | 'constitution_bylaws' | 'business_permit'
+  | 'tax_compliance_certificate' | 'vat_certificate' | 'ngo_certificate'
+  | 'cooperative_certificate' | 'proof_of_address' | 'audited_financials'
+  | 'bank_statement' | 'board_resolution'
+  | 'signatory_appointment_resolution' | 'beneficial_ownership_declaration';
+
+export type OfficialPosition =
+  | 'chairperson' | 'vice_chairperson' | 'treasurer' | 'secretary'
+  | 'director' | 'trustee' | 'principal' | 'pastor' | 'other';
+
+export type ApiOrg = {
+  id: string;
+  tenant_id: string;
+  org_no: string;
+  status: OrgStatus;
+  registered_name: string;
+  trading_name?: string;
+  kind: OrgKind;
+  registration_no?: string;
+  date_of_registration?: string;
+  date_of_operation?: string;
+  industry?: string;
+  nature_of_business?: string;
+  member_count?: number;
+  employee_count?: number;
+  physical_address?: string;
+  postal_address?: string;
+  county?: string;
+  sub_county?: string;
+  ward?: string;
+  gps_lat?: number;
+  gps_lng?: number;
+  branch_id?: string;
+  risk_category: RiskCategory;
+  kyc_status: KYCReviewStatus;
+  blacklisted: boolean;
+  blacklist_reason?: string;
+  dormant_since?: string;
+  approved_at?: string;
+  approved_by?: string;
+  rejection_reason?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiOrgDocument = {
+  id: string;
+  org_id: string;
+  kind: OrgDocKind;
+  mime: string;
+  size_bytes: number;
+  issue_date?: string;
+  expiry_date?: string;
+  verification: DocVerification;
+  verified_by?: string;
+  verified_at?: string;
+  verification_note?: string;
+  uploaded_at: string;
+};
+
+export type OfficialFile = { mime: string; size: number; updated_at: string };
+
+export type ApiOfficial = {
+  id: string;
+  org_id: string;
+  full_name: string;
+  id_doc_kind: IDDocKind;
+  id_doc_number: string;
+  kra_pin?: string;
+  date_of_birth?: string;
+  gender: Gender;
+  nationality?: string;
+  phone?: string;
+  email?: string;
+  physical_address?: string;
+  occupation?: string;
+  position: OfficialPosition;
+  position_label?: string;
+  appointed_on?: string;
+  is_pep: boolean;
+  pep_note?: string;
+  sanctions_screened_at?: string;
+  sanctions_screened_by?: string;
+  sanctions_hit: boolean;
+  sanctions_note?: string;
+  is_beneficial_owner: boolean;
+  ownership_percent?: number;
+  files: Record<string, OfficialFile>;
+  position_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiSignatory = {
+  id: string;
+  org_id: string;
+  official_id: string;
+  class: SignatoryClass;
+  signing_order: number;
+  txn_limit?: number;
+  effective_from: string;
+};
+
+export type ApiMandate = {
+  org_id: string;
+  rules: Record<string, unknown>;
+  updated_at: string;
+};
+
+export type ApiBanking = {
+  org_id: string;
+  bank_name?: string;
+  bank_branch?: string;
+  bank_code?: string;
+  swift_code?: string;
+  account_name?: string;
+  account_number?: string;
+  paybill?: string;
+  till_number?: string;
+  mobile_money_phones?: string;
+  mobile_settlement_account?: string;
+  preferred_disbursement?: string;
+  preferred_repayment?: string;
+  standing_order_details?: string;
+  checkoff_arrangement?: string;
+  updated_at?: string;
+};
+
+export type ApiOrgContact = {
+  id: string;
+  org_id: string;
+  kind: ContactKind;
+  full_name: string;
+  role?: string;
+  phone?: string;
+  email?: string;
+  position: number;
+};
+
+export type ApiOrgDetail = ApiOrg & {
+  documents: ApiOrgDocument[];
+  officials: ApiOfficial[];
+  signatories: ApiSignatory[];
+  mandate?: ApiMandate;
+  banking?: ApiBanking;
+  contacts: ApiOrgContact[];
+};
+
+export type OfficialInput = {
+  full_name: string;
+  id_doc_kind?: IDDocKind;
+  id_doc_number: string;
+  kra_pin?: string;
+  date_of_birth?: string;
+  gender?: Gender;
+  nationality?: string;
+  phone?: string;
+  email?: string;
+  physical_address?: string;
+  occupation?: string;
+  position?: OfficialPosition;
+  position_label?: string;
+  appointed_on?: string;
+  is_pep?: boolean;
+  pep_note?: string;
+  is_beneficial_owner?: boolean;
+  ownership_percent?: number;
+  signatory?: { class?: SignatoryClass; signing_order?: number; txn_limit?: number | null };
+};
+
+export type OrgContactInput = {
+  kind: ContactKind;
+  full_name: string;
+  role?: string;
+  phone?: string;
+  email?: string;
+};
+
+export type CreateOrgInput = {
+  registered_name: string;
+  trading_name?: string;
+  kind: OrgKind;
+  registration_no?: string;
+  date_of_registration?: string;
+  date_of_operation?: string;
+  industry?: string;
+  nature_of_business?: string;
+  member_count?: number;
+  employee_count?: number;
+  physical_address?: string;
+  postal_address?: string;
+  county?: string;
+  sub_county?: string;
+  ward?: string;
+  branch_id?: string;
+  risk_category?: RiskCategory;
+  officials?: OfficialInput[];
+  banking?: Partial<ApiBanking>;
+  contacts?: OrgContactInput[];
+  mandate?: Record<string, unknown>;
+};
+
+export async function listOrgs(p: {
+  status?: OrgStatus; kind?: OrgKind; q?: string; limit?: number; offset?: number;
+} = {}): Promise<{ orgs: ApiOrg[]; total: number; limit: number; offset: number }> {
+  const r = await api.get('/v1/orgs', { params: p });
+  return { ...r.data.data, orgs: r.data.data.orgs ?? [] };
+}
+
+export async function getOrg(id: string): Promise<ApiOrgDetail> {
+  const r = await api.get(`/v1/orgs/${id}`);
+  return r.data.data;
+}
+
+export async function createOrg(input: CreateOrgInput): Promise<ApiOrg> {
+  const r = await api.post('/v1/orgs', input);
+  return r.data.data;
+}
+
+export async function approveOrg(id: string): Promise<void> {
+  await api.post(`/v1/orgs/${id}/approve`);
+}
+
+export async function rejectOrg(id: string, reason: string): Promise<void> {
+  await api.post(`/v1/orgs/${id}/reject`, { reason });
+}
+
+export async function setOrgStatus(id: string, status: 'active' | 'suspended' | 'closed' | 'dormant'): Promise<void> {
+  await api.post(`/v1/orgs/${id}/status`, { status });
+}
+
+export async function setOrgKYCStatus(id: string, status: KYCReviewStatus): Promise<void> {
+  await api.post(`/v1/orgs/${id}/kyc-status`, { status });
+}
+
+export async function uploadOrgDocument(
+  orgId: string,
+  kind: OrgDocKind,
+  file: Blob,
+  opts: { issue_date?: string; expiry_date?: string } = {},
+): Promise<ApiOrgDocument> {
+  const form = new FormData();
+  form.append('file', file, (file as File).name ?? `${kind}.${(file.type || 'application/pdf').split('/')[1] ?? 'bin'}`);
+  const params: Record<string, string> = {};
+  if (opts.issue_date) params.issue_date = opts.issue_date;
+  if (opts.expiry_date) params.expiry_date = opts.expiry_date;
+  const r = await api.post(`/v1/orgs/${orgId}/documents/${kind}`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    params,
+  });
+  return r.data.data;
+}
+
+export async function fetchOrgDocument(orgId: string, kind: OrgDocKind): Promise<Blob> {
+  const r = await api.get(`/v1/orgs/${orgId}/documents/${kind}`, { responseType: 'blob' });
+  return r.data as Blob;
+}
+
+export async function verifyOrgDocument(orgId: string, kind: OrgDocKind, status: DocVerification, note?: string): Promise<void> {
+  await api.post(`/v1/orgs/${orgId}/documents/${kind}/verify`, { status, note: note ?? '' });
+}
+
+export async function addOrgOfficial(orgId: string, input: OfficialInput): Promise<ApiOfficial> {
+  const r = await api.post(`/v1/orgs/${orgId}/officials`, input);
+  return r.data.data;
+}
+
+export async function removeOrgOfficial(orgId: string, officialId: string): Promise<void> {
+  await api.delete(`/v1/orgs/${orgId}/officials/${officialId}`);
+}
+
+export async function screenOfficial(orgId: string, officialId: string, hit: boolean, note?: string): Promise<void> {
+  await api.post(`/v1/orgs/${orgId}/officials/${officialId}/sanctions`, { hit, note: note ?? '' });
+}
+
+export async function uploadOfficialFile(
+  orgId: string, officialId: string,
+  kind: 'passport_photo' | 'signature' | 'id_copy' | 'kra_pin_certificate',
+  file: Blob,
+): Promise<ApiOfficial> {
+  const form = new FormData();
+  form.append('file', file, (file as File).name ?? `${kind}.png`);
+  const r = await api.post(`/v1/orgs/${orgId}/officials/${officialId}/files/${kind}`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return r.data.data;
+}
+
+export async function fetchOfficialFile(
+  orgId: string, officialId: string, kind: string,
+): Promise<Blob> {
+  const r = await api.get(`/v1/orgs/${orgId}/officials/${officialId}/files/${kind}`, { responseType: 'blob' });
+  return r.data as Blob;
+}
+
+export async function replaceOrgSignatories(orgId: string, signatories: {
+  official_id: string; class: SignatoryClass; signing_order?: number; txn_limit?: number | null;
+}[]): Promise<void> {
+  await api.post(`/v1/orgs/${orgId}/signatories`, { signatories });
+}
+
+export async function setOrgMandate(orgId: string, rules: Record<string, unknown>): Promise<void> {
+  await api.post(`/v1/orgs/${orgId}/mandate`, { rules });
+}
+
+export async function upsertOrgBanking(orgId: string, banking: Partial<ApiBanking>): Promise<ApiBanking> {
+  const r = await api.post(`/v1/orgs/${orgId}/banking`, banking);
+  return r.data.data;
+}
+
+export async function replaceOrgContacts(orgId: string, contacts: OrgContactInput[]): Promise<void> {
+  await api.post(`/v1/orgs/${orgId}/contacts`, { contacts });
+}
+
 // ─── Audit log lookup ───
 
 export type AuditEntry = {

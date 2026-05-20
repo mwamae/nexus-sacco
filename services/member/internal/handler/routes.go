@@ -13,6 +13,7 @@ import (
 
 type Deps struct {
 	Member      *MemberHandler
+	Org         *OrgHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -49,6 +50,35 @@ func Routes(d Deps) http.Handler {
 				Post("/members/{id}/documents/{kind}", d.Member.UploadDocument)
 			r.With(middleware.RequirePermission("members:view")).
 				Get("/members/{id}/documents/{kind}", d.Member.DownloadDocument)
+
+			// ─────────── Organisations (non-individual members) ───────────
+			// Reuses the members:* permission catalog so existing roles
+			// (tenant_owner, sacco_admin, branch_manager) work unchanged.
+			r.With(middleware.RequirePermission("members:view")).Get("/orgs", d.Org.List)
+			r.With(middleware.RequirePermission("members:view")).Get("/orgs/{id}", d.Org.Get)
+			r.With(middleware.RequirePermission("members:create")).Post("/orgs", d.Org.Create)
+			r.With(middleware.RequirePermission("members:approve")).Post("/orgs/{id}/approve", d.Org.Approve)
+			r.With(middleware.RequirePermission("members:approve")).Post("/orgs/{id}/reject", d.Org.Reject)
+			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/status", d.Org.SetStatus)
+			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/kyc-status", d.Org.SetKYCStatus)
+
+			// Org documents.
+			r.With(middleware.RequirePermission("members:create")).Post("/orgs/{id}/documents/{kind}", d.Org.UploadDocument)
+			r.With(middleware.RequirePermission("members:view")).Get("/orgs/{id}/documents/{kind}", d.Org.DownloadDocument)
+			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/documents/{kind}/verify", d.Org.VerifyDocument)
+
+			// Officials + per-official files + sanctions.
+			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/officials", d.Org.AddOfficial)
+			r.With(middleware.RequirePermission("members:edit")).Delete("/orgs/{id}/officials/{official_id}", d.Org.DeleteOfficial)
+			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/officials/{official_id}/sanctions", d.Org.ScreenOfficial)
+			r.With(middleware.RequirePermission("members:create")).Post("/orgs/{id}/officials/{official_id}/files/{kind}", d.Org.UploadOfficialFile)
+			r.With(middleware.RequirePermission("members:view")).Get("/orgs/{id}/officials/{official_id}/files/{kind}", d.Org.DownloadOfficialFile)
+
+			// Signatories + mandate + banking + contacts.
+			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/signatories", d.Org.ReplaceSignatories)
+			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/mandate", d.Org.SetMandate)
+			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/banking", d.Org.UpsertBanking)
+			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/contacts", d.Org.ReplaceContacts)
 		})
 	})
 	return r

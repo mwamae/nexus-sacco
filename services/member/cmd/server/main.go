@@ -75,15 +75,28 @@ func main() {
 	rels := store.NewRelationStore(pool.Pool)
 	docs := store.NewDocumentStore(pool.Pool)
 	auditStore := store.NewAuditStore(pool.Pool)
+
+	orgs := store.NewOrgMemberStore(pool.Pool)
+	orgDocs := store.NewOrgDocumentStore(pool.Pool)
+	officials := store.NewOrgOfficialStore(pool.Pool)
+	signatories := store.NewOrgSignatoryStore(pool.Pool)
+	banking := store.NewOrgBankingStore(pool.Pool)
+	contacts := store.NewOrgContactStore(pool.Pool)
+
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
 	memH := &handler.MemberHandler{
 		DB: pool, Members: members, Relations: rels, Documents: docs, Audit: auditStore,
 		Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
 	}
+	orgH := &handler.OrgHandler{
+		DB: pool, Orgs: orgs, Documents: orgDocs, Officials: officials,
+		Signatories: signatories, Banking: banking, Contacts: contacts,
+		Audit: auditStore, Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
+	}
 
 	router := handler.Routes(handler.Deps{
-		Member: memH, TenantStore: tenants, Issuer: issuer,
+		Member: memH, Org: orgH, TenantStore: tenants, Issuer: issuer,
 		AppDomain: cfg.AppDomain, Logger: logger,
 	})
 

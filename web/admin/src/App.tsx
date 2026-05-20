@@ -13,6 +13,9 @@ import MemberProfile from './pages/MemberProfile';
 import TenantOnboarding from './pages/TenantOnboarding';
 import TenantProfile from './pages/TenantProfile';
 import TenantSettings from './pages/TenantSettings';
+import Organizations from './pages/Organizations';
+import OrganizationOnboarding from './pages/OrganizationOnboarding';
+import OrganizationProfile from './pages/OrganizationProfile';
 
 function Gate() {
   const { status } = useAuth();
@@ -40,6 +43,9 @@ function Gate() {
   else if (path === '/tenants/new') page = <TenantOnboarding />;
   else if (path.startsWith('/tenants/')) page = <TenantProfile />;
   else if (path === '/settings') page = <TenantSettings />;
+  else if (path === '/orgs/new') page = <OrganizationOnboarding />;
+  else if (path === '/orgs') page = <Organizations />;
+  else if (path.startsWith('/orgs/')) page = <OrganizationProfile />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;

@@ -27,6 +27,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        '/api/v1/orgs': {
+          target: memberTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api': {
           target: identityTarget,
           changeOrigin: false,         // preserve Host so backend sees tenant subdomain

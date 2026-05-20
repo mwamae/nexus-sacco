@@ -39,6 +39,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       section: 'Servicing',
       items: [
         { href: '/members', label: 'Members', icon: 'user', show: hasPermission('members:view') && !onPlatform },
+        { href: '/orgs', label: 'Organisations', icon: 'building', show: hasPermission('members:view') && !onPlatform },
       ],
     },
     {
@@ -219,6 +220,9 @@ function breadcrumbs(path: string, tenantLabel: string): string[] {
   else if (path === '/members/new') trail.push('Members', 'New');
   else if (path === '/members') trail.push('Members');
   else if (path.startsWith('/members/')) trail.push('Members', 'Profile');
+  else if (path === '/orgs/new') trail.push('Organisations', 'Onboarding');
+  else if (path === '/orgs') trail.push('Organisations');
+  else if (path.startsWith('/orgs/')) trail.push('Organisations', 'Profile');
   else if (path === '/tenants/new') trail.push('Platform', 'New tenant');
   else if (path.startsWith('/tenants/')) trail.push('Platform', 'Tenant profile');
   else if (path === '/settings') trail.push('Administration', 'Settings');
