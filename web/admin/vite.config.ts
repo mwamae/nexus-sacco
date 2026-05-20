@@ -10,8 +10,11 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const appDomain = env.VITE_APP_DOMAIN || 'nexussacco.local';
-  const apiTarget = env.VITE_API_TARGET || 'http://localhost:8081';
+  const identityTarget = env.VITE_API_TARGET || 'http://localhost:8081';
+  const memberTarget = env.VITE_MEMBER_TARGET || 'http://localhost:8082';
 
+  // More specific keys must come before the catch-all so vite-proxy
+  // routes /api/v1/members* to the member service, not identity.
   return {
     plugins: [react()],
     server: {
@@ -19,8 +22,13 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       allowedHosts: [appDomain, `.${appDomain}`],
       proxy: {
+        '/api/v1/members': {
+          target: memberTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api': {
-          target: apiTarget,
+          target: identityTarget,
           changeOrigin: false,         // preserve Host so backend sees tenant subdomain
           rewrite: (path) => path.replace(/^\/api/, ''),
         },

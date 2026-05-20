@@ -1,15 +1,27 @@
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import AppShell from './components/AppShell';
+import { Tweaks } from './components/Tweaks';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import ResetPassword from './pages/ResetPassword';
+import AcceptInvite from './pages/AcceptInvite';
+import Roles from './pages/Roles';
+import Users from './pages/Users';
+import Members from './pages/Members';
+import MemberOnboarding from './pages/MemberOnboarding';
+import MemberProfile from './pages/MemberProfile';
+import TenantOnboarding from './pages/TenantOnboarding';
+import TenantProfile from './pages/TenantProfile';
+import TenantSettings from './pages/TenantSettings';
 
 function Gate() {
   const { status } = useAuth();
-  // Password reset is anonymous and lives outside the normal auth gate.
-  if (window.location.pathname === '/reset') {
-    return <ResetPassword />;
-  }
+  const path = window.location.pathname;
+
+  // Anonymous pages — live outside the auth gate.
+  if (path === '/reset') return <ResetPassword />;
+  if (path === '/invite/accept') return <AcceptInvite />;
+
   if (status === 'loading') {
     return (
       <div className="auth-shell">
@@ -18,17 +30,26 @@ function Gate() {
     );
   }
   if (status === 'anonymous') return <Login />;
-  return (
-    <AppShell>
-      <Dashboard />
-    </AppShell>
-  );
+
+  let page;
+  if (path === '/users') page = <Users />;
+  else if (path === '/roles') page = <Roles />;
+  else if (path === '/members/new') page = <MemberOnboarding />;
+  else if (path === '/members') page = <Members />;
+  else if (path.startsWith('/members/')) page = <MemberProfile />;
+  else if (path === '/tenants/new') page = <TenantOnboarding />;
+  else if (path.startsWith('/tenants/')) page = <TenantProfile />;
+  else if (path === '/settings') page = <TenantSettings />;
+  else page = <Dashboard />;
+
+  return <AppShell>{page}</AppShell>;
 }
 
 export default function App() {
   return (
     <AuthProvider>
       <Gate />
+      <Tweaks />
     </AuthProvider>
   );
 }

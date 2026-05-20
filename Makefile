@@ -4,6 +4,7 @@
 SHELL := /bin/bash
 COMPOSE := docker compose
 IDENTITY_DIR := services/identity
+MEMBER_DIR := services/member
 
 ifneq (,$(wildcard ./.env))
   include .env
@@ -38,8 +39,17 @@ psql: ## Open psql in the dev DB
 	$(COMPOSE) exec postgres psql -U $(POSTGRES_USER) $(POSTGRES_DB)
 
 .PHONY: migrate
-migrate: ## Run pending migrations (uses identity binary)
+migrate: ## Run pending migrations (identity + member)
 	cd $(IDENTITY_DIR) && go run ./cmd/server -migrate
+	cd $(MEMBER_DIR)   && go run ./cmd/server -migrate
+
+.PHONY: migrate-identity
+migrate-identity: ## Run only identity migrations
+	cd $(IDENTITY_DIR) && go run ./cmd/server -migrate
+
+.PHONY: migrate-member
+migrate-member: ## Run only member migrations
+	cd $(MEMBER_DIR) && go run ./cmd/server -migrate
 
 .PHONY: seed
 seed: ## Create platform super-admin from .env
@@ -47,21 +57,28 @@ seed: ## Create platform super-admin from .env
 
 # ───────── Go ─────────
 .PHONY: build
-build: ## Build identity binary into bin/
+build: ## Build identity + member binaries into bin/
 	mkdir -p bin
 	cd $(IDENTITY_DIR) && go build -o ../../bin/identity ./cmd/server
+	cd $(MEMBER_DIR)   && go build -o ../../bin/member   ./cmd/server
 
 .PHONY: run
 run: ## Run identity locally (not in docker)
 	cd $(IDENTITY_DIR) && go run ./cmd/server
 
+.PHONY: run-member
+run-member: ## Run member service locally (not in docker)
+	cd $(MEMBER_DIR) && go run ./cmd/server
+
 .PHONY: test
 test: ## Run all Go tests
 	cd $(IDENTITY_DIR) && go test ./...
+	cd $(MEMBER_DIR)   && go test ./...
 
 .PHONY: tidy
 tidy: ## go mod tidy across services
 	cd $(IDENTITY_DIR) && go mod tidy
+	cd $(MEMBER_DIR)   && go mod tidy
 
 # ───────── Web ─────────
 .PHONY: web-dev

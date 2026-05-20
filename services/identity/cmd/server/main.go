@@ -30,6 +30,7 @@ import (
 	"github.com/nexussacco/identity/internal/domain"
 	"github.com/nexussacco/identity/internal/email"
 	"github.com/nexussacco/identity/internal/handler"
+	"github.com/nexussacco/identity/internal/storage"
 	"github.com/nexussacco/identity/internal/store"
 )
 
@@ -95,6 +96,15 @@ func main() {
 	auditStore := store.NewAuditStore(pool.Pool)
 	mfaStore := store.NewMFAStore(pool.Pool)
 	resetStore := store.NewPasswordResetStore(pool.Pool)
+	permissionStore := store.NewPermissionStore(pool.Pool)
+	inviteStore := store.NewInviteStore(pool.Pool)
+	settingsStore := store.NewSettingsStore(pool.Pool)
+
+	stor, err := storage.NewLocalDisk(cfg.StorageDir)
+	if err != nil {
+		logger.Error("storage init", "err", err)
+		os.Exit(1)
+	}
 
 	emailSender := email.New(email.Config{
 		Host:     cfg.SMTPHost,
@@ -129,6 +139,7 @@ func main() {
 		Sessions:         sessionStore,
 		MFA:              mfaStore,
 		PasswordResets:   resetStore,
+		Invites:          inviteStore,
 		Audit:            auditStore,
 		Issuer:           issuer,
 		RefreshTTL:       cfg.JWTRefreshTTL,
@@ -143,12 +154,24 @@ func main() {
 		Audit: auditStore, Logger: logger,
 	}
 	userH := &handler.UserHandler{
-		DB: pool, Users: userStore, Roles: roleStore,
-		Audit: auditStore, Logger: logger,
+		DB: pool, Users: userStore, Roles: roleStore, Invites: inviteStore,
+		Tenants: tenantStore, Audit: auditStore, Email: emailSender,
+		WebBaseURL: cfg.WebBaseURL, InviteTTL: cfg.InviteTTL,
+		Logger: logger, PlatformTenant: platformTenant,
 	}
+	rbacH := &handler.RBACHandler{
+		DB: pool, Roles: roleStore, Permissions: permissionStore,
+		Audit: auditStore, Logger: logger, PlatformTenant: platformTenant,
+	}
+	settingsH := &handler.SettingsHandler{
+		DB: pool, Settings: settingsStore, Audit: auditStore,
+		Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
+	}
+	auditH := &handler.AuditHandler{Audit: auditStore, Logger: logger}
 
 	router := handler.Routes(handler.Deps{
-		Auth: authH, Tenant: tenantH, User: userH,
+		Auth: authH, Tenant: tenantH, User: userH, RBAC: rbacH, Settings: settingsH,
+		AuditH: auditH,
 		TenantStore: tenantStore, Issuer: issuer,
 		AppDomain: cfg.AppDomain, Logger: logger,
 	})

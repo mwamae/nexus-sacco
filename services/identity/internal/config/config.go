@@ -35,6 +35,14 @@ type Config struct {
 	// PasswordResetTTL is how long a password-reset link is valid.
 	PasswordResetTTL time.Duration
 
+	// InviteTTL is how long a staff invite link is valid.
+	InviteTTL time.Duration
+
+	// StorageDir is the LocalDisk root for tenant-side uploads (logos, etc).
+	StorageDir string
+	// MaxUploadBytes caps logo + other tenant uploads. Default 2 MiB.
+	MaxUploadBytes int64
+
 	// Bootstrap — used only by the -seed CLI flag.
 	PlatformAdminEmail    string
 	PlatformAdminPassword string
@@ -99,6 +107,21 @@ func Load() (*Config, error) {
 	}
 	if cfg.PasswordResetTTL, err = parseDuration("PASSWORD_RESET_TTL", "30m"); err != nil {
 		return nil, err
+	}
+	if cfg.InviteTTL, err = parseDuration("INVITE_TTL", "168h"); err != nil {
+		return nil, err
+	}
+
+	cfg.StorageDir = getEnv("IDENTITY_STORAGE_DIR", "./data/identity-storage")
+	if v := os.Getenv("IDENTITY_MAX_UPLOAD_BYTES"); v != "" {
+		n, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil {
+			return nil, fmt.Errorf("IDENTITY_MAX_UPLOAD_BYTES: %w", perr)
+		}
+		cfg.MaxUploadBytes = n
+	}
+	if cfg.MaxUploadBytes <= 0 {
+		cfg.MaxUploadBytes = 2 << 20
 	}
 
 	// Default WEB_BASE_URL for local dev. Override in any non-dev env.

@@ -42,6 +42,29 @@ services:
   # If not, start one with:  docker run -d --name mailhog -p 1025:1025 -p 8025:8025 mailhog/mailhog
   # The identity service inside compose reaches it via host.docker.internal.
 
+  member:
+    build:
+      context: ./services/member
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      MEMBER_HTTP_ADDR: :8082
+      MEMBER_ENV: ${MEMBER_ENV:-development}
+      MEMBER_LOG_LEVEL: ${MEMBER_LOG_LEVEL:-info}
+      MEMBER_STORAGE_DIR: /var/lib/member/storage
+      MEMBER_MAX_UPLOAD_BYTES: ${MEMBER_MAX_UPLOAD_BYTES:-5242880}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-do-not-use-in-production-eef9b4c6c0f04f4d8a8b1e7f2a3b4c5d}
+      JWT_ISSUER: ${JWT_ISSUER:-nexus-identity}
+      APP_DOMAIN: ${APP_DOMAIN:-nexussacco.local}
+    ports:
+      - "8082:8082"
+    volumes:
+      - member_storage:/var/lib/member/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   identity:
     build:
       context: ./services/identity
@@ -78,3 +101,4 @@ services:
 
 volumes:
   pgdata:
+  member_storage:

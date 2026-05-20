@@ -49,7 +49,12 @@ func ResolveTenant(tenants *store.TenantStore, appDomain string) func(http.Handl
 				httpx.WriteErr(w, r, err)
 				return
 			}
-			if t.Status != domain.TenantStatusActive {
+			// active / trial / pending_setup → reachable.
+			// suspended / expired / archived → all traffic blocked.
+			switch t.Status {
+			case domain.TenantStatusActive, domain.TenantStatusTrial, domain.TenantStatusPendingSetup:
+				// ok
+			default:
 				httpx.WriteErr(w, r, httpx.E(http.StatusForbidden, httpx.CodeForbidden, "tenant is "+string(t.Status)))
 				return
 			}

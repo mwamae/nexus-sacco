@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { Badge } from './Badge';
 import {
   confirmMFAEnable,
   disableMFA,
@@ -110,150 +111,122 @@ export default function SecurityCard() {
 
   return (
     <div className="card">
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 4 }}>
-        <h3 style={{ margin: 0 }}>Security</h3>
-        <span className="muted tiny">{user?.email}</span>
+      <div className="card-hd">
+        <h3>Security</h3>
+        <span className="card-sub">{user?.email}</span>
+        <div className="card-hd-actions">
+          {user?.mfa_enabled ? <Badge tone="pos">2FA on</Badge> : <Badge tone="warn">2FA off</Badge>}
+        </div>
       </div>
-      <p className="muted tiny" style={{ marginBottom: 12 }}>
-        Two-factor authentication adds a verification code to every sign-in.
-      </p>
+      <div className="card-body">
+        {error && <div className="alert alert-error">{error}</div>}
+        {notice && <div className="alert alert-info">{notice}</div>}
 
-      {error && <div className="alert alert-error">{error}</div>}
-      {notice && <div className="alert alert-info">{notice}</div>}
-
-      {step === 'idle' && (
-        <>
-          {/* Password */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
-            <div>
-              <div style={{ fontWeight: 500 }}>Password</div>
-              <div className="muted tiny">Last changed: see audit log</div>
+        {step === 'idle' && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+              <div>
+                <div style={{ fontWeight: 500 }}>Password</div>
+                <div className="muted tiny">Last changed: see audit log</div>
+              </div>
+              <button className="btn btn-sm" onClick={() => { setError(null); setStep('changing_password'); }} disabled={busy}>
+                Change
+              </button>
             </div>
-            <button className="btn" onClick={() => { setError(null); setStep('changing_password'); }} disabled={busy}>
-              Change
-            </button>
-          </div>
 
-          {/* 2FA */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 12 }}>
-            <div>
-              <div style={{ fontWeight: 500 }}>Email 2FA</div>
-              <div className="muted tiny">
-                {user?.mfa_enabled
-                  ? `Enabled — codes sent to ${user.email}`
-                  : 'Disabled — sign-in requires only your password'}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 12 }}>
+              <div>
+                <div style={{ fontWeight: 500 }}>Email 2FA</div>
+                <div className="muted tiny">
+                  {user?.mfa_enabled
+                    ? `Enabled — codes sent to ${user.email}`
+                    : 'Disabled — sign-in requires only your password'}
+                </div>
+              </div>
+              {user?.mfa_enabled ? (
+                <button className="btn btn-sm" onClick={() => setStep('disabling')} disabled={busy}>Disable</button>
+              ) : (
+                <button className="btn btn-sm btn-accent" onClick={startEnable} disabled={busy}>
+                  {busy ? 'Sending code…' : 'Enable email 2FA'}
+                </button>
+              )}
+            </div>
+          </>
+        )}
+
+        {step === 'changing_password' && (
+          <form onSubmit={submitChangePassword}>
+            <p className="tiny muted" style={{ marginBottom: 10 }}>
+              Choose a new password (≥ 12 chars). All other sessions will be signed out.
+            </p>
+            <div className="grid-3">
+              <div className="field">
+                <label className="field-label">Current password</label>
+                <input className="input" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+              </div>
+              <div className="field">
+                <label className="field-label">New password</label>
+                <input className="input" type="password" autoComplete="new-password" required minLength={12} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+              </div>
+              <div className="field">
+                <label className="field-label">Confirm</label>
+                <input className="input" type="password" autoComplete="new-password" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
               </div>
             </div>
-            {user?.mfa_enabled ? (
-              <button className="btn" onClick={() => setStep('disabling')} disabled={busy}>Disable</button>
-            ) : (
-              <button className="btn btn-primary" onClick={startEnable} disabled={busy}>
-                {busy ? 'Sending code…' : 'Enable email 2FA'}
+            <div className="row" style={{ marginTop: 12, gap: 8 }}>
+              <button type="submit" className="btn btn-accent btn-sm" disabled={busy}>
+                {busy ? 'Updating…' : 'Update password'}
               </button>
-            )}
-          </div>
-        </>
-      )}
+              <button type="button" className="btn btn-sm btn-ghost" onClick={reset} disabled={busy}>Cancel</button>
+            </div>
+          </form>
+        )}
 
-      {step === 'changing_password' && (
-        <form onSubmit={submitChangePassword}>
-          <p className="tiny" style={{ marginBottom: 10 }}>
-            Choose a new password (≥ 12 chars). All other sessions will be signed out.
-          </p>
-          <div className="field">
-            <label className="field-label">Current password</label>
-            <input
-              className="input"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label className="field-label">New password</label>
-            <input
-              className="input"
-              type="password"
-              autoComplete="new-password"
-              required
-              minLength={12}
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label className="field-label">Confirm new password</label>
-            <input
-              className="input"
-              type="password"
-              autoComplete="new-password"
-              required
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="submit" className="btn btn-primary" disabled={busy}>
-              {busy ? 'Updating…' : 'Update password'}
-            </button>
-            <button type="button" className="btn" onClick={reset} disabled={busy}>Cancel</button>
-          </div>
-        </form>
-      )}
+        {step === 'enabling' && pending && (
+          <form onSubmit={submitEnable}>
+            <p className="tiny muted" style={{ marginBottom: 10 }}>
+              Enter the 6-digit code we sent to <strong>{pending.delivery_hint}</strong>.
+            </p>
+            <div className="field" style={{ maxWidth: 220 }}>
+              <label className="field-label">Verification code</label>
+              <input
+                className="input mono"
+                inputMode="numeric"
+                pattern="\d{6}"
+                maxLength={6}
+                required
+                autoFocus
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="123456"
+                style={{ letterSpacing: '0.4em', textAlign: 'center', fontSize: 16 }}
+              />
+            </div>
+            <div className="row" style={{ marginTop: 12, gap: 8 }}>
+              <button type="submit" className="btn btn-accent btn-sm" disabled={busy || code.length !== 6}>
+                {busy ? 'Confirming…' : 'Confirm'}
+              </button>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={reset} disabled={busy}>Cancel</button>
+            </div>
+          </form>
+        )}
 
-      {step === 'enabling' && pending && (
-        <form onSubmit={submitEnable}>
-          <p className="tiny" style={{ marginBottom: 10 }}>
-            Enter the 6-digit code we sent to <strong>{pending.delivery_hint}</strong>.
-          </p>
-          <div className="field">
-            <label className="field-label">Verification code</label>
-            <input
-              className="input mono"
-              inputMode="numeric"
-              pattern="\d{6}"
-              maxLength={6}
-              required
-              autoFocus
-              value={code}
-              onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-              placeholder="123456"
-              style={{ letterSpacing: '0.4em', textAlign: 'center', fontSize: 18 }}
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="submit" className="btn btn-primary" disabled={busy || code.length !== 6}>
-              {busy ? 'Confirming…' : 'Confirm'}
-            </button>
-            <button type="button" className="btn" onClick={reset} disabled={busy}>Cancel</button>
-          </div>
-        </form>
-      )}
-
-      {step === 'disabling' && (
-        <form onSubmit={submitDisable}>
-          <p className="tiny" style={{ marginBottom: 10 }}>Re-enter your password to disable 2FA.</p>
-          <div className="field">
-            <label className="field-label">Password</label>
-            <input
-              className="input"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="submit" className="btn" style={{ borderColor: 'var(--neg)', color: 'var(--neg)' }} disabled={busy}>
-              {busy ? 'Disabling…' : 'Disable 2FA'}
-            </button>
-            <button type="button" className="btn" onClick={reset} disabled={busy}>Cancel</button>
-          </div>
-        </form>
-      )}
+        {step === 'disabling' && (
+          <form onSubmit={submitDisable}>
+            <p className="tiny muted" style={{ marginBottom: 10 }}>Re-enter your password to disable 2FA.</p>
+            <div className="field" style={{ maxWidth: 320 }}>
+              <label className="field-label">Password</label>
+              <input className="input" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+            </div>
+            <div className="row" style={{ marginTop: 12, gap: 8 }}>
+              <button type="submit" className="btn btn-sm btn-danger" disabled={busy}>
+                {busy ? 'Disabling…' : 'Disable 2FA'}
+              </button>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={reset} disabled={busy}>Cancel</button>
+            </div>
+          </form>
+        )}
+      </div>
     </div>
   );
 }

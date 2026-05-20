@@ -17,6 +17,9 @@ type Deps struct {
 	Auth        *AuthHandler
 	Tenant      *TenantHandler
 	User        *UserHandler
+	RBAC        *RBACHandler
+	Settings    *SettingsHandler
+	AuditH      *AuditHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -50,6 +53,7 @@ func Routes(d Deps) http.Handler {
 		r.Post("/auth/mfa/verify", d.Auth.MFAVerify)
 		r.Post("/auth/password/forgot", d.Auth.PasswordForgot)
 		r.Post("/auth/password/reset", d.Auth.PasswordReset)
+		r.Post("/auth/invite/accept", d.Auth.InviteAccept)
 
 		// Authenticated routes
 		r.Group(func(r chi.Router) {
@@ -61,20 +65,53 @@ func Routes(d Deps) http.Handler {
 			r.Post("/auth/mfa/disable", d.Auth.MFADisable)
 			r.Post("/auth/password/change", d.Auth.PasswordChange)
 
-			// Tenant-scoped routes
+			// Tenant-scoped (subdomain) routes
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireTenant)
 				r.Get("/tenant", d.Tenant.Current)
-				r.With(middleware.RequirePermission("users:view")).Get("/users", d.User.List)
-				r.With(middleware.RequirePermission("users:invite")).Post("/users", d.User.Invite)
-				r.With(middleware.RequirePermission("roles:view")).Get("/roles", d.User.ListRoles)
+
+				// Tenant settings
+				r.With(middleware.RequirePermission("tenant:settings:view")).Get("/tenant/settings", d.Settings.Get)
+				r.With(middleware.RequirePermission("tenant:settings:edit")).Patch("/tenant/branding", d.Settings.UpdateBranding)
+				r.With(middleware.RequirePermission("tenant:settings:edit")).Post("/tenant/branding/logo", d.Settings.UploadLogo)
+				r.With(middleware.RequirePermission("tenant:settings:view")).Get("/tenant/branding/logo", d.Settings.DownloadLogo)
+				r.With(middleware.RequirePermission("tenant:settings:edit")).Delete("/tenant/branding/logo", d.Settings.ClearLogo)
+				r.With(middleware.RequirePermission("tenant:settings:edit")).Patch("/tenant/region", d.Settings.UpdateRegion)
+				r.With(middleware.RequirePermission("tenant:settings:edit")).Patch("/tenant/operations", d.Settings.UpdateOperations)
 			})
+
+			// Staff management — works on tenant subdomain OR platform host.
+			// The handler resolves the effective tenant (platform pseudo-tenant
+			// when on platform host) so platform super-admins can manage
+			// their own staff the same way tenant owners manage theirs.
+			r.With(middleware.RequirePermission("roles:view")).Get("/permissions", d.RBAC.ListPermissions)
+			r.With(middleware.RequirePermission("audit:view")).Get("/audit/by-target/{kind}/{id}", d.AuditH.ByTarget)
+			r.With(middleware.RequirePermission("roles:view")).Get("/roles", d.RBAC.ListRoles)
+			r.With(middleware.RequirePermission("roles:view")).Get("/roles/{id}", d.RBAC.GetRole)
+			r.With(middleware.RequirePermission("roles:edit")).Post("/roles", d.RBAC.CreateRole)
+			r.With(middleware.RequirePermission("roles:edit")).Patch("/roles/{id}", d.RBAC.UpdateRole)
+			r.With(middleware.RequirePermission("roles:edit")).Delete("/roles/{id}", d.RBAC.DeleteRole)
+
+			r.With(middleware.RequirePermission("users:view")).Get("/users", d.User.List)
+			r.With(middleware.RequirePermission("users:view")).Get("/users/{id}", d.User.Get)
+			r.With(middleware.RequirePermission("users:invite")).Post("/users/invite", d.User.Invite)
+			r.With(middleware.RequirePermission("users:edit")).Patch("/users/{id}", d.User.Update)
+			r.With(middleware.RequirePermission("users:suspend")).Post("/users/{id}/status", d.User.SetStatus)
+			r.With(middleware.RequirePermission("users:invite")).Post("/users/{id}/invite/resend", d.User.ResendInvite)
+			r.With(middleware.RequirePermission("roles:edit")).Post("/users/{id}/roles", d.User.AssignRole)
+			r.With(middleware.RequirePermission("roles:edit")).Delete("/users/{id}/roles/{role_id}", d.User.UnassignRole)
 
 			// Platform-scoped routes
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequirePlatform)
 				r.Get("/platform/tenants", d.Tenant.List)
 				r.Post("/platform/tenants", d.Tenant.Create)
+				r.Get("/platform/tenants/{id}", d.Tenant.Get)
+				r.Post("/platform/tenants/{id}/status", d.Tenant.SetStatus)
+				r.Post("/platform/tenants/{id}/restrictions", d.Tenant.SetRestrictions)
+				r.Post("/platform/tenants/{id}/archive", d.Tenant.Archive)
+				r.Get("/platform/tenants/{id}/export", d.Tenant.Export)
+				r.Get("/platform/tenants/{id}/backup", d.Tenant.Backup)
 			})
 		})
 	})

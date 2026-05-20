@@ -36,6 +36,7 @@ type AuthHandler struct {
 	Sessions       *store.SessionStore
 	MFA            *store.MFAStore
 	PasswordResets *store.PasswordResetStore
+	Invites        *store.InviteStore
 	Audit          *store.AuditStore
 	Issuer         *auth.TokenIssuer
 	RefreshTTL     time.Duration
@@ -95,6 +96,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	tenant, isPlatform := h.resolveLoginContext(r)
 	if tenant == nil {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("login must be performed on a tenant subdomain or platform host"))
+		return
+	}
+	if tenant.Restrictions.UsersLocked {
+		httpx.WriteErr(w, r, httpx.ErrForbidden("user logins are locked for this tenant"))
 		return
 	}
 
@@ -532,6 +537,10 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("refresh must be performed on a tenant subdomain or platform host"))
 		return
 	}
+	if tenant.Restrictions.UsersLocked {
+		httpx.WriteErr(w, r, httpx.ErrForbidden("user logins are locked for this tenant"))
+		return
+	}
 
 	var req refreshRequest
 	if err := httpx.DecodeJSON(r, &req); err != nil {
@@ -919,6 +928,88 @@ func (h *AuthHandler) PasswordChange(w http.ResponseWriter, r *http.Request) {
 	_ = h.Audit.Write(r.Context(), store.AuditEntry{
 		TenantID: &tenant.ID, ActorID: &userID,
 		Action: "user.password.changed", IP: clientIP(r), UserAgent: r.UserAgent(),
+	})
+	httpx.OK(w, map[string]any{"ok": true})
+}
+
+// ─────────── POST /v1/auth/invite/accept ───────────
+//
+// Public. Consumes a single-use invite token, sets the user's password,
+// and flips them from pending → active. Replays are rejected.
+
+type inviteAcceptRequest struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"new_password"`
+}
+
+func (h *AuthHandler) InviteAccept(w http.ResponseWriter, r *http.Request) {
+	// The invite link lives at {slug}.nexussacco.local/invite/accept?token=…
+	// so the subdomain in the request identifies the tenant. Platform admin
+	// invites go to platform.nexussacco.local which resolves to the
+	// platform pseudo-tenant.
+	tenant, _ := h.resolveLoginContext(r)
+	if tenant == nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("must be performed on a tenant subdomain or platform host"))
+		return
+	}
+
+	var req inviteAcceptRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if req.Token == "" || req.NewPassword == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("token and new_password are required"))
+		return
+	}
+	if len(req.NewPassword) < 12 {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("new_password must be at least 12 characters"))
+		return
+	}
+
+	pwHash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+
+	var userID uuid.UUID
+	err = h.DB.WithTenantTx(r.Context(), tenant.ID, func(tx pgx.Tx) error {
+		inv, err := h.Invites.ByTokenHashTx(r.Context(), tx, store.HashInviteToken(req.Token))
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return httpx.ErrUnauthorized("invalid or expired invite")
+			}
+			return err
+		}
+		if inv.AcceptedAt != nil {
+			return httpx.ErrUnauthorized("invite already accepted")
+		}
+		if inv.ExpiresAt.Before(time.Now()) {
+			return httpx.ErrUnauthorized("invite expired")
+		}
+		if inv.TenantID != tenant.ID {
+			return httpx.ErrUnauthorized("invite tenant mismatch")
+		}
+		if err := h.Users.ActivateWithPasswordTx(r.Context(), tx, inv.UserID, pwHash); err != nil {
+			return err
+		}
+		if err := h.Invites.MarkAcceptedTx(r.Context(), tx, inv.ID); err != nil {
+			return err
+		}
+		if err := h.Invites.InvalidateOutstandingTx(r.Context(), tx, inv.UserID); err != nil {
+			return err
+		}
+		userID = inv.UserID
+		return nil
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	_ = h.Audit.Write(r.Context(), store.AuditEntry{
+		TenantID: &tenant.ID, ActorID: &userID,
+		Action: "user.invite_accepted", IP: clientIP(r), UserAgent: r.UserAgent(),
 	})
 	httpx.OK(w, map[string]any{"ok": true})
 }

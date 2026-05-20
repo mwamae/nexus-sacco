@@ -27,17 +27,20 @@ func Authenticated(issuer *auth.TokenIssuer) func(http.Handler) http.Handler {
 				httpx.WriteErr(w, r, httpx.ErrUnauthorized("invalid token: "+err.Error()))
 				return
 			}
-			// Tenant binding: if the request resolved a tenant, the token
-			// must be for that tenant. If it didn't (platform host), the
-			// token must be a platform-admin token.
-			if t := TenantFrom(r); t != nil {
-				if claims.TenantID != t.ID.String() {
-					httpx.WriteErr(w, r, httpx.ErrForbidden("token does not belong to this tenant"))
+			// Tenant binding:
+			//   - Platform-admin tokens may operate on any tenant (or none).
+			//   - Regular tokens must match the subdomain-resolved tenant.
+			//   - On the platform host (no tenant) only platform-admin tokens pass.
+			if !claims.IsPlatformAdmin {
+				if t := TenantFrom(r); t != nil {
+					if claims.TenantID != t.ID.String() {
+						httpx.WriteErr(w, r, httpx.ErrForbidden("token does not belong to this tenant"))
+						return
+					}
+				} else {
+					httpx.WriteErr(w, r, httpx.ErrForbidden("platform admin required"))
 					return
 				}
-			} else if !claims.IsPlatformAdmin {
-				httpx.WriteErr(w, r, httpx.ErrForbidden("platform admin required"))
-				return
 			}
 			ctx := WithClaims(r.Context(), claims)
 			next.ServeHTTP(w, r.WithContext(ctx))

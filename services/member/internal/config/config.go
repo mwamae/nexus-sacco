@@ -1,0 +1,76 @@
+// Member service configuration. Sourced from env vars (same .env as identity).
+
+package config
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"time"
+)
+
+type Config struct {
+	Env      string
+	HTTPAddr string
+	LogLevel string
+
+	DatabaseURL string
+	AppDomain   string
+
+	// JWT verification — must match the secret + issuer used by identity.
+	JWTSecret []byte
+	JWTIssuer string
+
+	// Filesystem root for uploaded documents.
+	StorageDir string
+
+	// Max upload size in bytes. Default 5 MiB.
+	MaxUploadBytes int64
+
+	// Read header / connection timeouts (apply to the HTTP server).
+	ReadHeaderTimeout time.Duration
+}
+
+func Load() (*Config, error) {
+	cfg := &Config{
+		Env:               getEnv("MEMBER_ENV", "development"),
+		HTTPAddr:          getEnv("MEMBER_HTTP_ADDR", ":8082"),
+		LogLevel:          getEnv("MEMBER_LOG_LEVEL", "info"),
+		DatabaseURL:       must("DATABASE_URL"),
+		AppDomain:         getEnv("APP_DOMAIN", "nexussacco.local"),
+		JWTSecret:         []byte(must("JWT_SECRET")),
+		JWTIssuer:         getEnv("JWT_ISSUER", "nexus-identity"),
+		StorageDir:        getEnv("MEMBER_STORAGE_DIR", "./data/member-storage"),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if len(cfg.JWTSecret) < 32 {
+		return nil, errors.New("JWT_SECRET must be at least 32 bytes")
+	}
+	if v := os.Getenv("MEMBER_MAX_UPLOAD_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("MEMBER_MAX_UPLOAD_BYTES: %w", err)
+		}
+		cfg.MaxUploadBytes = n
+	}
+	if cfg.MaxUploadBytes <= 0 {
+		cfg.MaxUploadBytes = 5 << 20 // 5 MiB
+	}
+	return cfg, nil
+}
+
+func must(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		panic(fmt.Sprintf("required env var %s is not set", key))
+	}
+	return v
+}
+
+func getEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}

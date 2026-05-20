@@ -1,24 +1,229 @@
-import type { ReactNode } from 'react';
+// Two-pane shell — sidebar nav on the left, topbar above the main area.
+// On a tenant subdomain we fetch the tenant's branding once and apply
+// the logo + primary color live so admins see their changes immediately.
+
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { isPlatformHost } from '../auth/tenant';
+import { fetchTenantLogo, getTenantSettings } from '../api/client';
+import { Avatar } from './Avatar';
+import { Icon, type IconName } from './Icon';
+
+type NavItem = {
+  href: string;
+  label: string;
+  icon: IconName;
+  show: boolean;
+};
+
+type NavGroup = {
+  section: string;
+  items: NavItem[];
+};
 
 export default function AppShell({ children }: { children: ReactNode }) {
-  const { user, tenant, logout } = useAuth();
+  const { user, tenant, logout, hasPermission, roles } = useAuth();
+  const path = window.location.pathname;
+  const onPlatform = isPlatformHost();
+
+  const branding = useTenantBranding(!onPlatform && hasPermission('tenant:settings:view'));
+
+  const groups: NavGroup[] = [
+    {
+      section: 'Overview',
+      items: [
+        { href: '/', label: 'Home', icon: 'home', show: true },
+      ],
+    },
+    {
+      section: 'Servicing',
+      items: [
+        { href: '/members', label: 'Members', icon: 'user', show: hasPermission('members:view') && !onPlatform },
+      ],
+    },
+    {
+      section: 'Administration',
+      items: [
+        { href: '/users', label: 'Staff', icon: 'users', show: hasPermission('users:view') },
+        { href: '/roles', label: 'Roles & permissions', icon: 'key', show: hasPermission('roles:view') },
+        { href: '/settings', label: 'Settings', icon: 'settings', show: !onPlatform && hasPermission('tenant:settings:view') },
+      ],
+    },
+  ];
+
+  if (onPlatform && user?.is_platform_admin) {
+    groups.push({
+      section: 'Platform',
+      items: [
+        { href: '/', label: 'Tenants', icon: 'building', show: true },
+      ],
+    });
+  }
+
+  const crumbs = breadcrumbs(path, tenant?.name ?? (onPlatform ? 'Platform' : 'Tenant'));
+  const primaryRole = roles.find((r) => r !== 'platform_admin') ?? roles[0] ?? 'staff';
+
   return (
-    <div className="app-shell">
+    <div className="app" style={branding.fontFamily ? { fontFamily: branding.fontFamily } : undefined}>
+      <aside className="sidebar">
+        <div className="sb-brand">
+          {branding.logoURL ? (
+            <img
+              src={branding.logoURL}
+              alt={tenant?.name ?? 'Logo'}
+              style={{ width: 22, height: 22, objectFit: 'contain', borderRadius: 5 }}
+            />
+          ) : (
+            <div className="sb-brand-mark">N</div>
+          )}
+          <div className="sb-brand-name">{tenant?.name ?? 'nexusSacco'}</div>
+          <span className="sb-brand-tag">v1</span>
+        </div>
+
+        <div className="sb-tenant">
+          <div className="sb-tenant-mark">{(tenant?.slug ?? 'P').charAt(0).toUpperCase()}</div>
+          <div className="sb-tenant-info">
+            <div className="sb-tenant-name">{tenant?.name ?? 'Platform'}</div>
+            <div className="sb-tenant-sub">{tenant?.slug ?? 'platform'} · {tenant?.currency_code ?? '—'}</div>
+          </div>
+          <Icon name="chevron_dn" size={12} />
+        </div>
+
+        <nav className="sb-nav">
+          {groups.map((g) => {
+            const visible = g.items.filter((i) => i.show);
+            if (visible.length === 0) return null;
+            return (
+              <Fragment key={g.section}>
+                <div className="sb-section">{g.section}</div>
+                {visible.map((item) => {
+                  const active =
+                    item.href === '/' ? path === '/' : path === item.href || path.startsWith(item.href + '/');
+                  return (
+                    <a
+                      key={item.href}
+                      href={item.href}
+                      className="sb-item"
+                      data-active={active || undefined}
+                    >
+                      <span className="sb-item-ico"><Icon name={item.icon} size={14} /></span>
+                      <span>{item.label}</span>
+                    </a>
+                  );
+                })}
+              </Fragment>
+            );
+          })}
+        </nav>
+
+        <div className="sb-user">
+          <Avatar name={user?.full_name ?? user?.email ?? '?'} size="sm" />
+          <div className="sb-user-info">
+            <div className="sb-user-name">{user?.full_name}</div>
+            <div className="sb-user-role">{primaryRole}</div>
+          </div>
+          <button
+            className="tb-icon-btn"
+            title="Sign out"
+            onClick={() => void logout()}
+          >
+            <Icon name="logout" size={14} />
+          </button>
+        </div>
+      </aside>
+
       <header className="topbar">
-        <div className="brand">
-          <span className="mk">N</span>
-          <span>nexusSacco</span>
+        <div className="tb-crumbs">
+          {crumbs.map((c, i) => (
+            <Fragment key={i}>
+              {i > 0 && <Icon name="chevron_r" size={11} />}
+              <span className={i === crumbs.length - 1 ? 'tb-crumb-active' : ''}>{c}</span>
+            </Fragment>
+          ))}
         </div>
-        <span className="muted tiny">·</span>
-        <span className="tiny mono">{tenant?.slug ?? 'platform'}</span>
         <div className="spacer" />
-        <div className="who">
-          <strong>{user?.full_name}</strong> · {user?.email}
+        <div className="tb-status">
+          <span className="tb-status-dot" />
+          <span>{user?.email}</span>
         </div>
-        <button className="btn" onClick={() => void logout()}>Sign out</button>
       </header>
-      {children}
+
+      <main className="main">{children}</main>
     </div>
   );
+}
+
+type BrandingState = {
+  logoURL: string | null;
+  primaryColor: string | null;
+  fontFamily: string | null;
+};
+
+/** Loads tenant branding once and applies it. Side-effects:
+ *    * sets --accent + --accent-fg CSS vars on documentElement
+ *    * resolves the logo bytes into a blob URL for inline rendering
+ *  Returns the resolved values so the AppShell can render them too. */
+function useTenantBranding(enabled: boolean): BrandingState {
+  const [state, setState] = useState<BrandingState>({ logoURL: null, primaryColor: null, fontFamily: null });
+
+  useEffect(() => {
+    if (!enabled) return;
+    let revoked = false;
+    let objectUrl: string | null = null;
+
+    void (async () => {
+      try {
+        const settings = await getTenantSettings();
+        const b = settings.branding;
+
+        // Apply colors as CSS vars on the document root. Reverted on unmount
+        // so the Tweaks panel still wins when the user navigates away.
+        if (b.primary_color) {
+          document.documentElement.style.setProperty('--accent', b.primary_color);
+        }
+
+        let logoURL: string | null = null;
+        if (b.has_logo) {
+          const blob = await fetchTenantLogo();
+          if (blob && !revoked) {
+            objectUrl = URL.createObjectURL(blob);
+            logoURL = objectUrl;
+          }
+        }
+        if (revoked) return;
+        setState({
+          logoURL,
+          primaryColor: b.primary_color || null,
+          fontFamily: b.font_family || null,
+        });
+      } catch {
+        // Branding is best-effort; ignore failures so the shell still renders.
+      }
+    })();
+
+    return () => {
+      revoked = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      document.documentElement.style.removeProperty('--accent');
+    };
+    // We intentionally only react to `enabled` changing — tenant id is
+    // implicit via the request host and never changes within a session.
+  }, [enabled]);
+
+  return state;
+}
+
+function breadcrumbs(path: string, tenantLabel: string): string[] {
+  const trail: string[] = [tenantLabel];
+  if (path === '/' || path === '') trail.push('Home');
+  else if (path === '/members/new') trail.push('Members', 'New');
+  else if (path === '/members') trail.push('Members');
+  else if (path.startsWith('/members/')) trail.push('Members', 'Profile');
+  else if (path === '/tenants/new') trail.push('Platform', 'New tenant');
+  else if (path.startsWith('/tenants/')) trail.push('Platform', 'Tenant profile');
+  else if (path === '/settings') trail.push('Administration', 'Settings');
+  else if (path.startsWith('/users')) trail.push('Administration', 'Staff');
+  else if (path.startsWith('/roles')) trail.push('Administration', 'Roles & permissions');
+  else trail.push(path);
+  return trail;
 }

@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS member_documents;
+DROP TABLE IF EXISTS member_relations;
+DROP TABLE IF EXISTS member_number_seq;
+DROP TABLE IF EXISTS members;
+DROP TYPE  IF EXISTS document_kind;
+DROP TYPE  IF EXISTS relation_kind;
+DROP TYPE  IF EXISTS gender;
+DROP TYPE  IF EXISTS id_doc_kind;
+DROP TYPE  IF EXISTS member_status;

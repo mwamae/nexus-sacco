@@ -177,3 +177,12 @@ func IsUniqueViolation(err error) bool {
 	}
 	return false
 }
+
+// IsForeignKeyViolation reports whether err is a Postgres foreign key violation.
+func IsForeignKeyViolation(err error) bool {
+	var pgErr interface{ SQLState() string }
+	if errors.As(err, &pgErr) {
+		return pgErr.SQLState() == "23503"
+	}
+	return false
+}

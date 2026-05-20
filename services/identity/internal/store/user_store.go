@@ -25,13 +25,13 @@ func NewUserStore(pool *pgxpool.Pool) *UserStore {
 }
 
 type CreateUserInput struct {
-	TenantID         uuid.UUID
-	Email            string
-	Phone            string
-	FullName         string
-	PasswordHash     string
-	Status           domain.UserStatus
-	IsPlatformAdmin  bool
+	TenantID        uuid.UUID
+	Email           string
+	Phone           string
+	FullName        string
+	PasswordHash    string // may be "" for pending users created via invite
+	Status          domain.UserStatus
+	IsPlatformAdmin bool
 }
 
 // CreateTx inserts inside an existing transaction so callers can pair
@@ -40,7 +40,7 @@ func (s *UserStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateUserInput)
 	var u domain.User
 	err := tx.QueryRow(ctx, `
 		INSERT INTO users (tenant_id, email, phone, full_name, password_hash, status, is_platform_admin)
-		VALUES ($1, $2, NULLIF($3,''), $4, $5, $6, $7)
+		VALUES ($1, $2, NULLIF($3,''), $4, NULLIF($5,''), $6, $7)
 		RETURNING id, tenant_id, email, COALESCE(phone,''), full_name, status,
 		          is_platform_admin, email_verified_at, mfa_enabled, COALESCE(mfa_method,''),
 		          last_login_at, created_at, updated_at
@@ -52,6 +52,40 @@ func (s *UserStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateUserInput)
 		return nil, fmt.Errorf("insert user: %w", err)
 	}
 	return &u, nil
+}
+
+// UpdateProfileTx updates editable identity fields. Pass empty phone to clear.
+func (s *UserStore) UpdateProfileTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, fullName, phone string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE users SET full_name = $2, phone = NULLIF($3,'')
+		WHERE id = $1
+	`, id, fullName, phone)
+	return err
+}
+
+// SetStatusTx changes a user's lifecycle status. Suspending also revokes
+// all active sessions (callers do that via the session store).
+func (s *UserStore) SetStatusTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.UserStatus) error {
+	_, err := tx.Exec(ctx, `UPDATE users SET status = $2 WHERE id = $1`, id, status)
+	return err
+}
+
+// ActivateWithPasswordTx flips a pending user to active and sets their
+// password hash. Used when accepting an invite.
+func (s *UserStore) ActivateWithPasswordTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, hash string) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE users
+		SET password_hash = $2, status = 'active', email_verified_at = COALESCE(email_verified_at, now()),
+		    failed_login_count = 0, locked_until = NULL
+		WHERE id = $1 AND status = 'pending'
+	`, id, hash)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ByEmailTx looks up a user by email within the active tenant context.

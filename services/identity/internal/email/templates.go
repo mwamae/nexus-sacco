@@ -100,3 +100,53 @@ func PasswordResetMessage(to, displayName, resetURL string, ttlMinutes int) Mess
 		HTML:    html,
 	}
 }
+
+// InviteMessage builds the email sent to a newly invited staff user.
+// inviterName / tenantName personalise the body; either may be empty.
+func InviteMessage(to, displayName, tenantName, inviterName, acceptURL string, ttlHours int) Message {
+	greeting := "Hi"
+	if displayName != "" {
+		greeting = "Hi " + firstName(displayName)
+	}
+	invitedTo := "nexusSacco"
+	if tenantName != "" {
+		invitedTo = tenantName + " on nexusSacco"
+	}
+	invitedBy := ""
+	if inviterName != "" {
+		invitedBy = " " + inviterName + " invited you to join."
+	}
+
+	subject := "You've been invited to " + invitedTo
+
+	text := fmt.Sprintf(
+		"%s,\n\n%s%s Click the link below to set a password and activate your account:\n\n    %s\n\n"+
+			"This invite expires in %d hours. If you weren't expecting this, you can ignore the email.\n\n— nexusSacco\n",
+		greeting, "You've been invited to "+invitedTo+".", invitedBy, acceptURL, ttlHours,
+	)
+
+	html := fmt.Sprintf(`<!doctype html>
+<html><body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f6f4ef;padding:32px;margin:0;color:#29261b">
+  <div style="max-width:480px;margin:0 auto;background:#ffffff;border:1px solid #e5e0d4;border-radius:10px;padding:28px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:12px;color:#1F8A5B;letter-spacing:.06em;text-transform:uppercase">nexusSacco</div>
+    <h1 style="font-size:18px;margin:8px 0 14px">You're invited</h1>
+    <p style="font-size:14px;line-height:1.55;margin:0 0 18px">%s, you've been invited to <strong>%s</strong>.%s</p>
+    <p style="text-align:center;margin:22px 0">
+      <a href="%s" style="display:inline-block;background:#1F8A5B;color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:12px 22px;border-radius:8px">Set a password & sign in</a>
+    </p>
+    <p style="font-size:12px;line-height:1.55;margin:14px 0 4px;color:#6b6557">Or paste this URL into your browser:</p>
+    <p style="font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:11px;word-break:break-all;color:#1F8A5B;margin:0">%s</p>
+    <p style="font-size:12.5px;line-height:1.55;margin:18px 0 4px;color:#6b6557">This invite expires in %d hours.</p>
+    <p style="font-size:11px;color:#9a9587;margin-top:24px">Sent by nexusSacco · Do not reply</p>
+  </div>
+</body></html>`,
+		greeting, invitedTo, invitedBy, acceptURL, acceptURL, ttlHours,
+	)
+
+	return Message{
+		To:      []string{to},
+		Subject: subject,
+		Text:    text,
+		HTML:    html,
+	}
+}
