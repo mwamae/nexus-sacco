@@ -1,0 +1,1007 @@
+// Share-account HTTP handlers.
+//
+// Every mutating call goes through ShareStore inside a tenant-bound
+// pgx.Tx. Business rules (min/max holding, lien constraints, member
+// status eligibility) are enforced here before posting.
+
+package handler
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strconv"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
+
+	"github.com/nexussacco/savings/internal/db"
+	"github.com/nexussacco/savings/internal/domain"
+	"github.com/nexussacco/savings/internal/httpx"
+	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/store"
+)
+
+type ShareHandler struct {
+	DB      *db.Pool
+	Tenants *store.TenantStore
+	Members *store.MemberStore
+	Shares  *store.ShareStore
+	Logger  *slog.Logger
+}
+
+// ─────────── Helpers ───────────
+
+// memberEligible blocks share operations for statuses where a member
+// is not legally able to act on their equity (blacklisted, exited,
+// deceased, rejected). pending + active + dormant + suspended are
+// allowed — suspended members can still hold shares; dormant ones can
+// reactivate via share top-up.
+func memberEligible(status string) bool {
+	switch status {
+	case "pending", "active", "dormant", "suspended":
+		return true
+	}
+	return false
+}
+
+func parseUUIDParam(r *http.Request, key string) (uuid.UUID, error) {
+	raw := chi.URLParam(r, key)
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, httpx.ErrBadRequest("invalid " + key + ": " + err.Error())
+	}
+	return id, nil
+}
+
+// loadContext fetches the policy, member, and (optionally creates) account
+// inside a single transaction. The caller continues mutations on the same tx.
+func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, memberID uuid.UUID, ensure bool) (*store.SharePolicy, *store.MemberLite, *domain.ShareAccount, error) {
+	policy, err := h.Tenants.SharePolicyTx(ctx, tx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	member, err := h.Members.GetTx(ctx, tx, memberID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil, nil, httpx.ErrNotFound("member not found")
+		}
+		return nil, nil, nil, err
+	}
+	if !memberEligible(member.Status) {
+		return nil, nil, nil, httpx.ErrForbidden("member status '" + member.Status + "' does not permit share operations")
+	}
+	var account *domain.ShareAccount
+	if ensure {
+		account, err = h.Shares.EnsureAccountTx(ctx, tx, memberID, policy.ParValue)
+	} else {
+		account, err = h.Shares.GetAccountByMemberTx(ctx, tx, memberID)
+	}
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil, nil, httpx.ErrNotFound("share account not found")
+		}
+		return nil, nil, nil, err
+	}
+	return policy, member, account, nil
+}
+
+// ─────────── Policy ───────────
+
+type policyDTO struct {
+	ParValue              decimal.Decimal `json:"par_value"`
+	MinSharesRequired     int             `json:"min_shares_required"`
+	MaxSharesPctOfCapital decimal.Decimal `json:"max_shares_pct_of_capital"`
+	CertificatePrefix     string          `json:"certificate_prefix"`
+}
+
+func (h *ShareHandler) GetPolicy(w http.ResponseWriter, r *http.Request) {
+	tid, _ := middleware.TenantIDFrom(r)
+	var dto policyDTO
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		p, err := h.Tenants.SharePolicyTx(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		dto = policyDTO{
+			ParValue:              p.ParValue,
+			MinSharesRequired:     p.MinSharesRequired,
+			MaxSharesPctOfCapital: p.MaxSharesPctOfCapital,
+			CertificatePrefix:     p.CertificatePrefix,
+		}
+		return nil
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, dto)
+}
+
+func (h *ShareHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request) {
+	tid, _ := middleware.TenantIDFrom(r)
+	var in policyDTO
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if in.ParValue.LessThanOrEqual(decimal.Zero) {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("par_value must be positive"))
+		return
+	}
+	if in.MinSharesRequired < 0 {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("min_shares_required must be >= 0"))
+		return
+	}
+	if in.MaxSharesPctOfCapital.LessThan(decimal.Zero) || in.MaxSharesPctOfCapital.GreaterThan(decimal.NewFromInt(100)) {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("max_shares_pct_of_capital must be between 0 and 100"))
+		return
+	}
+	if in.CertificatePrefix == "" {
+		in.CertificatePrefix = "SC"
+	}
+
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		_, err := tx.Exec(r.Context(), `
+			UPDATE tenant_operations
+			   SET share_par_value = $1,
+			       min_shares_required = $2,
+			       max_shares_pct_of_capital = $3,
+			       share_certificate_prefix = $4
+		`, in.ParValue, in.MinSharesRequired, in.MaxSharesPctOfCapital, in.CertificatePrefix)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, in)
+}
+
+// ─────────── Account reads ───────────
+
+type accountDTO struct {
+	Account     domain.ShareAccount `json:"account"`
+	Member      store.MemberLite    `json:"member"`
+	Liens       []domain.ShareLien  `json:"active_liens"`
+	Certificate *domain.ShareCertificate `json:"current_certificate,omitempty"`
+	Policy      policyDTO           `json:"policy"`
+}
+
+func (h *ShareHandler) GetByMember(w http.ResponseWriter, r *http.Request) {
+	memberID, err := parseUUIDParam(r, "member_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+
+	var dto accountDTO
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		policy, member, acct, err := h.loadContext(r.Context(), tx, memberID, true)
+		if err != nil {
+			return err
+		}
+		liens, err := h.Shares.LiensForAccountTx(r.Context(), tx, acct.ID, true)
+		if err != nil {
+			return err
+		}
+		cert, err := h.Shares.CurrentCertificateTx(r.Context(), tx, acct.ID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		dto = accountDTO{
+			Account:     *acct,
+			Member:      *member,
+			Liens:       liens,
+			Certificate: cert,
+			Policy: policyDTO{
+				ParValue:              policy.ParValue,
+				MinSharesRequired:     policy.MinSharesRequired,
+				MaxSharesPctOfCapital: policy.MaxSharesPctOfCapital,
+				CertificatePrefix:     policy.CertificatePrefix,
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, dto)
+}
+
+func (h *ShareHandler) HistoryByMember(w http.ResponseWriter, r *http.Request) {
+	memberID, err := parseUUIDParam(r, "member_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	tid, _ := middleware.TenantIDFrom(r)
+
+	var out []domain.ShareTransaction
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		acct, err := h.Shares.GetAccountByMemberTx(r.Context(), tx, memberID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				out = nil
+				return nil
+			}
+			return err
+		}
+		out, err = h.Shares.HistoryByAccountTx(r.Context(), tx, acct.ID, limit, offset)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if out == nil {
+		out = []domain.ShareTransaction{}
+	}
+	httpx.OK(w, out)
+}
+
+func (h *ShareHandler) CurrentCertificate(w http.ResponseWriter, r *http.Request) {
+	memberID, err := parseUUIDParam(r, "member_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var cert *domain.ShareCertificate
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		acct, err := h.Shares.GetAccountByMemberTx(r.Context(), tx, memberID)
+		if err != nil {
+			return err
+		}
+		cert, err = h.Shares.CurrentCertificateTx(r.Context(), tx, acct.ID)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.WriteErr(w, r, httpx.ErrNotFound("no current certificate"))
+			return
+		}
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, cert)
+}
+
+// ─────────── Purchase ───────────
+
+type purchaseReq struct {
+	Shares         int                    `json:"shares"`
+	PaymentChannel domain.PaymentChannel  `json:"payment_channel"`
+	PaymentRef     string                 `json:"payment_ref"`
+	Narration      string                 `json:"narration"`
+}
+
+type postResp struct {
+	Transaction domain.ShareTransaction  `json:"transaction"`
+	Account     domain.ShareAccount      `json:"account"`
+	Certificate *domain.ShareCertificate `json:"certificate,omitempty"`
+}
+
+func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
+	memberID, err := parseUUIDParam(r, "member_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var in purchaseReq
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if in.Shares <= 0 {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("shares must be a positive integer"))
+		return
+	}
+	if in.PaymentChannel == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("payment_channel is required"))
+		return
+	}
+	if !in.PaymentChannel.Valid() {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid payment_channel"))
+		return
+	}
+	userID, _ := middleware.UserIDFrom(r)
+	if userID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+
+	var resp postResp
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		policy, member, acct, err := h.loadContext(r.Context(), tx, memberID, true)
+		if err != nil {
+			return err
+		}
+		if acct.Status != domain.AccountActive {
+			return domain.ErrAccountClosed
+		}
+
+		// Enforce max-holding cap.
+		if policy.MaxSharesPctOfCapital.GreaterThan(decimal.Zero) {
+			total, err := h.Shares.TotalSharesIssuedTx(r.Context(), tx)
+			if err != nil {
+				return err
+			}
+			newMember := acct.SharesHeld + in.Shares
+			newTotal := total + in.Shares
+			if newTotal > 0 {
+				pct := decimal.NewFromInt(int64(newMember)).Mul(decimal.NewFromInt(100)).Div(decimal.NewFromInt(int64(newTotal)))
+				if pct.GreaterThan(policy.MaxSharesPctOfCapital) {
+					return domain.ErrExceedsMaxHolding
+				}
+			}
+		}
+
+		ch := in.PaymentChannel
+		ref := strNilIfEmpty(in.PaymentRef)
+		narr := strNilIfEmpty(in.Narration)
+
+		txn, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
+			Account:        acct,
+			TxnType:        domain.TxnPurchase,
+			SharesDelta:    in.Shares,
+			ParValueAtTxn:  policy.ParValue,
+			PaymentChannel: &ch,
+			PaymentRef:     ref,
+			Narration:      narr,
+			InitiatedBy:    userID,
+		})
+		if err != nil {
+			return err
+		}
+		updated, err := h.Shares.GetAccountTx(r.Context(), tx, acct.ID)
+		if err != nil {
+			return err
+		}
+		cert, err := h.Shares.IssueCertificateTx(r.Context(), tx, acct.ID, member.ID, userID,
+			updated.SharesHeld, policy.ParValue, policy.CertificatePrefix)
+		if err != nil {
+			return err
+		}
+		_ = h.Members.TouchActivityTx(r.Context(), tx, memberID)
+
+		resp = postResp{Transaction: *txn, Account: *updated, Certificate: cert}
+		return nil
+	})
+	if err != nil {
+		writeBusinessErr(w, r, err)
+		return
+	}
+	httpx.Created(w, resp)
+}
+
+// ─────────── Transfer ───────────
+
+type transferReq struct {
+	Shares         int       `json:"shares"`
+	ToMemberID     uuid.UUID `json:"to_member_id"`
+	Narration      string    `json:"narration"`
+	Reason         string    `json:"reason"`
+}
+
+type transferResp struct {
+	From postResp `json:"from"`
+	To   postResp `json:"to"`
+}
+
+func (h *ShareHandler) Transfer(w http.ResponseWriter, r *http.Request) {
+	memberID, err := parseUUIDParam(r, "member_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var in transferReq
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if in.Shares <= 0 {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("shares must be a positive integer"))
+		return
+	}
+	if in.ToMemberID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("to_member_id is required"))
+		return
+	}
+	if in.ToMemberID == memberID {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("cannot transfer shares to the same member"))
+		return
+	}
+	userID, _ := middleware.UserIDFrom(r)
+	if userID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+
+	var out transferResp
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		policy, fromMember, fromAcct, err := h.loadContext(r.Context(), tx, memberID, false)
+		if err != nil {
+			return err
+		}
+		// Lien + availability check.
+		if domain.AvailableShares(fromAcct) < in.Shares {
+			if fromAcct.SharesPledged > 0 {
+				return domain.ErrLienBlocksAction
+			}
+			return domain.ErrInsufficientShares
+		}
+		// Min-holding check on transferer.
+		if fromAcct.SharesHeld-in.Shares < policy.MinSharesRequired {
+			return domain.ErrBelowMinHolding
+		}
+
+		_, toMember, toAcct, err := h.loadContext(r.Context(), tx, in.ToMemberID, true)
+		if err != nil {
+			return err
+		}
+		// Max-holding check on recipient.
+		if policy.MaxSharesPctOfCapital.GreaterThan(decimal.Zero) {
+			total, err := h.Shares.TotalSharesIssuedTx(r.Context(), tx)
+			if err != nil {
+				return err
+			}
+			// Transfer is zero-sum: total stays unchanged.
+			if total > 0 {
+				pct := decimal.NewFromInt(int64(toAcct.SharesHeld + in.Shares)).
+					Mul(decimal.NewFromInt(100)).Div(decimal.NewFromInt(int64(total)))
+				if pct.GreaterThan(policy.MaxSharesPctOfCapital) {
+					return domain.ErrExceedsMaxHolding
+				}
+			}
+		}
+
+		internal := domain.ChannelInternal
+		narration := in.Narration
+		if narration == "" {
+			narration = "Share transfer between members"
+		}
+		narr := &narration
+		reason := strNilIfEmpty(in.Reason)
+
+		outTxn, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
+			Account:             fromAcct,
+			TxnType:             domain.TxnTransferOut,
+			SharesDelta:         -in.Shares,
+			ParValueAtTxn:       policy.ParValue,
+			PaymentChannel:      &internal,
+			Narration:           narr,
+			CounterpartyAccount: toAcct,
+			InitiatedBy:         userID,
+			AuthorizedBy:        &userID,
+			AuthorizationReason: reason,
+		})
+		if err != nil {
+			return err
+		}
+		// Re-read accounts (balances changed).
+		fromAcct, err = h.Shares.GetAccountTx(r.Context(), tx, fromAcct.ID)
+		if err != nil {
+			return err
+		}
+		inTxn, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
+			Account:             toAcct,
+			TxnType:             domain.TxnTransferIn,
+			SharesDelta:         in.Shares,
+			ParValueAtTxn:       policy.ParValue,
+			PaymentChannel:      &internal,
+			Narration:           narr,
+			CounterpartyAccount: fromAcct,
+			CounterpartyTxnID:   &outTxn.ID,
+			InitiatedBy:         userID,
+			AuthorizedBy:        &userID,
+			AuthorizationReason: reason,
+		})
+		if err != nil {
+			return err
+		}
+		if err := h.Shares.LinkCounterpartyTxnTx(r.Context(), tx, outTxn.ID, inTxn.ID); err != nil {
+			return err
+		}
+		toAcct, err = h.Shares.GetAccountTx(r.Context(), tx, toAcct.ID)
+		if err != nil {
+			return err
+		}
+		fromCert, err := h.Shares.IssueCertificateTx(r.Context(), tx, fromAcct.ID, fromMember.ID, userID,
+			fromAcct.SharesHeld, policy.ParValue, policy.CertificatePrefix)
+		if err != nil {
+			return err
+		}
+		toCert, err := h.Shares.IssueCertificateTx(r.Context(), tx, toAcct.ID, toMember.ID, userID,
+			toAcct.SharesHeld, policy.ParValue, policy.CertificatePrefix)
+		if err != nil {
+			return err
+		}
+		_ = h.Members.TouchActivityTx(r.Context(), tx, memberID)
+		_ = h.Members.TouchActivityTx(r.Context(), tx, in.ToMemberID)
+
+		out = transferResp{
+			From: postResp{Transaction: *outTxn, Account: *fromAcct, Certificate: fromCert},
+			To:   postResp{Transaction: *inTxn, Account: *toAcct, Certificate: toCert},
+		}
+		return nil
+	})
+	if err != nil {
+		writeBusinessErr(w, r, err)
+		return
+	}
+	httpx.Created(w, out)
+}
+
+// ─────────── Redemption ───────────
+
+type redeemReq struct {
+	Shares       int    `json:"shares"`
+	Reason       string `json:"reason"`
+	Narration    string `json:"narration"`
+	PaymentRef   string `json:"payment_ref"`
+	PaymentChan  domain.PaymentChannel `json:"payment_channel"`
+	AuthOverride bool   `json:"acknowledge_below_minimum"` // confirm dropping below min (e.g. on exit)
+}
+
+func (h *ShareHandler) Redeem(w http.ResponseWriter, r *http.Request) {
+	memberID, err := parseUUIDParam(r, "member_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var in redeemReq
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if in.Shares <= 0 {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("shares must be a positive integer"))
+		return
+	}
+	if in.Reason == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("reason is required for redemption"))
+		return
+	}
+	if in.PaymentChan != "" && !in.PaymentChan.Valid() {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid payment_channel"))
+		return
+	}
+	userID, _ := middleware.UserIDFrom(r)
+	if userID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+
+	var resp postResp
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		policy, member, acct, err := h.loadContext(r.Context(), tx, memberID, false)
+		if err != nil {
+			return err
+		}
+		if domain.AvailableShares(acct) < in.Shares {
+			if acct.SharesPledged > 0 {
+				return domain.ErrLienBlocksAction
+			}
+			return domain.ErrInsufficientShares
+		}
+		if acct.SharesHeld-in.Shares < policy.MinSharesRequired && !in.AuthOverride {
+			return domain.ErrBelowMinHolding
+		}
+
+		ch := in.PaymentChan
+		var chPtr *domain.PaymentChannel
+		if ch != "" {
+			chPtr = &ch
+		} else {
+			internal := domain.ChannelInternal
+			chPtr = &internal
+		}
+		reason := in.Reason
+		txn, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
+			Account:             acct,
+			TxnType:             domain.TxnRedemption,
+			SharesDelta:         -in.Shares,
+			ParValueAtTxn:       policy.ParValue,
+			PaymentChannel:      chPtr,
+			PaymentRef:          strNilIfEmpty(in.PaymentRef),
+			Narration:           strNilIfEmpty(in.Narration),
+			InitiatedBy:         userID,
+			AuthorizedBy:        &userID,
+			AuthorizationReason: &reason,
+		})
+		if err != nil {
+			return err
+		}
+		updated, err := h.Shares.GetAccountTx(r.Context(), tx, acct.ID)
+		if err != nil {
+			return err
+		}
+		cert, err := h.Shares.IssueCertificateTx(r.Context(), tx, acct.ID, member.ID, userID,
+			updated.SharesHeld, policy.ParValue, policy.CertificatePrefix)
+		if err != nil {
+			return err
+		}
+		_ = h.Members.TouchActivityTx(r.Context(), tx, memberID)
+		resp = postResp{Transaction: *txn, Account: *updated, Certificate: cert}
+		return nil
+	})
+	if err != nil {
+		writeBusinessErr(w, r, err)
+		return
+	}
+	httpx.Created(w, resp)
+}
+
+// ─────────── Adjustment ───────────
+
+type adjustReq struct {
+	SharesDelta int    `json:"shares_delta"` // signed
+	Reason      string `json:"reason"`
+}
+
+func (h *ShareHandler) Adjust(w http.ResponseWriter, r *http.Request) {
+	memberID, err := parseUUIDParam(r, "member_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var in adjustReq
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if in.SharesDelta == 0 {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("shares_delta must be non-zero"))
+		return
+	}
+	if in.Reason == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("reason is required for adjustment"))
+		return
+	}
+	userID, _ := middleware.UserIDFrom(r)
+	if userID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+
+	var resp postResp
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		policy, member, acct, err := h.loadContext(r.Context(), tx, memberID, true)
+		if err != nil {
+			return err
+		}
+		// Debits must respect available shares; credits respect max cap.
+		if in.SharesDelta < 0 {
+			if domain.AvailableShares(acct) < -in.SharesDelta {
+				if acct.SharesPledged > 0 {
+					return domain.ErrLienBlocksAction
+				}
+				return domain.ErrInsufficientShares
+			}
+		} else if policy.MaxSharesPctOfCapital.GreaterThan(decimal.Zero) {
+			total, err := h.Shares.TotalSharesIssuedTx(r.Context(), tx)
+			if err != nil {
+				return err
+			}
+			newMember := acct.SharesHeld + in.SharesDelta
+			newTotal := total + in.SharesDelta
+			if newTotal > 0 {
+				pct := decimal.NewFromInt(int64(newMember)).Mul(decimal.NewFromInt(100)).Div(decimal.NewFromInt(int64(newTotal)))
+				if pct.GreaterThan(policy.MaxSharesPctOfCapital) {
+					return domain.ErrExceedsMaxHolding
+				}
+			}
+		}
+		internal := domain.ChannelInternal
+		reason := in.Reason
+		txn, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
+			Account:             acct,
+			TxnType:             domain.TxnAdjustment,
+			SharesDelta:         in.SharesDelta,
+			ParValueAtTxn:       policy.ParValue,
+			PaymentChannel:      &internal,
+			Narration:           &reason,
+			InitiatedBy:         userID,
+			AuthorizedBy:        &userID,
+			AuthorizationReason: &reason,
+		})
+		if err != nil {
+			return err
+		}
+		updated, err := h.Shares.GetAccountTx(r.Context(), tx, acct.ID)
+		if err != nil {
+			return err
+		}
+		cert, err := h.Shares.IssueCertificateTx(r.Context(), tx, acct.ID, member.ID, userID,
+			updated.SharesHeld, policy.ParValue, policy.CertificatePrefix)
+		if err != nil {
+			return err
+		}
+		resp = postResp{Transaction: *txn, Account: *updated, Certificate: cert}
+		return nil
+	})
+	if err != nil {
+		writeBusinessErr(w, r, err)
+		return
+	}
+	httpx.Created(w, resp)
+}
+
+// ─────────── Liens ───────────
+
+type placeLienReq struct {
+	Shares        int    `json:"shares"`
+	Reason        string `json:"reason"`
+	ReferenceKind string `json:"reference_kind"`
+	ReferenceID   string `json:"reference_id"`
+}
+
+func (h *ShareHandler) PlaceLien(w http.ResponseWriter, r *http.Request) {
+	memberID, err := parseUUIDParam(r, "member_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var in placeLienReq
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if in.Shares <= 0 || in.Reason == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("shares (>0) and reason are required"))
+		return
+	}
+	userID, _ := middleware.UserIDFrom(r)
+	if userID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+
+	var lien *domain.ShareLien
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		acct, err := h.Shares.GetAccountByMemberTx(r.Context(), tx, memberID)
+		if err != nil {
+			return err
+		}
+		lien, err = h.Shares.PlaceLienTx(r.Context(), tx, acct.ID, in.Shares, in.Reason,
+			strNilIfEmpty(in.ReferenceKind), strNilIfEmpty(in.ReferenceID), userID)
+		return err
+	})
+	if err != nil {
+		writeBusinessErr(w, r, err)
+		return
+	}
+	httpx.Created(w, lien)
+}
+
+type releaseLienReq struct {
+	Reason string `json:"reason"`
+}
+
+func (h *ShareHandler) ReleaseLien(w http.ResponseWriter, r *http.Request) {
+	lienID, err := parseUUIDParam(r, "lien_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var in releaseLienReq
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	userID, _ := middleware.UserIDFrom(r)
+	if userID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var lien *domain.ShareLien
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		var err error
+		lien, err = h.Shares.ReleaseLienTx(r.Context(), tx, lienID, userID, in.Reason)
+		return err
+	})
+	if err != nil {
+		writeBusinessErr(w, r, err)
+		return
+	}
+	httpx.OK(w, lien)
+}
+
+// ─────────── Bonus issue (tenant-wide) ───────────
+
+type bonusIssueReq struct {
+	// PctOfHolding is a percent like "5.0" meaning each member gets
+	// floor(holding * 0.05) bonus shares. Whichever members hold zero
+	// are skipped. Min one bonus share is awarded to anyone with > 0.
+	PctOfHolding decimal.Decimal `json:"pct_of_holding"`
+	Reason       string          `json:"reason"`
+}
+
+type bonusIssueResp struct {
+	IssuedToCount    int             `json:"issued_to_count"`
+	TotalBonusShares int             `json:"total_bonus_shares"`
+	PctApplied       decimal.Decimal `json:"pct_applied"`
+}
+
+func (h *ShareHandler) BonusIssue(w http.ResponseWriter, r *http.Request) {
+	var in bonusIssueReq
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if in.PctOfHolding.LessThanOrEqual(decimal.Zero) || in.PctOfHolding.GreaterThan(decimal.NewFromInt(100)) {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("pct_of_holding must be > 0 and <= 100"))
+		return
+	}
+	if in.Reason == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("reason is required (AGM resolution reference)"))
+		return
+	}
+	userID, _ := middleware.UserIDFrom(r)
+	if userID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+
+	var resp bonusIssueResp
+	resp.PctApplied = in.PctOfHolding
+	internal := domain.ChannelInternal
+
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		policy, err := h.Tenants.SharePolicyTx(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		accounts, err := h.Shares.ActiveAccountsTx(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+
+		for i := range accounts {
+			a := accounts[i]
+			bonus := in.PctOfHolding.
+				Div(decimal.NewFromInt(100)).
+				Mul(decimal.NewFromInt(int64(a.SharesHeld))).
+				Floor()
+			n := int(bonus.IntPart())
+			if n <= 0 {
+				continue
+			}
+			reason := in.Reason
+			_, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
+				Account:             &a,
+				TxnType:             domain.TxnBonusIssue,
+				SharesDelta:         n,
+				ParValueAtTxn:       policy.ParValue,
+				PaymentChannel:      &internal,
+				Narration:           &reason,
+				InitiatedBy:         userID,
+				AuthorizedBy:        &userID,
+				AuthorizationReason: &reason,
+			})
+			if err != nil {
+				return err
+			}
+			updated, err := h.Shares.GetAccountTx(r.Context(), tx, a.ID)
+			if err != nil {
+				return err
+			}
+			if _, err := h.Shares.IssueCertificateTx(r.Context(), tx, a.ID, a.MemberID, userID,
+				updated.SharesHeld, policy.ParValue, policy.CertificatePrefix); err != nil {
+				return err
+			}
+			resp.IssuedToCount++
+			resp.TotalBonusShares += n
+		}
+		return nil
+	})
+	if err != nil {
+		writeBusinessErr(w, r, err)
+		return
+	}
+	httpx.Created(w, resp)
+}
+
+// ─────────── Register / Summary ───────────
+
+type listResp struct {
+	Items []store.AccountListItem `json:"items"`
+	Total int                     `json:"total"`
+}
+
+func (h *ShareHandler) List(w http.ResponseWriter, r *http.Request) {
+	tid, _ := middleware.TenantIDFrom(r)
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	filter := store.ListFilter{
+		Status: q.Get("status"),
+		Q:      q.Get("q"),
+		Limit:  limit, Offset: offset,
+	}
+	if q.Get("below_min") == "1" || q.Get("below_min") == "true" {
+		filter.MinBelow = true
+	}
+
+	var out listResp
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		policy, err := h.Tenants.SharePolicyTx(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		items, total, err := h.Shares.ListAccountsTx(r.Context(), tx, filter, policy.MinSharesRequired)
+		if err != nil {
+			return err
+		}
+		if items == nil {
+			items = []store.AccountListItem{}
+		}
+		out = listResp{Items: items, Total: total}
+		return nil
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, out)
+}
+
+func (h *ShareHandler) Summary(w http.ResponseWriter, r *http.Request) {
+	tid, _ := middleware.TenantIDFrom(r)
+	var sum *store.Summary
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		policy, err := h.Tenants.SharePolicyTx(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		sum, err = h.Shares.SummaryTx(r.Context(), tx, policy)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, sum)
+}
+
+// ─────────── Helpers ───────────
+
+func strNilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// writeBusinessErr maps domain errors to HTTP error responses.
+func writeBusinessErr(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, domain.ErrInsufficientShares),
+		errors.Is(err, domain.ErrLienBlocksAction),
+		errors.Is(err, domain.ErrBelowMinHolding),
+		errors.Is(err, domain.ErrExceedsMaxHolding),
+		errors.Is(err, domain.ErrAccountClosed),
+		errors.Is(err, domain.ErrInvalidQuantity),
+		errors.Is(err, domain.ErrSameMemberTransfer):
+		httpx.WriteErr(w, r, httpx.ErrConflict(err.Error()))
+	case errors.Is(err, store.ErrNotFound):
+		httpx.WriteErr(w, r, httpx.ErrNotFound(""))
+	default:
+		httpx.WriteErr(w, r, err)
+	}
+}

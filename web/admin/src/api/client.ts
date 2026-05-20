@@ -1390,3 +1390,249 @@ export async function createWorkflowInstance(input: {
   const r = await api.post('/v1/workflow-instances', input);
   return r.data.data;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Shares sub-module (services/savings)
+// ═══════════════════════════════════════════════════════════════════
+
+export type ShareTxnType =
+  | 'purchase' | 'transfer_in' | 'transfer_out'
+  | 'redemption' | 'adjustment' | 'bonus_issue';
+
+export type SharePaymentChannel =
+  | 'cash' | 'mpesa' | 'airtel_money' | 'bank_transfer'
+  | 'payroll' | 'standing_order' | 'internal';
+
+export type ShareAccountStatus = 'active' | 'closed';
+
+export type ShareAccount = {
+  id: string;
+  tenant_id: string;
+  member_id: string;
+  account_no: string;
+  status: ShareAccountStatus;
+  shares_held: number;
+  shares_pledged: number;
+  shares_available: number;
+  par_value_at_open: string;
+  total_value: string;
+  first_purchase_at?: string;
+  closed_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ShareTransaction = {
+  id: string;
+  account_id: string;
+  member_id: string;
+  txn_no: string;
+  txn_type: ShareTxnType;
+  shares_delta: number;
+  par_value_at_txn: string;
+  amount: string;
+  payment_channel?: SharePaymentChannel;
+  payment_ref?: string;
+  narration?: string;
+  counterparty_account_id?: string;
+  counterparty_txn_id?: string;
+  balance_after_shares: number;
+  balance_after_amount: string;
+  initiated_by: string;
+  authorized_by?: string;
+  authorization_reason?: string;
+  posted_at: string;
+  created_at: string;
+};
+
+export type ShareLien = {
+  id: string;
+  account_id: string;
+  shares_pledged: number;
+  reason: string;
+  reference_kind?: string;
+  reference_id?: string;
+  status: 'active' | 'released';
+  placed_by: string;
+  placed_at: string;
+  released_by?: string;
+  released_at?: string;
+  released_reason?: string;
+};
+
+export type ShareCertificate = {
+  id: string;
+  account_id: string;
+  member_id: string;
+  certificate_no: string;
+  shares_covered: number;
+  par_value_at_issue: string;
+  total_value: string;
+  issued_at: string;
+  retired_at?: string;
+  supersedes_id?: string;
+  issued_by: string;
+};
+
+export type SharePolicy = {
+  par_value: string;
+  min_shares_required: number;
+  max_shares_pct_of_capital: string;
+  certificate_prefix: string;
+};
+
+export type ShareAccountView = {
+  account: ShareAccount;
+  member: { ID: string; MemberNo: string; FullName: string; Status: string };
+  active_liens: ShareLien[];
+  current_certificate?: ShareCertificate;
+  policy: SharePolicy;
+};
+
+export type ShareSummary = {
+  total_accounts: number;
+  active_accounts: number;
+  total_shares_issued: number;
+  total_share_capital: string;
+  members_below_minimum: number;
+  accounts_with_lien: number;
+  total_pledged_shares: number;
+  par_value: string;
+  min_shares_required: number;
+};
+
+export type ShareAccountListItem = {
+  account: ShareAccount;
+  member_no: string;
+  full_name: string;
+  member_status: string;
+};
+
+export type ShareTxnResponse = {
+  transaction: ShareTransaction;
+  account: ShareAccount;
+  certificate?: ShareCertificate;
+};
+
+export type ShareTransferResponse = {
+  from: ShareTxnResponse;
+  to: ShareTxnResponse;
+};
+
+export async function getSharePolicy(): Promise<SharePolicy> {
+  const r = await api.get('/v1/share-policy');
+  return r.data.data;
+}
+
+export async function updateSharePolicy(p: SharePolicy): Promise<SharePolicy> {
+  const r = await api.put('/v1/share-policy', p);
+  return r.data.data;
+}
+
+export async function getShareAccountByMember(memberId: string): Promise<ShareAccountView> {
+  // Trailing slash matches chi.Route("/share-accounts/by-member/{member_id}").Get("/", ...)
+  const r = await api.get(`/v1/share-accounts/by-member/${memberId}/`);
+  return r.data.data;
+}
+
+export async function listShareTransactions(memberId: string, opts: { limit?: number; offset?: number } = {}): Promise<ShareTransaction[]> {
+  const q = new URLSearchParams();
+  if (opts.limit) q.set('limit', String(opts.limit));
+  if (opts.offset) q.set('offset', String(opts.offset));
+  const r = await api.get(`/v1/share-accounts/by-member/${memberId}/transactions${q.toString() ? '?' + q.toString() : ''}`);
+  return r.data.data ?? [];
+}
+
+export async function getCurrentCertificate(memberId: string): Promise<ShareCertificate | null> {
+  try {
+    const r = await api.get(`/v1/share-accounts/by-member/${memberId}/certificate`);
+    return r.data.data;
+  } catch (e: unknown) {
+    if (axiosErrStatus(e) === 404) return null;
+    throw e;
+  }
+}
+
+export async function purchaseShares(memberId: string, input: {
+  shares: number;
+  payment_channel: SharePaymentChannel;
+  payment_ref?: string;
+  narration?: string;
+}): Promise<ShareTxnResponse> {
+  const r = await api.post(`/v1/share-accounts/by-member/${memberId}/purchase`, input);
+  return r.data.data;
+}
+
+export async function transferShares(memberId: string, input: {
+  shares: number;
+  to_member_id: string;
+  reason: string;
+  narration?: string;
+}): Promise<ShareTransferResponse> {
+  const r = await api.post(`/v1/share-accounts/by-member/${memberId}/transfer`, input);
+  return r.data.data;
+}
+
+export async function redeemShares(memberId: string, input: {
+  shares: number;
+  reason: string;
+  payment_channel?: SharePaymentChannel;
+  payment_ref?: string;
+  narration?: string;
+  acknowledge_below_minimum?: boolean;
+}): Promise<ShareTxnResponse> {
+  const r = await api.post(`/v1/share-accounts/by-member/${memberId}/redeem`, input);
+  return r.data.data;
+}
+
+export async function adjustShares(memberId: string, input: {
+  shares_delta: number;
+  reason: string;
+}): Promise<ShareTxnResponse> {
+  const r = await api.post(`/v1/share-accounts/by-member/${memberId}/adjust`, input);
+  return r.data.data;
+}
+
+export async function placeShareLien(memberId: string, input: {
+  shares: number;
+  reason: string;
+  reference_kind?: string;
+  reference_id?: string;
+}): Promise<ShareLien> {
+  const r = await api.post(`/v1/share-accounts/by-member/${memberId}/lien`, input);
+  return r.data.data;
+}
+
+export async function releaseShareLien(lienId: string, reason: string): Promise<ShareLien> {
+  const r = await api.post(`/v1/share-liens/${lienId}/release`, { reason });
+  return r.data.data;
+}
+
+export async function listShareAccounts(opts: { q?: string; status?: string; below_min?: boolean; limit?: number; offset?: number } = {}): Promise<{ items: ShareAccountListItem[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.q) p.set('q', opts.q);
+  if (opts.status) p.set('status', opts.status);
+  if (opts.below_min) p.set('below_min', '1');
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get(`/v1/share-accounts${p.toString() ? '?' + p.toString() : ''}`);
+  return r.data.data;
+}
+
+export async function getShareSummary(): Promise<ShareSummary> {
+  const r = await api.get('/v1/share-accounts/summary');
+  return r.data.data;
+}
+
+export async function bonusShareIssue(input: { pct_of_holding: string; reason: string }): Promise<{ issued_to_count: number; total_bonus_shares: number; pct_applied: string }> {
+  const r = await api.post('/v1/share-accounts/bonus-issue', input);
+  return r.data.data;
+}
+
+function axiosErrStatus(e: unknown): number | undefined {
+  if (typeof e === 'object' && e && 'response' in e) {
+    const resp = (e as { response?: { status?: number } }).response;
+    return resp?.status;
+  }
+  return undefined;
+}

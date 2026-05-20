@@ -26,6 +26,7 @@ import {
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
 import { MemberStatusCard } from '../components/MemberStatusCard';
+import { MemberSharesCard } from '../components/MemberSharesCard';
 import { Icon, type IconName } from '../components/Icon';
 
 const DOC_LABELS: Record<DocumentKind, string> = {
@@ -174,7 +175,7 @@ export default function MemberProfile() {
                 </>
               )}
               {tab === 'people'   && <PeopleTab m={m} />}
-              {tab === 'accounts' && <AccountsTab currency={currency} />}
+              {tab === 'accounts' && <AccountsTab currency={currency} memberId={memberId} />}
               {tab === 'documents' && (
                 <DocumentsTab
                   m={m}
@@ -538,30 +539,28 @@ function BeneficiariesCard({ beneficiaries }: { beneficiaries: ApiRelation[] }) 
 
 // ─────────── Accounts tab ───────────
 
-function AccountsTab({ currency }: { currency: string }) {
+function AccountsTab({ currency, memberId }: { currency: string; memberId: string }) {
   return (
-    <div className="grid-2">
-      <PendingCard
-        title="Savings"
-        sub="Member savings accounts, recurring contributions, balances."
-        body={`Total balance (${currency}), per-product breakdown, deposit / withdrawal history. Pending the savings module.`}
-      />
-      <PendingCard
-        title="Loans"
-        sub="Active and historical loans, repayment schedule, arrears."
-        body={`Active principal (${currency}), outstanding balance, next payment, arrears summary. Pending the loans module.`}
-      />
-      <PendingCard
-        title="Shares"
-        sub="Share capital position, share purchases, declared dividends."
-        body={`Share count, share value (${currency}), dividend history. Pending the shares module.`}
-      />
-      <PendingCard
-        title="Transactions"
-        sub="Unified ledger view across savings, loans, shares, fees."
-        body="Single timeline of debits and credits. Pending the transactions ledger."
-      />
-    </div>
+    <>
+      <MemberSharesCard memberId={memberId} currency={currency} />
+      <div className="grid-2" style={{ marginTop: 14 }}>
+        <PendingCard
+          title="Savings"
+          sub="Member savings accounts, recurring contributions, balances."
+          body={`Total balance (${currency}), per-product breakdown, deposit / withdrawal history. Pending the savings module.`}
+        />
+        <PendingCard
+          title="Loans"
+          sub="Active and historical loans, repayment schedule, arrears."
+          body={`Active principal (${currency}), outstanding balance, next payment, arrears summary. Pending the loans module.`}
+        />
+        <PendingCard
+          title="Transactions"
+          sub="Unified ledger view across savings, loans, shares, fees."
+          body="Single timeline of debits and credits. Pending the transactions ledger."
+        />
+      </div>
+    </>
   );
 }
 

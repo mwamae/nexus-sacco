@@ -40,6 +40,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       items: [
         { href: '/members', label: 'Members', icon: 'user', show: hasPermission('members:view') && !onPlatform },
         { href: '/orgs', label: 'Organisations', icon: 'building', show: hasPermission('members:view') && !onPlatform },
+        { href: '/shares', label: 'Shares', icon: 'bank', show: hasPermission('shares:view') && !onPlatform },
       ],
     },
     {

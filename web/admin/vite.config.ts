@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
   const identityTarget = env.VITE_API_TARGET || 'http://localhost:8081';
   const memberTarget = env.VITE_MEMBER_TARGET || 'http://localhost:8082';
   const workflowTarget = env.VITE_WORKFLOW_TARGET || 'http://localhost:8083';
+  const savingsTarget = env.VITE_SAVINGS_TARGET || 'http://localhost:8084';
 
   // More specific keys must come before the catch-all so vite-proxy
   // routes /api/v1/members* to the member service, not identity.
@@ -40,6 +41,21 @@ export default defineConfig(({ mode }) => {
         },
         '/api/v1/workflow-instances': {
           target: workflowTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/share-accounts': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/share-liens': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/share-policy': {
+          target: savingsTarget,
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
