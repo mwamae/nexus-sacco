@@ -435,13 +435,21 @@ func (s *ShareStore) TotalSharesIssuedTx(ctx context.Context, tx pgx.Tx) (int, e
 	return total, err
 }
 
-// ActiveAccountsTx returns every active account with at least one share.
+// ActiveAccountsTx returns every active account with at least one share
+// whose owning member is in a status that permits crediting (pending,
+// active, dormant, suspended). Blacklisted, exited, deceased, and
+// rejected members are excluded — they should not receive bonus shares
+// or dividend top-ups.
+//
 // Used by bonus-issue runs that iterate the whole tenant register.
 func (s *ShareStore) ActiveAccountsTx(ctx context.Context, tx pgx.Tx) ([]domain.ShareAccount, error) {
-	rows, err := tx.Query(ctx, `SELECT `+accountCols+`
-		FROM share_accounts
-		WHERE status = 'active' AND shares_held > 0
-		ORDER BY id`)
+	rows, err := tx.Query(ctx, `SELECT `+prefixCols(accountCols, "a")+`
+		FROM share_accounts a
+		JOIN members m ON m.id = a.member_id
+		WHERE a.status = 'active'
+		  AND a.shares_held > 0
+		  AND m.status NOT IN ('blacklisted', 'exited', 'deceased', 'rejected')
+		ORDER BY a.id`)
 	if err != nil {
 		return nil, err
 	}

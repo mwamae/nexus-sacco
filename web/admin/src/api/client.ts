@@ -1636,3 +1636,289 @@ function axiosErrStatus(e: unknown): number | undefined {
   }
   return undefined;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Deposits sub-module (services/savings)
+// ═══════════════════════════════════════════════════════════════════
+
+export type DepositProductType =
+  | 'ordinary' | 'fixed' | 'junior' | 'holiday'
+  | 'goal' | 'emergency' | 'group';
+
+export type DepositEligibility =
+  | 'individuals' | 'groups' | 'minors' | 'all';
+
+export type MaturityAction =
+  | 'none' | 'auto_renew' | 'liquidate_to_ordinary' | 'notify';
+
+export type FeeFrequency =
+  | 'none' | 'monthly' | 'quarterly' | 'annual';
+
+export type DepositAccountStatus =
+  | 'pending' | 'active' | 'dormant' | 'suspended' | 'matured' | 'closed';
+
+export type DepositTxnType =
+  | 'opening_balance' | 'deposit' | 'withdrawal'
+  | 'transfer_in' | 'transfer_out'
+  | 'interest_credit' | 'fee_debit'
+  | 'reversal' | 'adjustment' | 'goal_payout';
+
+export type DepositChannel =
+  | 'cash' | 'mpesa' | 'airtel_money' | 'bank_transfer'
+  | 'standing_order' | 'direct_debit' | 'payroll' | 'internal';
+
+export type DepositProduct = {
+  id: string;
+  code: string;
+  name: string;
+  product_type: DepositProductType;
+  description?: string;
+  is_active: boolean;
+  min_opening_balance: string;
+  min_operating_balance: string;
+  max_balance?: string;
+  min_deposit_amount: string;
+  max_deposit_amount?: string;
+  min_withdrawal_amount: string;
+  max_withdrawal_amount?: string;
+  notice_period_days: number;
+  max_withdrawals_per_month?: number;
+  partial_withdrawal_allowed: boolean;
+  large_withdrawal_threshold?: string;
+  lock_in_months: number;
+  default_term_months?: number;
+  maturity_action: MaturityAction;
+  eligibility: DepositEligibility;
+  requires_approval_to_open: boolean;
+  withdrawal_window_start_month?: number;
+  withdrawal_window_end_month?: number;
+  maintenance_fee: string;
+  maintenance_fee_frequency: FeeFrequency;
+  early_withdrawal_penalty_pct: string;
+  below_min_balance_fee: string;
+  dormancy_fee_monthly: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DepositAccount = {
+  id: string;
+  member_id: string;
+  product_id: string;
+  account_no: string;
+  status: DepositAccountStatus;
+  current_balance: string;
+  available_balance: string;
+  opened_at?: string;
+  matures_at?: string;
+  closed_at?: string;
+  last_activity_at?: string;
+  last_deposit_at?: string;
+  last_withdrawal_at?: string;
+  fixed_term_months?: number;
+  fixed_interest_rate_pct?: string;
+  goal_target_amount?: string;
+  goal_target_date?: string;
+  goal_description?: string;
+  guardian_member_id?: string;
+  group_org_id?: string;
+  withdrawal_notice_given_at?: string;
+  withdrawal_notice_amount?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DepositTransaction = {
+  id: string;
+  account_id: string;
+  member_id: string;
+  txn_no: string;
+  txn_type: DepositTxnType;
+  amount: string;
+  value_date: string;
+  channel?: DepositChannel;
+  channel_ref?: string;
+  narration?: string;
+  counterparty_account_id?: string;
+  counterparty_txn_id?: string;
+  reverses_txn_id?: string;
+  reversed_by_txn_id?: string;
+  reversal_reason?: string;
+  balance_after: string;
+  initiated_by: string;
+  authorized_by?: string;
+  authorization_reason?: string;
+  workflow_instance_id?: string;
+  posted_at: string;
+  created_at: string;
+};
+
+export type DepositAccountView = {
+  account: DepositAccount;
+  product: DepositProduct;
+  member: { ID: string; MemberNo: string; FullName: string; Status: string };
+};
+
+export type MemberDepositItem = {
+  account: DepositAccount;
+  product: DepositProduct;
+};
+
+export type DepositAcctListItem = {
+  account: DepositAccount;
+  member_no: string;
+  full_name: string;
+  member_status: string;
+  product: { code: string; name: string; product_type: DepositProductType };
+};
+
+export type DepositsSummary = {
+  total_accounts: number;
+  active_accounts: number;
+  dormant_accounts: number;
+  total_balance: string;
+  by_product: Array<{
+    product_id: string;
+    code: string;
+    name: string;
+    product_type: DepositProductType;
+    active_accounts: number;
+    total_balance: string;
+  }>;
+};
+
+export type DepositStatement = {
+  account: DepositAccount;
+  product: DepositProduct;
+  from: string;
+  to: string;
+  opening_balance: string;
+  closing_balance: string;
+  transactions: DepositTransaction[];
+};
+
+// ─────────── Product CRUD ───────────
+
+export async function listDepositProducts(includeInactive = false): Promise<DepositProduct[]> {
+  const r = await api.get('/v1/deposit-products' + (includeInactive ? '?include_inactive=1' : ''));
+  return r.data.data ?? [];
+}
+
+export async function getDepositProduct(id: string): Promise<DepositProduct> {
+  const r = await api.get(`/v1/deposit-products/${id}`);
+  return r.data.data;
+}
+
+export async function createDepositProduct(p: Partial<DepositProduct>): Promise<DepositProduct> {
+  const r = await api.post('/v1/deposit-products', p);
+  return r.data.data;
+}
+
+export async function updateDepositProduct(id: string, p: Partial<DepositProduct>): Promise<DepositProduct> {
+  const r = await api.put(`/v1/deposit-products/${id}`, p);
+  return r.data.data;
+}
+
+export async function deleteDepositProduct(id: string): Promise<void> {
+  await api.delete(`/v1/deposit-products/${id}`);
+}
+
+// ─────────── Accounts ───────────
+
+export async function listDepositAccounts(opts: { q?: string; status?: string; product_id?: string; limit?: number; offset?: number } = {}): Promise<{ items: DepositAcctListItem[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.q) p.set('q', opts.q);
+  if (opts.status) p.set('status', opts.status);
+  if (opts.product_id) p.set('product_id', opts.product_id);
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get('/v1/deposit-accounts' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+
+export async function getDepositsSummary(): Promise<DepositsSummary> {
+  const r = await api.get('/v1/deposit-accounts/summary');
+  return r.data.data;
+}
+
+export async function getDepositAccountsByMember(memberId: string): Promise<MemberDepositItem[]> {
+  const r = await api.get(`/v1/deposit-accounts/by-member/${memberId}`);
+  return r.data.data ?? [];
+}
+
+export async function getDepositAccount(id: string): Promise<DepositAccountView> {
+  const r = await api.get(`/v1/deposit-accounts/${id}/`);
+  return r.data.data;
+}
+
+export async function openDepositAccount(input: {
+  member_id: string;
+  product_id: string;
+  opening_deposit: string;
+  opening_channel?: DepositChannel;
+  opening_channel_ref?: string;
+  fixed_term_months?: number;
+  fixed_interest_rate_pct?: string;
+  goal_target_amount?: string;
+  goal_target_date?: string;
+  goal_description?: string;
+  guardian_member_id?: string;
+  group_org_id?: string;
+}): Promise<{ account: DepositAccount; product: DepositProduct; opening_transaction?: DepositTransaction }> {
+  const r = await api.post('/v1/deposit-accounts', input);
+  return r.data.data;
+}
+
+export async function postDeposit(accountId: string, input: {
+  amount: string;
+  channel: DepositChannel;
+  channel_ref?: string;
+  narration?: string;
+  value_date?: string;
+  bypass_duplicate_check?: boolean;
+}): Promise<{ transaction: DepositTransaction; account: DepositAccount }> {
+  const r = await api.post(`/v1/deposit-accounts/${accountId}/deposit`, input);
+  return r.data.data;
+}
+
+export async function postWithdrawal(accountId: string, input: {
+  amount: string;
+  channel: DepositChannel;
+  channel_ref?: string;
+  narration?: string;
+  reason?: string;
+}): Promise<{ transaction: DepositTransaction; account: DepositAccount; requires_approval: boolean }> {
+  const r = await api.post(`/v1/deposit-accounts/${accountId}/withdraw`, input);
+  return r.data.data;
+}
+
+export async function giveWithdrawalNotice(accountId: string, amount: string): Promise<void> {
+  await api.post(`/v1/deposit-accounts/${accountId}/withdrawal-notice`, { amount });
+}
+
+export async function transferBetweenOwn(accountId: string, input: {
+  amount: string;
+  to_account_id: string;
+  narration?: string;
+}): Promise<{ from: { transaction: DepositTransaction; account: DepositAccount }; to: { transaction: DepositTransaction; account: DepositAccount } }> {
+  const r = await api.post(`/v1/deposit-accounts/${accountId}/transfer`, input);
+  return r.data.data;
+}
+
+export async function reverseDeposit(accountId: string, txnId: string, reason: string): Promise<{ reversal: DepositTransaction; account: DepositAccount }> {
+  const r = await api.post(`/v1/deposit-accounts/${accountId}/reverse`, { txn_id: txnId, reason });
+  return r.data.data;
+}
+
+export async function adjustDeposit(accountId: string, amount: string, reason: string): Promise<{ transaction: DepositTransaction; account: DepositAccount }> {
+  const r = await api.post(`/v1/deposit-accounts/${accountId}/adjust`, { amount, reason });
+  return r.data.data;
+}
+
+export async function getDepositStatement(accountId: string, from?: string, to?: string): Promise<DepositStatement> {
+  const p = new URLSearchParams();
+  if (from) p.set('from', from);
+  if (to) p.set('to', to);
+  const r = await api.get(`/v1/deposit-accounts/${accountId}/statement` + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}

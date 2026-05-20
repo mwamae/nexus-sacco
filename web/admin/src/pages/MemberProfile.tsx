@@ -26,7 +26,7 @@ import {
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
 import { MemberStatusCard } from '../components/MemberStatusCard';
-import { MemberSharesCard } from '../components/MemberSharesCard';
+import { MemberAccountsPanel } from '../components/MemberAccountsPanel';
 import { Icon, type IconName } from '../components/Icon';
 
 const DOC_LABELS: Record<DocumentKind, string> = {
@@ -542,13 +542,8 @@ function BeneficiariesCard({ beneficiaries }: { beneficiaries: ApiRelation[] }) 
 function AccountsTab({ currency, memberId }: { currency: string; memberId: string }) {
   return (
     <>
-      <MemberSharesCard memberId={memberId} currency={currency} />
+      <MemberAccountsPanel memberId={memberId} currency={currency} />
       <div className="grid-2" style={{ marginTop: 14 }}>
-        <PendingCard
-          title="Savings"
-          sub="Member savings accounts, recurring contributions, balances."
-          body={`Total balance (${currency}), per-product breakdown, deposit / withdrawal history. Pending the savings module.`}
-        />
         <PendingCard
           title="Loans"
           sub="Active and historical loans, repayment schedule, arrears."

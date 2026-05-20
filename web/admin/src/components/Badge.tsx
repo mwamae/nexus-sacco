@@ -29,6 +29,8 @@ const STATUS_TONE: Record<string, Tone> = {
   // Legacy member statuses (still in the wild for older rows)
   locked: 'neg',
   closed: 'neutral',
+  // Deposit account status (fixed deposits reach 'matured')
+  matured: 'info',
   // Tenant statuses (the ones not shared with members)
   trial: 'info',
   expired: 'warn',

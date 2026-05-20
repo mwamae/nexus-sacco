@@ -41,6 +41,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         { href: '/members', label: 'Members', icon: 'user', show: hasPermission('members:view') && !onPlatform },
         { href: '/orgs', label: 'Organisations', icon: 'building', show: hasPermission('members:view') && !onPlatform },
         { href: '/shares', label: 'Shares', icon: 'bank', show: hasPermission('shares:view') && !onPlatform },
+        { href: '/deposits', label: 'Deposits', icon: 'bank', show: hasPermission('savings:view') && !onPlatform },
       ],
     },
     {
@@ -55,6 +56,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       items: [
         { href: '/users', label: 'Staff', icon: 'users', show: hasPermission('users:view') },
         { href: '/roles', label: 'Roles & permissions', icon: 'key', show: hasPermission('roles:view') },
+        { href: '/deposit-products', label: 'Deposit products', icon: 'settings', show: !onPlatform && hasPermission('deposits:configure') },
         { href: '/settings', label: 'Settings', icon: 'settings', show: !onPlatform && hasPermission('tenant:settings:view') },
       ],
     },

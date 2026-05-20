@@ -19,6 +19,8 @@ import OrganizationProfile from './pages/OrganizationProfile';
 import ApprovalsInbox from './pages/ApprovalsInbox';
 import WorkflowDefinitions from './pages/WorkflowDefinitions';
 import Shares from './pages/Shares';
+import Deposits from './pages/Deposits';
+import DepositProducts from './pages/DepositProducts';
 
 function Gate() {
   const { status } = useAuth();
@@ -52,6 +54,8 @@ function Gate() {
   else if (path === '/approvals' || path.startsWith('/approvals/')) page = <ApprovalsInbox />;
   else if (path === '/workflows' || path.startsWith('/workflows/')) page = <WorkflowDefinitions />;
   else if (path === '/shares' || path.startsWith('/shares/')) page = <Shares />;
+  else if (path === '/deposit-products' || path.startsWith('/deposit-products/')) page = <DepositProducts />;
+  else if (path === '/deposits' || path.startsWith('/deposits/')) page = <Deposits />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;

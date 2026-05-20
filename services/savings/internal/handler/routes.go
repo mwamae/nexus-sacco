@@ -13,6 +13,8 @@ import (
 
 type Deps struct {
 	Share       *ShareHandler
+	Deposit     *DepositHandler
+	Product     *ProductHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -37,13 +39,11 @@ func Routes(d Deps) http.Handler {
 			r.Use(middleware.Authenticated(d.Issuer))
 			r.Use(middleware.RequireTenant)
 
-			// Tenant share policy.
+			// ─────────── Share policy + register ───────────
 			r.With(middleware.RequirePermission("shares:view")).
 				Get("/share-policy", d.Share.GetPolicy)
 			r.With(middleware.RequirePermission("tenant:settings:edit")).
 				Put("/share-policy", d.Share.UpdatePolicy)
-
-			// ─────────── Share register (tenant-wide) ───────────
 			r.With(middleware.RequirePermission("shares:view")).
 				Get("/share-accounts", d.Share.List)
 			r.With(middleware.RequirePermission("shares:view")).
@@ -51,10 +51,6 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("shares:bonus_issue")).
 				Post("/share-accounts/bonus-issue", d.Share.BonusIssue)
 
-			// ─────────── Per-member operations ───────────
-			// Routed under /share-accounts/by-member/{member_id}/* so the
-			// Vite proxy can cleanly send them to the savings service
-			// without colliding with /v1/members/* (member service).
 			r.Route("/share-accounts/by-member/{member_id}", func(r chi.Router) {
 				r.With(middleware.RequirePermission("shares:view")).Get("/", d.Share.GetByMember)
 				r.With(middleware.RequirePermission("shares:view")).Get("/transactions", d.Share.HistoryByMember)
@@ -65,10 +61,41 @@ func Routes(d Deps) http.Handler {
 				r.With(middleware.RequirePermission("shares:adjust")).Post("/adjust", d.Share.Adjust)
 				r.With(middleware.RequirePermission("shares:lien")).Post("/lien", d.Share.PlaceLien)
 			})
-
-			// Lien release operates by lien id (one-off RPC).
 			r.With(middleware.RequirePermission("shares:lien")).
 				Post("/share-liens/{lien_id}/release", d.Share.ReleaseLien)
+
+			// ─────────── Deposit products (config) ───────────
+			r.With(middleware.RequirePermission("savings:view")).
+				Get("/deposit-products", d.Product.List)
+			r.With(middleware.RequirePermission("deposits:configure")).
+				Post("/deposit-products", d.Product.Create)
+			r.With(middleware.RequirePermission("savings:view")).
+				Get("/deposit-products/{product_id}", d.Product.Get)
+			r.With(middleware.RequirePermission("deposits:configure")).
+				Put("/deposit-products/{product_id}", d.Product.Update)
+			r.With(middleware.RequirePermission("deposits:configure")).
+				Delete("/deposit-products/{product_id}", d.Product.Delete)
+
+			// ─────────── Deposit accounts ───────────
+			r.With(middleware.RequirePermission("savings:view")).
+				Get("/deposit-accounts", d.Deposit.ListAccounts)
+			r.With(middleware.RequirePermission("savings:view")).
+				Get("/deposit-accounts/summary", d.Deposit.Summary)
+			r.With(middleware.RequirePermission("savings:transact")).
+				Post("/deposit-accounts", d.Deposit.Open)
+			r.With(middleware.RequirePermission("savings:view")).
+				Get("/deposit-accounts/by-member/{member_id}", d.Deposit.AccountsByMember)
+
+			r.Route("/deposit-accounts/{account_id}", func(r chi.Router) {
+				r.With(middleware.RequirePermission("savings:view")).Get("/", d.Deposit.GetAccount)
+				r.With(middleware.RequirePermission("savings:view")).Get("/statement", d.Deposit.Statement)
+				r.With(middleware.RequirePermission("savings:transact")).Post("/deposit", d.Deposit.Deposit)
+				r.With(middleware.RequirePermission("savings:transact")).Post("/withdraw", d.Deposit.Withdraw)
+				r.With(middleware.RequirePermission("savings:transact")).Post("/withdrawal-notice", d.Deposit.GiveWithdrawalNotice)
+				r.With(middleware.RequirePermission("savings:transact")).Post("/transfer", d.Deposit.TransferBetweenOwn)
+				r.With(middleware.RequirePermission("deposits:reverse")).Post("/reverse", d.Deposit.Reverse)
+				r.With(middleware.RequirePermission("savings:approve")).Post("/adjust", d.Deposit.Adjust)
+			})
 		})
 	})
 	return r

@@ -1,0 +1,11 @@
+DROP TABLE IF EXISTS deposit_daily_balances;
+DROP TABLE IF EXISTS deposit_transactions;
+DROP TABLE IF EXISTS deposit_accounts;
+DROP TABLE IF EXISTS deposit_products;
+DROP TYPE IF EXISTS deposit_channel;
+DROP TYPE IF EXISTS deposit_txn_type;
+DROP TYPE IF EXISTS deposit_account_status;
+DROP TYPE IF EXISTS deposit_fee_frequency;
+DROP TYPE IF EXISTS deposit_maturity_action;
+DROP TYPE IF EXISTS deposit_eligibility;
+DROP TYPE IF EXISTS deposit_product_type;

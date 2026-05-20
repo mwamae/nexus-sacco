@@ -71,9 +71,9 @@ func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, memberID uuid
 		}
 		return nil, nil, nil, err
 	}
-	if !memberEligible(member.Status) {
-		return nil, nil, nil, httpx.ErrForbidden("member status '" + member.Status + "' does not permit share operations")
-	}
+	// Eligibility gates WRITES only — viewing equity must always work so
+	// admins can see what's there before redeeming on exit. Per-handler
+	// write checks live in requireWriteEligible.
 	var account *domain.ShareAccount
 	if ensure {
 		account, err = h.Shares.EnsureAccountTx(ctx, tx, memberID, policy.ParValue)
@@ -87,6 +87,22 @@ func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, memberID uuid
 		return nil, nil, nil, err
 	}
 	return policy, member, account, nil
+}
+
+// requireWriteEligible returns an error when the member's status forbids
+// the requested operation. Redemption is explicitly allowed for
+// blacklisted/exited members so admins can clear equity on exit.
+func requireWriteEligible(member *store.MemberLite, op string) error {
+	if memberEligible(member.Status) {
+		return nil
+	}
+	if op == "redeem" {
+		switch member.Status {
+		case "blacklisted", "exited":
+			return nil
+		}
+	}
+	return httpx.ErrForbidden("member status '" + member.Status + "' does not permit '" + op + "' on shares")
 }
 
 // ─────────── Policy ───────────
@@ -188,6 +204,9 @@ func (h *ShareHandler) GetByMember(w http.ResponseWriter, r *http.Request) {
 		liens, err := h.Shares.LiensForAccountTx(r.Context(), tx, acct.ID, true)
 		if err != nil {
 			return err
+		}
+		if liens == nil {
+			liens = []domain.ShareLien{}
 		}
 		cert, err := h.Shares.CurrentCertificateTx(r.Context(), tx, acct.ID)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -325,6 +344,9 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		if err := requireWriteEligible(member, "buy"); err != nil {
+			return err
+		}
 		if acct.Status != domain.AccountActive {
 			return domain.ErrAccountClosed
 		}
@@ -433,6 +455,9 @@ func (h *ShareHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		if err := requireWriteEligible(fromMember, "transfer"); err != nil {
+			return err
+		}
 		// Lien + availability check.
 		if domain.AvailableShares(fromAcct) < in.Shares {
 			if fromAcct.SharesPledged > 0 {
@@ -447,6 +472,9 @@ func (h *ShareHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 
 		_, toMember, toAcct, err := h.loadContext(r.Context(), tx, in.ToMemberID, true)
 		if err != nil {
+			return err
+		}
+		if err := requireWriteEligible(toMember, "receive"); err != nil {
 			return err
 		}
 		// Max-holding check on recipient.
@@ -587,6 +615,9 @@ func (h *ShareHandler) Redeem(w http.ResponseWriter, r *http.Request) {
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		policy, member, acct, err := h.loadContext(r.Context(), tx, memberID, false)
 		if err != nil {
+			return err
+		}
+		if err := requireWriteEligible(member, "redeem"); err != nil {
 			return err
 		}
 		if domain.AvailableShares(acct) < in.Shares {

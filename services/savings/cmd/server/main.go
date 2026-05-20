@@ -29,6 +29,8 @@ import (
 
 func main() {
 	migrate := flag.Bool("migrate", false, "run database migrations and exit")
+	runSnapshot := flag.String("run-snapshot", "", "run the deposit daily-balance snapshot job for the named tenant slug (date optional via -snapshot-date)")
+	snapshotDate := flag.String("snapshot-date", "", "snapshot date in YYYY-MM-DD (defaults to today)")
 	flag.Parse()
 
 	if *migrate {
@@ -66,6 +68,8 @@ func main() {
 	tenants := store.NewTenantStore(pool.Pool)
 	members := store.NewMemberStore(pool.Pool)
 	shareStore := store.NewShareStore(pool.Pool)
+	productStore := store.NewDepositProductStore(pool.Pool)
+	depositStore := store.NewDepositStore(pool.Pool)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
@@ -76,9 +80,49 @@ func main() {
 		Shares:  shareStore,
 		Logger:  logger,
 	}
+	productH := &handler.ProductHandler{
+		DB:       pool,
+		Products: productStore,
+		Logger:   logger,
+	}
+	depositH := &handler.DepositHandler{
+		DB:       pool,
+		Tenants:  tenants,
+		Members:  members,
+		Products: productStore,
+		Deposits: depositStore,
+		Logger:   logger,
+	}
+
+	// CLI: run daily balance snapshot for a single tenant.
+	if *runSnapshot != "" {
+		t, err := tenants.BySlug(ctx, *runSnapshot)
+		if err != nil {
+			logger.Error("snapshot: tenant lookup", "slug", *runSnapshot, "err", err)
+			os.Exit(1)
+		}
+		date := time.Now().UTC()
+		if *snapshotDate != "" {
+			d, err := time.Parse("2006-01-02", *snapshotDate)
+			if err != nil {
+				logger.Error("snapshot: invalid -snapshot-date", "err", err)
+				os.Exit(1)
+			}
+			date = d
+		}
+		n, err := handler.RunDailySnapshot(ctx, depositH, t.ID, date)
+		if err != nil {
+			logger.Error("snapshot: failed", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("snapshot complete", "tenant", t.Slug, "date", date.Format("2006-01-02"), "accounts", n)
+		return
+	}
 
 	router := handler.Routes(handler.Deps{
 		Share:       shareH,
+		Deposit:     depositH,
+		Product:     productH,
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,
