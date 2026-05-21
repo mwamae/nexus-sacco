@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/nexussacco/savings/internal/auth"
 	"github.com/nexussacco/savings/internal/config"
 	"github.com/nexussacco/savings/internal/db"
@@ -31,6 +33,8 @@ func main() {
 	migrate := flag.Bool("migrate", false, "run database migrations and exit")
 	runSnapshot := flag.String("run-snapshot", "", "run the deposit daily-balance snapshot job for the named tenant slug (date optional via -snapshot-date)")
 	snapshotDate := flag.String("snapshot-date", "", "snapshot date in YYYY-MM-DD (defaults to today)")
+	runDPD := flag.String("run-dpd", "", "run the daily loan DPD + interest-accrual job for the named tenant slug")
+	dpdAsOf := flag.String("dpd-as-of", "", "DPD as-of date in YYYY-MM-DD (defaults to today)")
 	flag.Parse()
 
 	if *migrate {
@@ -72,15 +76,24 @@ func main() {
 	depositStore := store.NewDepositStore(pool.Pool)
 	interestStore := store.NewInterestStore(pool.Pool)
 	dividendStore := store.NewDividendStore(pool.Pool)
+	loanProductStore := store.NewLoanProductStore(pool.Pool)
+	loanAppStore := store.NewLoanApplicationStore(pool.Pool)
+	loanGuarStore := store.NewLoanGuaranteeStore(pool.Pool)
+	loanStore := store.NewLoanStore(pool.Pool)
+	loanCollectionsStore := store.NewLoanCollectionsStore(pool.Pool)
+	loanRestructureStore := store.NewLoanRestructureStore(pool.Pool)
+	loanReportsStore := store.NewLoanReportsStore(pool.Pool)
+	approvalsStore := store.NewApprovalsStore(pool.Pool)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
 	shareH := &handler.ShareHandler{
-		DB:      pool,
-		Tenants: tenants,
-		Members: members,
-		Shares:  shareStore,
-		Logger:  logger,
+		DB:        pool,
+		Tenants:   tenants,
+		Members:   members,
+		Shares:    shareStore,
+		Approvals: approvalsStore,
+		Logger:    logger,
 	}
 	productH := &handler.ProductHandler{
 		DB:       pool,
@@ -88,12 +101,13 @@ func main() {
 		Logger:   logger,
 	}
 	depositH := &handler.DepositHandler{
-		DB:       pool,
-		Tenants:  tenants,
-		Members:  members,
-		Products: productStore,
-		Deposits: depositStore,
-		Logger:   logger,
+		DB:        pool,
+		Tenants:   tenants,
+		Members:   members,
+		Products:  productStore,
+		Deposits:  depositStore,
+		Approvals: approvalsStore,
+		Logger:    logger,
 	}
 	interestH := &handler.InterestHandler{
 		DB:                  pool,
@@ -108,6 +122,69 @@ func main() {
 		SavingsSelfURL:      cfg.SavingsURL,
 		WorkflowProcessKind: "interest_run_approval",
 		HTTP:                &http.Client{Timeout: 10 * time.Second},
+	}
+	loanProductH := &handler.LoanProductHandler{
+		DB:       pool,
+		Products: loanProductStore,
+		Logger:   logger,
+	}
+	loanAppH := &handler.LoanApplicationHandler{
+		DB:           pool,
+		Tenants:      tenants,
+		Members:      members,
+		LoanProducts: loanProductStore,
+		Applications: loanAppStore,
+		Guarantees:   loanGuarStore,
+		Logger:       logger,
+	}
+	loanH := &handler.LoanHandler{
+		DB:           pool,
+		Tenants:      tenants,
+		Members:      members,
+		LoanProducts: loanProductStore,
+		Applications: loanAppStore,
+		Guarantees:   loanGuarStore,
+		Loans:        loanStore,
+		Deposits:     depositStore,
+		Approvals:    approvalsStore,
+		Logger:       logger,
+	}
+	loanRepayH := &handler.LoanRepaymentHandler{
+		DB:        pool,
+		Tenants:   tenants,
+		Members:   members,
+		Deposits:  depositStore,
+		Loans:     loanStore,
+		Approvals: approvalsStore,
+		Logger:    logger,
+	}
+	loanCollectH := &handler.LoanCollectionsHandler{
+		DB:          pool,
+		Tenants:     tenants,
+		Members:     members,
+		Loans:       loanStore,
+		Collections: loanCollectionsStore,
+		Restructure: loanRestructureStore,
+		Approvals:   approvalsStore,
+		Logger:      logger,
+	}
+	loanReportsH := &handler.LoanReportsHandler{
+		DB:        pool,
+		Reports:   loanReportsStore,
+		Loans:     loanStore,
+		Approvals: approvalsStore,
+		Logger:    logger,
+	}
+	approvalsH := &handler.PendingApprovalsHandler{
+		DB:          pool,
+		Approvals:   approvalsStore,
+		Deposit:     depositH,
+		Share:       shareH,
+		Loan:        loanH,
+		LoanRepay:   loanRepayH,
+		LoanCollect: loanCollectH,
+		LoanReports: loanReportsH,
+		Logger:      logger,
 	}
 	dividendH := &handler.DividendHandler{
 		DB:                  pool,
@@ -148,12 +225,46 @@ func main() {
 		return
 	}
 
+	// CLI: run daily DPD recompute + interest accrual.
+	if *runDPD != "" {
+		t, err := tenants.BySlug(ctx, *runDPD)
+		if err != nil {
+			logger.Error("dpd: tenant lookup", "slug", *runDPD, "err", err)
+			os.Exit(1)
+		}
+		asOf := time.Now().UTC()
+		if *dpdAsOf != "" {
+			d, err := time.Parse("2006-01-02", *dpdAsOf)
+			if err != nil {
+				logger.Error("dpd: invalid -dpd-as-of", "err", err)
+				os.Exit(1)
+			}
+			asOf = d
+		}
+		// Use a synthetic actor id for system-run accruals.
+		actor := uuid.Nil
+		n, err := handler.RunDPDForTenant(ctx, loanRepayH, t.ID, asOf, actor, loanCollectionsStore)
+		if err != nil {
+			logger.Error("dpd: failed", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("dpd complete", "tenant", t.Slug, "as_of", asOf.Format("2006-01-02"), "loans_processed", n)
+		return
+	}
+
 	router := handler.Routes(handler.Deps{
 		Share:       shareH,
 		Deposit:     depositH,
 		Product:     productH,
 		Interest:    interestH,
 		Dividend:    dividendH,
+		LoanProduct: loanProductH,
+		LoanApp:     loanAppH,
+		Loan:        loanH,
+		LoanRepay:   loanRepayH,
+		LoanCollect: loanCollectH,
+		LoanReports: loanReportsH,
+		Approvals:   approvalsH,
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,

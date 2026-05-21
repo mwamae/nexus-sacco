@@ -17,6 +17,13 @@ type Deps struct {
 	Product     *ProductHandler
 	Interest    *InterestHandler
 	Dividend    *DividendHandler
+	LoanProduct *LoanProductHandler
+	LoanApp     *LoanApplicationHandler
+	Loan        *LoanHandler
+	LoanRepay   *LoanRepaymentHandler
+	LoanCollect *LoanCollectionsHandler
+	LoanReports *LoanReportsHandler
+	Approvals   *PendingApprovalsHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -126,6 +133,79 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("dividends:approve")).Post("/dividend-runs/{run_id}/post", d.Dividend.Post)
 			r.With(middleware.RequirePermission("dividends:approve")).Post("/dividend-runs/{run_id}/lock", d.Dividend.Lock)
 			r.With(middleware.RequirePermission("dividends:run")).Post("/dividend-runs/{run_id}/cancel", d.Dividend.Cancel)
+
+			// ─────────── Loan products + purpose categories ───────────
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-products", d.LoanProduct.List)
+			r.With(middleware.RequirePermission("loans:configure")).Post("/loan-products", d.LoanProduct.Create)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-products/{product_id}", d.LoanProduct.Get)
+			r.With(middleware.RequirePermission("loans:configure")).Put("/loan-products/{product_id}", d.LoanProduct.Update)
+			r.With(middleware.RequirePermission("loans:configure")).Delete("/loan-products/{product_id}", d.LoanProduct.Delete)
+
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-purpose-categories", d.LoanProduct.ListPurposeCategories)
+			r.With(middleware.RequirePermission("loans:configure")).Post("/loan-purpose-categories", d.LoanProduct.CreatePurposeCategory)
+
+			// ─────────── Loan applications + scoring ───────────
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications", d.LoanApp.List)
+			r.With(middleware.RequirePermission("loans:apply")).Post("/loan-applications", d.LoanApp.Create)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}", d.LoanApp.Get)
+			r.With(middleware.RequirePermission("loans:assess")).Post("/loan-applications/{app_id}/score", d.LoanApp.ReScore)
+			r.With(middleware.RequirePermission("loans:approve")).Post("/loan-applications/{app_id}/approve", d.LoanApp.Approve)
+			r.With(middleware.RequirePermission("loans:approve")).Post("/loan-applications/{app_id}/decline", d.LoanApp.Decline)
+
+			// Guarantor consent
+			r.With(middleware.RequirePermission("loans:guarantee")).Post("/loan-guarantees/{guarantee_id}/respond", d.LoanApp.GuaranteeRespond)
+
+			// ─────────── Loan offer + acceptance + disbursement ───────────
+			r.With(middleware.RequirePermission("loans:offer")).Post("/loan-applications/{app_id}/send-offer", d.Loan.SendOffer)
+			r.With(middleware.RequirePermission("loans:offer")).Post("/loan-applications/{app_id}/accept-offer", d.Loan.AcceptOffer)
+			r.With(middleware.RequirePermission("loans:disburse")).Post("/loans/{loan_id}/disburse", d.Loan.Disburse)
+
+			r.With(middleware.RequirePermission("loans:view")).Get("/loans", d.Loan.List)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loans/arrears-summary", d.LoanRepay.ArrearsSummary)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}", d.Loan.GetLoan)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/payoff", d.LoanRepay.Payoff)
+
+			// ─────────── Repayment + settlement + reversal + DPD ───────────
+			r.With(middleware.RequirePermission("savings:transact")).Post("/loans/{loan_id}/repay", d.LoanRepay.Repay)
+			r.With(middleware.RequirePermission("savings:approve")).Post("/loans/{loan_id}/settle", d.LoanRepay.Settle)
+			r.With(middleware.RequirePermission("loans:reverse")).Post("/loan-transactions/{txn_id}/reverse", d.LoanRepay.Reverse)
+			r.With(middleware.RequirePermission("loans:view")).Post("/loans/{loan_id}/recalc-dpd", d.LoanRepay.RecalcDPD)
+
+			// ─────────── Collections ───────────
+			r.With(middleware.RequirePermission("collections:view")).Get("/collection-cases", d.LoanCollect.ListCases)
+			r.With(middleware.RequirePermission("collections:view")).Get("/collection-cases/{case_id}", d.LoanCollect.GetCase)
+			r.With(middleware.RequirePermission("collections:act")).Post("/collection-cases/{case_id}/assign", d.LoanCollect.Assign)
+			r.With(middleware.RequirePermission("collections:act")).Post("/collection-cases/{case_id}/close", d.LoanCollect.CloseCase)
+			r.With(middleware.RequirePermission("collections:act")).Post("/collection-cases/{case_id}/contacts", d.LoanCollect.LogContact)
+			r.With(middleware.RequirePermission("collections:act")).Post("/collection-cases/{case_id}/promises", d.LoanCollect.CreatePTP)
+			r.With(middleware.RequirePermission("collections:act")).Post("/promises/{ptp_id}/resolve", d.LoanCollect.ResolvePTP)
+
+			// ─────────── Restructuring ───────────
+			r.With(middleware.RequirePermission("loans:restructure")).Post("/loans/{loan_id}/reschedule", d.LoanCollect.Reschedule)
+			r.With(middleware.RequirePermission("loans:restructure")).Post("/loans/{loan_id}/moratorium", d.LoanCollect.Moratorium)
+			r.With(middleware.RequirePermission("loans:restructure")).Post("/loans/{loan_id}/settlement-discount", d.LoanCollect.SettlementDiscount)
+			r.With(middleware.RequirePermission("loans:restructure")).Post("/loans/{loan_id}/topup-intent", d.LoanCollect.TopupIntent)
+			r.With(middleware.RequirePermission("loans:restructure")).Post("/loans/{loan_id}/refinance-intent", d.LoanCollect.RefinanceIntent)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/restructurings", d.LoanCollect.ListRestructurings)
+
+			// ─────────── Loan reports (Phase 6f) ───────────
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/portfolio", d.LoanReports.Portfolio)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/aging", d.LoanReports.Aging)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/maturing", d.LoanReports.Maturing)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/restructured", d.LoanReports.Restructured)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/writeoffs", d.LoanReports.WriteoffRegister)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/crb-submission", d.LoanReports.CRB)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/by-member/{member_id}", d.LoanReports.MemberHistory)
+			r.With(middleware.RequirePermission("loans:writeoff")).Post("/loans/{loan_id}/writeoff", d.LoanReports.WriteOff)
+
+			// ─────────── Maker-checker (Phase 7b) ───────────
+			r.With(middleware.RequirePermission("approvals:view")).Get("/pending-approvals", d.Approvals.List)
+			r.With(middleware.RequirePermission("approvals:view")).Get("/pending-approvals/{approval_id}", d.Approvals.Get)
+			r.With(middleware.RequirePermission("approvals:act")).Post("/pending-approvals/{approval_id}/approve", d.Approvals.Approve)
+			r.With(middleware.RequirePermission("approvals:act")).Post("/pending-approvals/{approval_id}/decline", d.Approvals.Decline)
+			r.With(middleware.RequirePermission("savings:transact")).Post("/pending-approvals/{approval_id}/cancel", d.Approvals.Cancel)
+			r.With(middleware.RequirePermission("approvals:view")).Get("/approval-settings", d.Approvals.GetSettings)
+			r.With(middleware.RequirePermission("tenant:settings:edit")).Put("/approval-settings", d.Approvals.UpdateSettings)
 		})
 
 		// Workflow callbacks — public-ish (no auth) since the workflow

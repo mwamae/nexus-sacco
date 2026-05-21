@@ -1558,9 +1558,9 @@ export async function purchaseShares(memberId: string, input: {
   payment_channel: SharePaymentChannel;
   payment_ref?: string;
   narration?: string;
-}): Promise<ShareTxnResponse> {
+}): Promise<CashActionResult<ShareTxnResponse>> {
   const r = await api.post(`/v1/share-accounts/by-member/${memberId}/purchase`, input);
-  return r.data.data;
+  return unwrapCash(r);
 }
 
 export async function transferShares(memberId: string, input: {
@@ -1568,9 +1568,9 @@ export async function transferShares(memberId: string, input: {
   to_member_id: string;
   reason: string;
   narration?: string;
-}): Promise<ShareTransferResponse> {
+}): Promise<CashActionResult<ShareTransferResponse>> {
   const r = await api.post(`/v1/share-accounts/by-member/${memberId}/transfer`, input);
-  return r.data.data;
+  return unwrapCash(r);
 }
 
 export async function redeemShares(memberId: string, input: {
@@ -1580,9 +1580,9 @@ export async function redeemShares(memberId: string, input: {
   payment_ref?: string;
   narration?: string;
   acknowledge_below_minimum?: boolean;
-}): Promise<ShareTxnResponse> {
+}): Promise<CashActionResult<ShareTxnResponse>> {
   const r = await api.post(`/v1/share-accounts/by-member/${memberId}/redeem`, input);
-  return r.data.data;
+  return unwrapCash(r);
 }
 
 export async function adjustShares(memberId: string, input: {
@@ -1598,9 +1598,9 @@ export async function placeShareLien(memberId: string, input: {
   reason: string;
   reference_kind?: string;
   reference_id?: string;
-}): Promise<ShareLien> {
+}): Promise<CashActionResult<ShareLien>> {
   const r = await api.post(`/v1/share-accounts/by-member/${memberId}/lien`, input);
-  return r.data.data;
+  return unwrapCash(r);
 }
 
 export async function releaseShareLien(lienId: string, reason: string): Promise<ShareLien> {
@@ -1624,9 +1624,9 @@ export async function getShareSummary(): Promise<ShareSummary> {
   return r.data.data;
 }
 
-export async function bonusShareIssue(input: { pct_of_holding: string; reason: string }): Promise<{ issued_to_count: number; total_bonus_shares: number; pct_applied: string }> {
+export async function bonusShareIssue(input: { pct_of_holding: string; reason: string }): Promise<CashActionResult<{ issued_to_count: number; total_bonus_shares: number; pct_applied: string }>> {
   const r = await api.post('/v1/share-accounts/bonus-issue', input);
-  return r.data.data;
+  return unwrapCash(r);
 }
 
 function axiosErrStatus(e: unknown): number | undefined {
@@ -1870,6 +1870,15 @@ export async function openDepositAccount(input: {
   return r.data.data;
 }
 
+export type CashActionResult<T> = { posted?: T; pending?: PendingApproval };
+
+function unwrapCash<T>(r: { status: number; data: { data: any } }): CashActionResult<T> {
+  if (r.status === 202 && r.data?.data?.pending) {
+    return { pending: r.data.data.pending as PendingApproval };
+  }
+  return { posted: r.data.data as T };
+}
+
 export async function postDeposit(accountId: string, input: {
   amount: string;
   channel: DepositChannel;
@@ -1877,9 +1886,9 @@ export async function postDeposit(accountId: string, input: {
   narration?: string;
   value_date?: string;
   bypass_duplicate_check?: boolean;
-}): Promise<{ transaction: DepositTransaction; account: DepositAccount }> {
+}): Promise<CashActionResult<{ transaction: DepositTransaction; account: DepositAccount }>> {
   const r = await api.post(`/v1/deposit-accounts/${accountId}/deposit`, input);
-  return r.data.data;
+  return unwrapCash(r);
 }
 
 export async function postWithdrawal(accountId: string, input: {
@@ -1888,9 +1897,9 @@ export async function postWithdrawal(accountId: string, input: {
   channel_ref?: string;
   narration?: string;
   reason?: string;
-}): Promise<{ transaction: DepositTransaction; account: DepositAccount; requires_approval: boolean }> {
+}): Promise<CashActionResult<{ transaction: DepositTransaction; account: DepositAccount; requires_approval: boolean }>> {
   const r = await api.post(`/v1/deposit-accounts/${accountId}/withdraw`, input);
-  return r.data.data;
+  return unwrapCash(r);
 }
 
 export async function giveWithdrawalNotice(accountId: string, amount: string): Promise<void> {
@@ -1901,9 +1910,9 @@ export async function transferBetweenOwn(accountId: string, input: {
   amount: string;
   to_account_id: string;
   narration?: string;
-}): Promise<{ from: { transaction: DepositTransaction; account: DepositAccount }; to: { transaction: DepositTransaction; account: DepositAccount } }> {
+}): Promise<CashActionResult<{ from: { transaction: DepositTransaction; account: DepositAccount }; to: { transaction: DepositTransaction; account: DepositAccount } }>> {
   const r = await api.post(`/v1/deposit-accounts/${accountId}/transfer`, input);
-  return r.data.data;
+  return unwrapCash(r);
 }
 
 export async function reverseDeposit(accountId: string, txnId: string, reason: string): Promise<{ reversal: DepositTransaction; account: DepositAccount }> {
@@ -2242,5 +2251,993 @@ export async function lockDividendRun(id: string): Promise<DividendRun> {
 
 export async function cancelDividendRun(id: string, reason: string): Promise<DividendRun> {
   const r = await api.post(`/v1/dividend-runs/${id}/cancel`, { reason });
+  return r.data.data;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Lending — products + purpose categories (Phase 6a)
+// ═══════════════════════════════════════════════════════════════════
+
+export type LoanCategory = 'short_term' | 'medium_term' | 'long_term' | 'emergency' | 'asset_finance' | 'group';
+export type LoanInterestMethod = 'flat_rate' | 'reducing_balance';
+export type LoanRepaymentMethod = 'reducing_balance' | 'flat_rate' | 'bullet' | 'interest_only';
+export type LoanFeeTiming = 'upfront' | 'added_to_loan' | 'at_each_installment';
+export type LoanCollateralRequirement = 'required' | 'optional' | 'not_applicable';
+export type LoanMultiplierBasis = 'none' | 'shares' | 'deposits' | 'shares_plus_deposits';
+
+export type LoanProduct = {
+  id: string;
+  code: string;
+  name: string;
+  category: LoanCategory;
+  description?: string;
+  is_active: boolean;
+  min_amount: string;
+  max_amount: string;
+  multiplier_basis: LoanMultiplierBasis;
+  multiplier_value?: string;
+  min_term_months: number;
+  max_term_months: number;
+  default_term_months?: number;
+  grace_period_months: number;
+  interest_rate_pct: string;
+  interest_method: LoanInterestMethod;
+  repayment_method: LoanRepaymentMethod;
+  processing_fee: string;
+  processing_fee_is_pct: boolean;
+  processing_fee_timing: LoanFeeTiming;
+  insurance_fee: string;
+  insurance_fee_is_pct: boolean;
+  insurance_fee_timing: LoanFeeTiming;
+  appraisal_fee: string;
+  appraisal_fee_is_pct: boolean;
+  appraisal_fee_timing: LoanFeeTiming;
+  penalty_rate_pct: string;
+  min_guarantors: number;
+  max_guarantor_exposure_pct: string;
+  guarantor_must_be_member: boolean;
+  collateral_requirement: LoanCollateralRequirement;
+  min_membership_months: number;
+  min_shares_required: number;
+  allow_concurrent: boolean;
+  workflow_definition_code?: string;
+  auto_approval_threshold?: string;
+  auto_approval_min_score?: number;
+  allow_topup: boolean;
+  allow_refinance: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LoanPurposeCategory = {
+  id: string;
+  code: string;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+};
+
+export async function listLoanProducts(includeInactive = false): Promise<LoanProduct[]> {
+  const r = await api.get('/v1/loan-products' + (includeInactive ? '?include_inactive=1' : ''));
+  return r.data.data ?? [];
+}
+
+export async function getLoanProduct(id: string): Promise<LoanProduct> {
+  const r = await api.get(`/v1/loan-products/${id}`);
+  return r.data.data;
+}
+
+export async function createLoanProduct(p: Partial<LoanProduct>): Promise<LoanProduct> {
+  const r = await api.post('/v1/loan-products', p);
+  return r.data.data;
+}
+
+export async function updateLoanProduct(id: string, p: Partial<LoanProduct>): Promise<LoanProduct> {
+  const r = await api.put(`/v1/loan-products/${id}`, p);
+  return r.data.data;
+}
+
+export async function deleteLoanProduct(id: string): Promise<void> {
+  await api.delete(`/v1/loan-products/${id}`);
+}
+
+export async function listLoanPurposeCategories(includeInactive = false): Promise<LoanPurposeCategory[]> {
+  const r = await api.get('/v1/loan-purpose-categories' + (includeInactive ? '?include_inactive=1' : ''));
+  return r.data.data ?? [];
+}
+
+export async function createLoanPurposeCategory(c: { code: string; name: string; is_active?: boolean }): Promise<LoanPurposeCategory> {
+  const r = await api.post('/v1/loan-purpose-categories', c);
+  return r.data.data;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Loan applications + loans (Phases 6b + 6c)
+// ═══════════════════════════════════════════════════════════════════
+
+export type LoanAppStatus =
+  | 'draft' | 'pending_validation' | 'pending_guarantor' | 'pending_scoring'
+  | 'pending_approval' | 'approved' | 'approved_with_conditions'
+  | 'declined' | 'returned_for_info'
+  | 'offer_sent' | 'offer_accepted' | 'offer_declined' | 'expired' | 'cancelled' | 'disbursed';
+
+export type LoanEmploymentType =
+  | 'salaried' | 'self_employed' | 'business_owner' | 'retired' | 'student' | 'other';
+
+export type LoanCollateralKind =
+  | 'title_deed' | 'vehicle_logbook' | 'equipment'
+  | 'listed_shares' | 'fixed_deposit_lien' | 'other';
+
+export type LoanGuaranteeStatus =
+  | 'pending_consent' | 'accepted' | 'declined' | 'released' | 'called_upon';
+
+export type LoanStatus =
+  | 'pending_disbursement' | 'active' | 'in_arrears' | 'defaulted'
+  | 'restructured' | 'settled' | 'written_off' | 'closed';
+
+export type LoanApplication = {
+  id: string;
+  application_no: string;
+  member_id: string;
+  product_id: string;
+  status: LoanAppStatus;
+  requested_amount: string;
+  requested_term_months: number;
+  purpose_category_id?: string;
+  purpose_note?: string;
+  preferred_disbursement_channel?: string;
+  employment_type?: LoanEmploymentType;
+  employer_name?: string;
+  monthly_net_income: string;
+  other_income: string;
+  monthly_expenses: string;
+  monthly_existing_obligations: string;
+  credit_score?: number;
+  risk_band?: string;
+  affordability_pass?: boolean;
+  dti_ratio?: string;
+  net_disposable_income?: string;
+  computed_max_amount?: string;
+  computed_max_installment?: string;
+  recommended_amount?: string;
+  recommended_term_months?: number;
+  scoring_details?: unknown;
+  scoring_flags?: unknown;
+  scored_at?: string;
+  workflow_instance_id?: string;
+  approved_amount?: string;
+  approved_term_months?: number;
+  approved_interest_rate_pct?: string;
+  approved_at?: string;
+  approved_by?: string;
+  approval_conditions?: string;
+  decline_category?: string;
+  decline_reason?: string;
+  offer_letter_path?: string;
+  offer_sent_at?: string;
+  offer_expires_at?: string;
+  offer_accepted_at?: string;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LoanGuarantee = {
+  id: string;
+  application_id: string;
+  loan_id?: string;
+  guarantor_member_id: string;
+  amount_guaranteed: string;
+  status: LoanGuaranteeStatus;
+  requested_at: string;
+  responded_at?: string;
+  decline_reason?: string;
+};
+
+export type LoanCollateralItem = {
+  id: string;
+  application_id: string;
+  loan_id?: string;
+  kind: LoanCollateralKind;
+  description: string;
+  estimated_value: string;
+  forced_sale_value?: string;
+  valuation_date?: string;
+  status: string;
+};
+
+export type LoanScoreFactor = { name: string; score: number; weight: number; note: string };
+export type LoanScoreFlag = { severity: 'hard_block' | 'soft_flag' | 'advisory'; code: string; message: string };
+export type LoanScoreResult = {
+  overall_score: number;
+  risk_band: string;
+  factors: LoanScoreFactor[];
+  flags: LoanScoreFlag[];
+  has_hard_block: boolean;
+  affordability_pass: boolean;
+  dti_ratio: string;
+  net_disposable_income: string;
+  computed_installment: string;
+  computed_max_amount: string;
+  computed_max_installment: string;
+  recommended_amount: string;
+  recommended_term_months: number;
+};
+
+export type CreateLoanAppResponse = {
+  application: LoanApplication;
+  guarantees: LoanGuarantee[];
+  collateral: LoanCollateralItem[];
+  score: LoanScoreResult;
+};
+
+export type LoanAppListItem = {
+  application: LoanApplication;
+  member_no: string;
+  member_name: string;
+  product_code: string;
+  product_name: string;
+};
+
+export type ScheduleSnapshot = {
+  generated_at: string;
+  principal: string;
+  interest_rate_pct: string;
+  term_months: number;
+  grace_period_months: number;
+  interest_method: string;
+  repayment_method: string;
+  start_date: string;
+  first_due_date: string;
+  rows: Array<{
+    installment_no: number;
+    due_date: string;
+    principal_due: string;
+    interest_due: string;
+    fee_due: string;
+    total_due: string;
+    outstanding_after: string;
+  }>;
+  total_principal: string;
+  total_interest: string;
+  total_payable: string;
+  installment: string;
+};
+
+export type LoanAppDetail = {
+  application: LoanApplication;
+  guarantees: LoanGuarantee[];
+  collateral: LoanCollateralItem[];
+  schedule?: ScheduleSnapshot;
+};
+
+export async function listLoanApplications(opts: { status?: string; member_id?: string; product_id?: string; q?: string; limit?: number; offset?: number } = {}): Promise<{ items: LoanAppListItem[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.member_id) p.set('member_id', opts.member_id);
+  if (opts.product_id) p.set('product_id', opts.product_id);
+  if (opts.q) p.set('q', opts.q);
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get('/v1/loan-applications' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+
+export async function getLoanApplication(id: string): Promise<LoanAppDetail> {
+  const r = await api.get(`/v1/loan-applications/${id}`);
+  return r.data.data;
+}
+
+export async function createLoanApplication(input: {
+  member_id: string;
+  product_id: string;
+  requested_amount: string;
+  requested_term_months: number;
+  purpose_category_id?: string;
+  purpose_note?: string;
+  preferred_disbursement_channel?: string;
+  employment_type?: LoanEmploymentType;
+  employer_name?: string;
+  employer_payroll_contact?: string;
+  monthly_net_income: string;
+  other_income?: string;
+  monthly_expenses: string;
+  monthly_existing_obligations?: string;
+  guarantors: { member_id: string; amount_guaranteed: string }[];
+  collateral: { kind: LoanCollateralKind; description: string; estimated_value: string; forced_sale_value?: string; valuation_date?: string; notes?: string }[];
+  notes?: string;
+}): Promise<CreateLoanAppResponse> {
+  const r = await api.post('/v1/loan-applications', input);
+  return r.data.data;
+}
+
+export async function rescoreLoanApplication(id: string): Promise<CreateLoanAppResponse> {
+  const r = await api.post(`/v1/loan-applications/${id}/score`);
+  return r.data.data;
+}
+
+export async function approveLoanApplication(id: string, input: {
+  approved_amount?: string;
+  approved_term_months?: number;
+  approved_interest_rate_pct?: string;
+  approval_conditions?: string;
+}): Promise<LoanApplication> {
+  const r = await api.post(`/v1/loan-applications/${id}/approve`, input);
+  return r.data.data;
+}
+
+export async function declineLoanApplication(id: string, category: string, reason: string): Promise<LoanApplication> {
+  const r = await api.post(`/v1/loan-applications/${id}/decline`, { category, reason });
+  return r.data.data;
+}
+
+export async function respondToGuarantee(guaranteeId: string, accept: boolean, declineReason?: string): Promise<LoanGuarantee> {
+  const r = await api.post(`/v1/loan-guarantees/${guaranteeId}/respond`, { accept, decline_reason: declineReason });
+  return r.data.data;
+}
+
+export async function sendLoanOffer(appId: string, input: { expires_at?: string; letter_path?: string } = {}): Promise<LoanApplication> {
+  const r = await api.post(`/v1/loan-applications/${appId}/send-offer`, input);
+  return r.data.data;
+}
+
+export async function acceptLoanOffer(appId: string): Promise<{ application: LoanApplication; loan: Loan }> {
+  const r = await api.post(`/v1/loan-applications/${appId}/accept-offer`, { confirmed: true });
+  return r.data.data;
+}
+
+// ─────────── Loans ───────────
+
+export type Loan = {
+  id: string;
+  loan_no: string;
+  application_id: string;
+  member_id: string;
+  product_id: string;
+  status: LoanStatus;
+  principal: string;
+  interest_rate_pct: string;
+  interest_method: LoanInterestMethod;
+  repayment_method: LoanRepaymentMethod;
+  term_months: number;
+  grace_period_months: number;
+  installment_count: number;
+  first_due_date?: string;
+  disbursement_channel?: string;
+  disbursement_target_account_id?: string;
+  disbursement_ref?: string;
+  total_fees_deducted: string;
+  net_disbursed?: string;
+  disbursed_at?: string;
+  principal_disbursed: string;
+  principal_repaid: string;
+  principal_balance: string;
+  interest_charged: string;
+  interest_paid: string;
+  interest_balance: string;
+  fees_charged: string;
+  fees_paid: string;
+  fees_balance: string;
+  penalty_accrued: string;
+  penalty_paid: string;
+  penalty_balance: string;
+  installments_paid: number;
+  next_installment_due_at?: string;
+  next_installment_amount?: string;
+  days_past_due: number;
+  arrears_classification: string;
+  last_repayment_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LoanInstallment = {
+  id: string;
+  loan_id: string;
+  installment_no: number;
+  due_date: string;
+  principal_due: string;
+  interest_due: string;
+  fee_due: string;
+  total_due: string;
+  principal_paid: string;
+  interest_paid: string;
+  fee_paid: string;
+  status: string;
+  paid_at?: string;
+  outstanding_after: string;
+};
+
+export type LoanTransaction = {
+  id: string;
+  loan_id: string;
+  txn_no: string;
+  txn_type: string;
+  amount: string;
+  principal_component: string;
+  interest_component: string;
+  fee_component: string;
+  penalty_component: string;
+  value_date: string;
+  channel?: string;
+  channel_ref?: string;
+  narration?: string;
+  posted_at: string;
+};
+
+export type LoanDetail = {
+  loan: Loan;
+  schedule: LoanInstallment[];
+  transactions: LoanTransaction[];
+  guarantees: LoanGuarantee[];
+  collateral: LoanCollateralItem[];
+};
+
+export type LoanListItem = {
+  loan: Loan;
+  member_no: string;
+  member_name: string;
+  product_code: string;
+  product_name: string;
+};
+
+export async function listLoans(opts: { status?: string; member_id?: string; product_id?: string; q?: string; limit?: number; offset?: number } = {}): Promise<{ items: LoanListItem[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.member_id) p.set('member_id', opts.member_id);
+  if (opts.product_id) p.set('product_id', opts.product_id);
+  if (opts.q) p.set('q', opts.q);
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get('/v1/loans' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+
+export async function getLoan(id: string): Promise<LoanDetail> {
+  const r = await api.get(`/v1/loans/${id}`);
+  return r.data.data;
+}
+
+export async function disburseLoan(id: string, input: {
+  channel: string;
+  target_account_id?: string;
+  external_ref?: string;
+  value_date?: string;
+}): Promise<CashActionResult<{
+  loan: Loan;
+  schedule: LoanInstallment[];
+  fees: LoanTransaction[];
+  disbursement: LoanTransaction;
+  net_disbursed: string;
+}>> {
+  const r = await api.post(`/v1/loans/${id}/disburse`, input);
+  return unwrapCash(r);
+}
+
+// ─────────── Repayment + DPD (Phase 6d) ───────────
+
+export type RepaymentAllocation = {
+  Penalty: string;
+  Interest: string;
+  Principal: string;
+  Fees: string;
+  Suspense: string;
+};
+
+export type DPDResult = {
+  LoanID: string;
+  DaysPastDue: number;
+  Classification: string;
+  StatusChanged: boolean;
+  PreviousStatus: LoanStatus;
+  NewStatus: LoanStatus;
+};
+
+export type RepayResponse = {
+  transaction: LoanTransaction;
+  allocation: RepaymentAllocation;
+  loan: Loan;
+  dpd: DPDResult;
+};
+
+export type LoanPayoff = {
+  loan: Loan;
+  payoff: string;
+  breakdown: {
+    principal_balance: string;
+    interest_balance: string;
+    fees_balance: string;
+    penalty_balance: string;
+  };
+};
+
+export type ArrearsBand = {
+  classification: string;
+  loan_count: number;
+  total_outstanding: string;
+};
+
+export type ArrearsSummary = {
+  bands: ArrearsBand[];
+  total_loans: number;
+  total_outstanding: string;
+  npl_loan_count: number;
+  npl_outstanding: string;
+  npl_ratio_pct: string;
+};
+
+export async function getLoanPayoff(loanId: string): Promise<LoanPayoff> {
+  const r = await api.get(`/v1/loans/${loanId}/payoff`);
+  return r.data.data;
+}
+
+export async function repayLoan(loanId: string, input: {
+  amount: string;
+  channel: string;
+  channel_ref?: string;
+  narration?: string;
+  value_date?: string;
+  debit_savings_account_id?: string;
+}): Promise<CashActionResult<RepayResponse>> {
+  const r = await api.post(`/v1/loans/${loanId}/repay`, input);
+  return unwrapCash(r);
+}
+
+export async function settleLoan(loanId: string, input: {
+  channel: string;
+  channel_ref?: string;
+  narration?: string;
+  debit_savings_account_id?: string;
+}): Promise<CashActionResult<RepayResponse>> {
+  const r = await api.post(`/v1/loans/${loanId}/settle`, input);
+  return unwrapCash(r);
+}
+
+export async function reverseLoanTxn(txnId: string, reason: string): Promise<CashActionResult<{ reversal: LoanTransaction; loan: Loan }>> {
+  const r = await api.post(`/v1/loan-transactions/${txnId}/reverse`, { reason });
+  return unwrapCash(r);
+}
+
+export async function recalcLoanDPD(loanId: string): Promise<DPDResult> {
+  const r = await api.post(`/v1/loans/${loanId}/recalc-dpd`);
+  return r.data.data;
+}
+
+export async function getLoanArrearsSummary(): Promise<ArrearsSummary> {
+  const r = await api.get('/v1/loans/arrears-summary');
+  return r.data.data;
+}
+
+// ─────────── Collections + restructuring (Phase 6e) ───────────
+
+export type CollectionCaseStatus =
+  | 'open' | 'in_progress' | 'paused' | 'escalated_legal'
+  | 'closed_recovered' | 'closed_uncollectable';
+
+export type CollectionContactKind = 'call' | 'sms' | 'whatsapp' | 'email' | 'in_person_visit' | 'letter';
+export type ContactOutcome =
+  | 'reached' | 'no_answer' | 'wrong_number' | 'busy'
+  | 'left_message' | 'promise_made' | 'dispute' | 'refused' | 'visited_not_home';
+export type PTPStatus = 'open' | 'kept' | 'partial' | 'broken' | 'cancelled';
+
+export type CollectionCase = {
+  id: string;
+  loan_id: string;
+  member_id: string;
+  status: CollectionCaseStatus;
+  classification_at_open?: string;
+  assigned_to?: string;
+  assigned_at?: string;
+  priority: number;
+  total_contacts: number;
+  last_contact_at?: string;
+  last_action?: string;
+  notes?: string;
+  opened_at: string;
+  closed_at?: string;
+  closure_reason?: string;
+};
+
+export type CollectionContact = {
+  id: string;
+  case_id: string;
+  kind: CollectionContactKind;
+  outcome: ContactOutcome;
+  note?: string;
+  contacted_at: string;
+  contacted_by: string;
+};
+
+export type PromiseToPay = {
+  id: string;
+  case_id: string;
+  loan_id: string;
+  promised_amount: string;
+  promised_date: string;
+  promised_channel?: string;
+  status: PTPStatus;
+  paid_amount: string;
+  resolved_at?: string;
+  notes?: string;
+  created_at: string;
+};
+
+export type CollectionCaseListItem = {
+  case: CollectionCase;
+  loan: Loan;
+  member_no: string;
+  member_name: string;
+  product_code: string;
+  open_ptps: number;
+};
+
+export type CollectionCaseDetail = {
+  case: CollectionCase;
+  loan: Loan;
+  contacts: CollectionContact[];
+  ptps: PromiseToPay[];
+};
+
+export async function listCollectionCases(opts: { status?: string; assigned_to?: string; unassigned?: boolean; limit?: number; offset?: number } = {}): Promise<{ items: CollectionCaseListItem[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.assigned_to) p.set('assigned_to', opts.assigned_to);
+  if (opts.unassigned) p.set('unassigned', '1');
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get('/v1/collection-cases' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+
+export async function getCollectionCase(caseId: string): Promise<CollectionCaseDetail> {
+  const r = await api.get(`/v1/collection-cases/${caseId}`);
+  return r.data.data;
+}
+
+export async function assignCollectionCase(caseId: string, assignTo: string): Promise<CollectionCase> {
+  const r = await api.post(`/v1/collection-cases/${caseId}/assign`, { assign_to: assignTo });
+  return r.data.data;
+}
+
+export async function closeCollectionCase(caseId: string, recovered: boolean, reason: string): Promise<CollectionCase> {
+  const r = await api.post(`/v1/collection-cases/${caseId}/close`, { recovered, reason });
+  return r.data.data;
+}
+
+export async function logCollectionContact(caseId: string, input: {
+  kind: CollectionContactKind;
+  outcome: ContactOutcome;
+  note?: string;
+}): Promise<CollectionContact> {
+  const r = await api.post(`/v1/collection-cases/${caseId}/contacts`, input);
+  return r.data.data;
+}
+
+export async function createPromiseToPay(caseId: string, input: {
+  promised_amount: string;
+  promised_date: string;
+  promised_channel?: string;
+  notes?: string;
+}): Promise<PromiseToPay> {
+  const r = await api.post(`/v1/collection-cases/${caseId}/promises`, input);
+  return r.data.data;
+}
+
+export async function resolvePromiseToPay(ptpId: string, status: 'kept' | 'partial' | 'broken' | 'cancelled', paidAmount: string, notes?: string): Promise<PromiseToPay> {
+  const r = await api.post(`/v1/promises/${ptpId}/resolve`, { status, paid_amount: paidAmount, notes });
+  return r.data.data;
+}
+
+// ─────────── Restructuring ───────────
+
+export type RestructuringKind = 'reschedule' | 'topup' | 'refinance' | 'moratorium' | 'settlement_discount';
+
+export type LoanRestructuring = {
+  id: string;
+  loan_id: string;
+  kind: RestructuringKind;
+  reason: string;
+  previous_principal_balance?: string;
+  previous_interest_balance?: string;
+  previous_term_months?: number;
+  previous_interest_rate_pct?: string;
+  previous_status?: LoanStatus;
+  new_term_months?: number;
+  new_interest_rate_pct?: string;
+  topup_amount?: string;
+  refinance_new_loan_id?: string;
+  moratorium_months?: number;
+  moratorium_suspend_interest?: boolean;
+  discount_amount?: string;
+  authorized_at?: string;
+  created_at: string;
+};
+
+export async function rescheduleLoan(loanId: string, input: {
+  new_term_months: number;
+  new_interest_rate_pct?: string;
+  new_first_due_date?: string;
+  reason: string;
+}): Promise<CashActionResult<{ restructuring: LoanRestructuring; loan: Loan }>> {
+  const r = await api.post(`/v1/loans/${loanId}/reschedule`, input);
+  return unwrapCash(r);
+}
+
+export async function moratoriumLoan(loanId: string, input: {
+  moratorium_months: number;
+  suspend_interest: boolean;
+  reason: string;
+}): Promise<CashActionResult<{ restructuring: LoanRestructuring; loan: Loan }>> {
+  const r = await api.post(`/v1/loans/${loanId}/moratorium`, input);
+  return unwrapCash(r);
+}
+
+export async function settlementDiscountLoan(loanId: string, input: {
+  discount_amount: string;
+  reason: string;
+}): Promise<CashActionResult<{ restructuring: LoanRestructuring; loan: Loan }>> {
+  const r = await api.post(`/v1/loans/${loanId}/settlement-discount`, input);
+  return unwrapCash(r);
+}
+
+export async function recordTopupIntent(loanId: string, topupAmount: string, reason: string): Promise<LoanRestructuring> {
+  const r = await api.post(`/v1/loans/${loanId}/topup-intent`, { topup_amount: topupAmount, reason });
+  return r.data.data;
+}
+
+export async function listRestructurings(loanId: string): Promise<LoanRestructuring[]> {
+  const r = await api.get(`/v1/loans/${loanId}/restructurings`);
+  return r.data.data ?? [];
+}
+
+// ───────────────────────────── Loan reports (Phase 6f) ─────────────────────────────
+
+export type PortfolioSummary = {
+  total_loans_lifetime: number;
+  total_disbursed_lifetime: string;
+  total_outstanding: string;
+  principal_outstanding: string;
+  interest_receivable: string;
+  fees_receivable: string;
+  penalty_receivable: string;
+  active_loans: number;
+  in_arrears_loans: number;
+  restructured_loans: number;
+  settled_loans: number;
+  written_off_loans: number;
+  by_product: Array<{
+    product_id: string;
+    product_code: string;
+    product_name: string;
+    active_loans: number;
+    total_outstanding: string;
+    principal_outstanding: string;
+  }>;
+  by_status: Array<{ status: string; loan_count: number; outstanding: string }>;
+};
+
+export async function getPortfolioSummary(): Promise<PortfolioSummary> {
+  const r = await api.get('/v1/loan-reports/portfolio');
+  return r.data.data;
+}
+
+export type AgingBand = {
+  classification: string;
+  loan_count: number;
+  principal_balance: string;
+  interest_balance: string;
+  total_outstanding: string;
+  provisioning_pct: string;
+  provisioning_amount: string;
+};
+
+export type AgingReport = {
+  bands: AgingBand[];
+  total_loans: number;
+  total_outstanding: string;
+  total_provisioning: string;
+  npl_loan_count: number;
+  npl_outstanding: string;
+  npl_ratio_pct: string;
+};
+
+export async function getAgingReport(): Promise<AgingReport> {
+  const r = await api.get('/v1/loan-reports/aging');
+  return r.data.data;
+}
+
+export type MaturingLoan = {
+  loan: Loan;
+  member_no: string;
+  member_name: string;
+  product_name: string;
+  final_due_date: string;
+  days_until_final: number;
+};
+
+export async function getMaturingLoans(withinDays = 30): Promise<{ within_days: number; items: MaturingLoan[] }> {
+  const r = await api.get(`/v1/loan-reports/maturing?within_days=${withinDays}`);
+  return r.data.data;
+}
+
+export type RestructuringRegisterEntry = {
+  restructuring: LoanRestructuring;
+  loan_no: string;
+  member_no: string;
+  member_name: string;
+  product_name: string;
+};
+
+export async function getRestructuringRegister(kind = ''): Promise<RestructuringRegisterEntry[]> {
+  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  const r = await api.get(`/v1/loan-reports/restructured${qs}`);
+  return r.data.data?.items ?? [];
+}
+
+export type LoanWriteoff = {
+  id: string;
+  loan_id: string;
+  member_id: string;
+  principal_written_off: string;
+  interest_written_off: string;
+  fees_written_off: string;
+  penalty_written_off: string;
+  total_written_off: string;
+  reason: string;
+  authorized_at: string;
+  authorized_by: string;
+  writeoff_txn_id?: string;
+};
+
+export type WriteoffRegisterEntry = {
+  writeoff: LoanWriteoff;
+  loan_no: string;
+  member_no: string;
+  member_name: string;
+  recovered_amount: string;
+};
+
+export async function getWriteoffRegister(): Promise<WriteoffRegisterEntry[]> {
+  const r = await api.get('/v1/loan-reports/writeoffs');
+  return r.data.data?.items ?? [];
+}
+
+export async function writeOffLoan(loanId: string, reason: string): Promise<CashActionResult<{ writeoff: LoanWriteoff; loan: Loan }>> {
+  const r = await api.post(`/v1/loans/${loanId}/writeoff`, { reason });
+  return unwrapCash(r);
+}
+
+export type CRBRecord = {
+  loan_no: string;
+  member_id: string;
+  member_name: string;
+  id_doc_number: string;
+  disbursed_at?: string;
+  principal_disbursed: string;
+  outstanding_balance: string;
+  days_past_due: number;
+  classification: string;
+  is_npl: boolean;
+};
+
+export async function getCRBSubmission(): Promise<{ records: CRBRecord[]; record_count: number }> {
+  const r = await api.get('/v1/loan-reports/crb-submission');
+  return r.data.data;
+}
+
+export type MemberLoanHistory = {
+  member_id: string;
+  total_loans_ever_taken: number;
+  active_loans: number;
+  total_disbursed: string;
+  total_outstanding: string;
+  loans: Array<{ loan: Loan; product_code: string; product_name: string }>;
+};
+
+export async function getMemberLoanHistory(memberId: string): Promise<MemberLoanHistory> {
+  const r = await api.get(`/v1/loan-reports/by-member/${memberId}`);
+  return r.data.data;
+}
+
+// ───────────────────────────── Maker-checker (Phase 7b) ─────────────────────────────
+
+export type ApprovalKind =
+  | 'deposit' | 'withdrawal' | 'deposit_transfer'
+  | 'share_purchase' | 'share_redeem' | 'share_transfer' | 'share_bonus'
+  | 'loan_disbursement' | 'loan_repayment' | 'loan_settle' | 'loan_reverse'
+  | 'loan_writeoff' | 'loan_reschedule' | 'loan_moratorium' | 'loan_settlement_discount';
+
+export type ApprovalStatus = 'pending' | 'approved' | 'declined' | 'cancelled' | 'execution_error';
+
+export type PendingApproval = {
+  id: string;
+  tenant_id: string;
+  kind: ApprovalKind;
+  status: ApprovalStatus;
+  title: string;
+  subject_member_id?: string;
+  subject_account_id?: string;
+  subject_loan_id?: string;
+  amount?: string;
+  payload: string; // base64 JSON in Go, comes through as object after axios JSON parse — kept as any
+  maker_user_id: string;
+  maker_at: string;
+  maker_note?: string;
+  checker_user_id?: string;
+  checker_at?: string;
+  checker_note?: string;
+  result_txn_id?: string;
+  result_error?: string;
+  created_at: string;
+};
+
+export type ApprovalToggles = {
+  deposit: boolean;
+  withdrawal: boolean;
+  deposit_transfer: boolean;
+  share_purchase: boolean;
+  share_redeem: boolean;
+  share_transfer: boolean;
+  share_bonus: boolean;
+  share_lien: boolean;
+  loan_disbursement: boolean;
+  loan_repayment: boolean;
+  loan_settle: boolean;
+  loan_reverse: boolean;
+  loan_writeoff: boolean;
+  loan_reschedule: boolean;
+  loan_moratorium: boolean;
+  loan_settlement_discount: boolean;
+  allow_self: boolean;
+};
+
+export async function listPendingApprovals(opts: {
+  status?: string;
+  kind?: string;
+  member_id?: string;
+  maker_user_id?: string;
+  include_closed?: boolean;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<{ items: PendingApproval[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.kind) p.set('kind', opts.kind);
+  if (opts.member_id) p.set('member_id', opts.member_id);
+  if (opts.maker_user_id) p.set('maker_user_id', opts.maker_user_id);
+  if (opts.include_closed) p.set('include_closed', '1');
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get('/v1/pending-approvals' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+
+export async function getPendingApproval(id: string): Promise<PendingApproval> {
+  const r = await api.get(`/v1/pending-approvals/${id}`);
+  return r.data.data;
+}
+
+export async function approvePendingApproval(id: string, note?: string): Promise<{ approval: PendingApproval; result: any }> {
+  const r = await api.post(`/v1/pending-approvals/${id}/approve`, { note: note ?? '' });
+  return r.data.data;
+}
+
+export async function declinePendingApproval(id: string, note: string): Promise<PendingApproval> {
+  const r = await api.post(`/v1/pending-approvals/${id}/decline`, { note });
+  return r.data.data;
+}
+
+export async function cancelPendingApproval(id: string, note?: string): Promise<PendingApproval> {
+  const r = await api.post(`/v1/pending-approvals/${id}/cancel`, { note: note ?? '' });
+  return r.data.data;
+}
+
+export async function getApprovalSettings(): Promise<ApprovalToggles> {
+  const r = await api.get('/v1/approval-settings');
+  return r.data.data;
+}
+
+export async function updateApprovalSettings(input: Partial<ApprovalToggles>): Promise<ApprovalToggles> {
+  const r = await api.put('/v1/approval-settings', input);
   return r.data.data;
 }

@@ -815,8 +815,11 @@ function ShareBuyModal({ memberId, onClose, onSaved }: { memberId: string; onClo
       disabled={shares <= 0}
       onSubmit={async () => {
         setErr(null); setBusy(true);
-        try { await purchaseShares(memberId, { shares, payment_channel: channel, payment_ref: ref || undefined, narration: note || undefined }); await onSaved(); }
-        catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
+        try {
+          const r = await purchaseShares(memberId, { shares, payment_channel: channel, payment_ref: ref || undefined, narration: note || undefined });
+          if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
+          await onSaved();
+        } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>
       {err && <div className="alert alert-error">{err}</div>}
       <Field label="Shares"><input className="input" type="number" min={1} value={shares} onChange={(e) => setShares(parseInt(e.target.value, 10) || 0)} /></Field>
@@ -851,10 +854,11 @@ function ShareRedeemModal({ memberId, max, held, minRequired, onClose, onSaved }
       onSubmit={async () => {
         setErr(null); setBusy(true);
         try {
-          await redeemShares(memberId, {
+          const r = await redeemShares(memberId, {
             shares, reason, payment_channel: channel, payment_ref: ref || undefined,
             acknowledge_below_minimum: wouldBeBelowMin ? ack : undefined,
           });
+          if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
           await onSaved();
         } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>
@@ -896,8 +900,11 @@ function ShareTransferModal({ memberId, max, onClose, onSaved }: {
       disabled={shares <= 0 || shares > max || !validUUID || !reason.trim() || to === memberId}
       onSubmit={async () => {
         setErr(null); setBusy(true);
-        try { await transferShares(memberId, { shares, to_member_id: to, reason, narration: note || undefined }); await onSaved(); }
-        catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
+        try {
+          const r = await transferShares(memberId, { shares, to_member_id: to, reason, narration: note || undefined });
+          if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
+          await onSaved();
+        } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>
       {err && <div className="alert alert-error">{err}</div>}
       <Field label={`Shares (max available: ${max})`}><input className="input" type="number" min={1} max={max} value={shares} onChange={(e) => setShares(parseInt(e.target.value, 10) || 0)} /></Field>
@@ -941,8 +948,11 @@ function ShareLienModal({ memberId, max, onClose, onSaved }: { memberId: string;
       disabled={shares <= 0 || shares > max || !reason.trim()}
       onSubmit={async () => {
         setErr(null); setBusy(true);
-        try { await placeShareLien(memberId, { shares, reason, reference_kind: kind, reference_id: ref || undefined }); await onSaved(); }
-        catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
+        try {
+          const r = await placeShareLien(memberId, { shares, reason, reference_kind: kind, reference_id: ref || undefined });
+          if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
+          await onSaved();
+        } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>
       {err && <div className="alert alert-error">{err}</div>}
       <Field label={`Shares to pledge (max available: ${max})`}><input className="input" type="number" min={1} max={max} value={shares} onChange={(e) => setShares(parseInt(e.target.value, 10) || 0)} /></Field>
@@ -1067,8 +1077,11 @@ function DepDepositModal({ it, currency, onClose, onSaved }: { it: MemberDeposit
       disabled={!amount || parseFloat(amount) <= 0}
       onSubmit={async () => {
         setErr(null); setBusy(true);
-        try { await postDeposit(it.account.id, { amount, channel, channel_ref: ref || undefined, narration: narr || undefined }); await onSaved(); }
-        catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
+        try {
+          const r = await postDeposit(it.account.id, { amount, channel, channel_ref: ref || undefined, narration: narr || undefined });
+          if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
+          await onSaved();
+        } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>
       {err && <div className="alert alert-error">{err}</div>}
       <p className="muted tiny" style={{ marginTop: 0 }}>
@@ -1105,7 +1118,8 @@ function DepWithdrawModal({ it, currency, onClose, onSaved }: { it: MemberDeposi
         setErr(null); setBusy(true);
         try {
           const r = await postWithdrawal(it.account.id, { amount, channel, channel_ref: ref || undefined, narration: narr || undefined, reason: reason || undefined });
-          if (r.requires_approval) alert('Posted. Note: this withdrawal exceeded the large-withdrawal threshold — Phase 4 will route via the approval workflow.');
+          if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
+          else if (r.posted?.requires_approval) alert('Posted. Note: this withdrawal exceeded the large-withdrawal threshold.');
           await onSaved();
         } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>
@@ -1156,8 +1170,11 @@ function DepTransferModal({ it, otherAccounts, currency, onClose, onSaved }: {
       disabled={!amount || parseFloat(amount) <= 0 || !toID}
       onSubmit={async () => {
         setErr(null); setBusy(true);
-        try { await transferBetweenOwn(it.account.id, { amount, to_account_id: toID, narration: narr || undefined }); await onSaved(); }
-        catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
+        try {
+          const r = await transferBetweenOwn(it.account.id, { amount, to_account_id: toID, narration: narr || undefined });
+          if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
+          await onSaved();
+        } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>
       {err && <div className="alert alert-error">{err}</div>}
       <p className="muted tiny" style={{ marginTop: 0 }}>From {it.product.name} · Available <strong>{currency} {fmtMoney(it.account.available_balance)}</strong></p>

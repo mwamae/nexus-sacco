@@ -17,10 +17,12 @@ import {
   setMemberStatus,
   uploadMemberDocument,
   extractError,
+  getMemberLoanHistory,
   type ApiMemberDetail,
   type ApiRelation,
   type AuditEntry,
   type DocumentKind,
+  type MemberLoanHistory,
   type MemberStatus,
 } from '../api/client';
 import { Avatar } from '../components/Avatar';
@@ -42,12 +44,13 @@ const DOC_ACCEPT: Record<DocumentKind, string> = {
   id_back: 'image/png,image/jpeg,image/webp',
 };
 
-type TabId = 'overview' | 'profile' | 'people' | 'accounts' | 'documents' | 'activity';
+type TabId = 'overview' | 'profile' | 'people' | 'accounts' | 'loans' | 'documents' | 'activity';
 const TABS: { id: TabId; label: string }[] = [
   { id: 'overview',  label: 'Overview' },
   { id: 'profile',   label: 'Profile' },
   { id: 'people',    label: 'People' },
   { id: 'accounts',  label: 'Accounts' },
+  { id: 'loans',     label: 'Loans' },
   { id: 'documents', label: 'Documents & KYC' },
   { id: 'activity',  label: 'Activity' },
 ];
@@ -176,6 +179,7 @@ export default function MemberProfile() {
               )}
               {tab === 'people'   && <PeopleTab m={m} />}
               {tab === 'accounts' && <AccountsTab currency={currency} memberId={memberId} />}
+              {tab === 'loans' && <LoansTab memberId={memberId} />}
               {tab === 'documents' && (
                 <DocumentsTab
                   m={m}
@@ -545,11 +549,6 @@ function AccountsTab({ currency, memberId }: { currency: string; memberId: strin
       <MemberAccountsPanel memberId={memberId} currency={currency} />
       <div className="grid-2" style={{ marginTop: 14 }}>
         <PendingCard
-          title="Loans"
-          sub="Active and historical loans, repayment schedule, arrears."
-          body={`Active principal (${currency}), outstanding balance, next payment, arrears summary. Pending the loans module.`}
-        />
-        <PendingCard
           title="Transactions"
           sub="Unified ledger view across savings, loans, shares, fees."
           body="Single timeline of debits and credits. Pending the transactions ledger."
@@ -557,6 +556,79 @@ function AccountsTab({ currency, memberId }: { currency: string; memberId: strin
       </div>
     </>
   );
+}
+
+// ─────────── Loans tab ───────────
+
+function LoansTab({ memberId }: { memberId: string }) {
+  const [data, setData] = useState<MemberLoanHistory | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    getMemberLoanHistory(memberId).then(setData).catch((e) => setErr(extractError(e)));
+  }, [memberId]);
+  if (err) return <div className="alert alert-error">{err}</div>;
+  if (!data) return <div className="muted">Loading…</div>;
+  return (
+    <>
+      <div className="kpi-grid" style={{ marginBottom: 14 }}>
+        <div className="card kpi"><div className="muted tiny">Loans ever taken</div><div className="kpi-value">{data.total_loans_ever_taken}</div></div>
+        <div className="card kpi"><div className="muted tiny">Active</div><div className="kpi-value">{data.active_loans}</div></div>
+        <div className="card kpi"><div className="muted tiny">Total disbursed</div><div className="kpi-value mono">{fmtMoney(data.total_disbursed)}</div></div>
+        <div className="card kpi"><div className="muted tiny">Total outstanding</div><div className="kpi-value mono">{fmtMoney(data.total_outstanding)}</div></div>
+      </div>
+      <div className="card">
+        <div className="card-hd">
+          <h3>Loan history</h3>
+          <span className="card-sub">All loans for this member</span>
+        </div>
+        <div className="card-body flush">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Loan</th>
+                <th>Product</th>
+                <th>Status</th>
+                <th className="r">Principal</th>
+                <th className="r">Outstanding</th>
+                <th className="r">DPD</th>
+                <th>Disbursed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.loans.map((row) => {
+                const l = row.loan;
+                const outstanding = (
+                  parseFloat(l.principal_balance) + parseFloat(l.interest_balance) +
+                  parseFloat(l.fees_balance) + parseFloat(l.penalty_balance)
+                ).toFixed(2);
+                return (
+                  <tr key={l.id}>
+                    <td><a href={`/loans/${l.id}`} className="mono">{l.loan_no}</a></td>
+                    <td><span className="mono">{row.product_code}</span> · {row.product_name}</td>
+                    <td><StatusBadge status={l.status} /></td>
+                    <td className="r mono">{fmtMoney(l.principal)}</td>
+                    <td className="r mono">{fmtMoney(outstanding)}</td>
+                    <td className="r mono">{l.days_past_due}</td>
+                    <td className="mono">{l.disbursed_at?.slice(0, 10) ?? '—'}</td>
+                  </tr>
+                );
+              })}
+              {data.loans.length === 0 && (
+                <tr><td colSpan={7} className="muted center">No loans on file</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function fmtMoney(s: string | number | undefined | null): string {
+  if (s === undefined || s === null) return '0.00';
+  const n = typeof s === 'number' ? s : parseFloat(s);
+  if (!isFinite(n)) return String(s);
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function PendingCard({ title, sub, body }: { title: string; sub: string; body: string }) {

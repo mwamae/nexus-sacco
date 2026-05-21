@@ -12,6 +12,9 @@ import {
   updateRegion,
   uploadLogo,
   extractError,
+  getApprovalSettings,
+  updateApprovalSettings,
+  type ApprovalToggles,
   type DividendFrequency,
   type InterestMethod,
   type TenantBranding,
@@ -22,11 +25,12 @@ import {
 import { Badge } from '../components/Badge';
 import { Icon } from '../components/Icon';
 
-type Tab = 'branding' | 'region' | 'operations';
+type Tab = 'branding' | 'region' | 'operations' | 'approvals';
 const TABS: { id: Tab; label: string; hint: string }[] = [
   { id: 'branding',   label: 'Branding',   hint: 'Logo, colors, typography, channel sender IDs' },
   { id: 'region',     label: 'Region',     hint: 'Timezone, language, regulator, tax rates' },
   { id: 'operations', label: 'Operations', hint: 'Lending, savings, dividends, penalties, approval thresholds' },
+  { id: 'approvals',  label: 'Approvals',  hint: 'Per-kind maker-checker toggles for cash actions' },
 ];
 
 const FONT_OPTIONS = ['IBM Plex Sans', 'Inter', 'System', 'Roboto', 'Source Sans 3'];
@@ -100,9 +104,148 @@ export default function TenantSettings() {
           {s && tab === 'operations' && (
             <OperationsTab operations={s.operations} currency={s.tenant.currency_code} canEdit={canEdit} onSaved={reload} />
           )}
+          {s && tab === 'approvals' && (
+            <ApprovalsTab canEdit={canEdit} />
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+// ─────────── Approvals (Phase 7b) ───────────
+
+function ToggleRow({
+  k, t, disabled, onFlip,
+}: {
+  k: { key: keyof ApprovalToggles; label: string; hint: string };
+  t: ApprovalToggles;
+  disabled: boolean;
+  onFlip: (field: keyof ApprovalToggles, next: boolean) => void;
+}) {
+  return (
+    <div className="row" style={{ alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+      <label className="row" style={{ alignItems: 'center', gap: 6 }}>
+        <input
+          type="checkbox"
+          checked={!!t[k.key]}
+          disabled={disabled}
+          onChange={(e) => onFlip(k.key, e.target.checked)}
+        />
+        <strong>{k.label}</strong>
+      </label>
+      <span className="muted tiny">{k.hint}</span>
+    </div>
+  );
+}
+
+function ApprovalsTab({ canEdit }: { canEdit: boolean }) {
+  const [t, setT] = useState<ApprovalToggles | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    setErr(null);
+    try { setT(await getApprovalSettings()); }
+    catch (e) { setErr(extractError(e)); }
+  }
+  useEffect(() => { void load(); }, []);
+
+  async function flip(field: keyof ApprovalToggles, next: boolean) {
+    setBusy(true); setErr(null);
+    try {
+      const updated = await updateApprovalSettings({ [field]: next } as Partial<ApprovalToggles>);
+      setT(updated);
+    } catch (e) { setErr(extractError(e)); }
+    finally { setBusy(false); }
+  }
+
+  if (err) return <div className="alert alert-error">{err}</div>;
+  if (!t) return <div className="empty">Loading…</div>;
+
+  const DEPOSIT_KINDS: Array<{ key: keyof ApprovalToggles; label: string; hint: string }> = [
+    { key: 'deposit',          label: 'Deposits',           hint: 'Cash, M-Pesa, bank, payroll inflows to a deposit account.' },
+    { key: 'withdrawal',       label: 'Withdrawals',        hint: 'Outflows from a deposit account.' },
+    { key: 'deposit_transfer', label: 'Account transfers',  hint: 'Transfers between a member\'s own deposit accounts.' },
+  ];
+  const SHARE_KINDS: Array<{ key: keyof ApprovalToggles; label: string; hint: string }> = [
+    { key: 'share_purchase', label: 'Share purchases', hint: 'Members buying shares (any payment channel).' },
+    { key: 'share_redeem',   label: 'Share redemptions', hint: 'Members cashing out shares — including exit redemptions below the minimum holding.' },
+    { key: 'share_transfer', label: 'Share transfers', hint: 'Member-to-member share transfers.' },
+    { key: 'share_bonus',    label: 'Bonus share issues', hint: 'Tenant-wide AGM-driven bonus issue. Affects every active account.' },
+    { key: 'share_lien',     label: 'Share liens', hint: 'Pledging shares (e.g. as loan collateral).' },
+  ];
+  const LOAN_KINDS: Array<{ key: keyof ApprovalToggles; label: string; hint: string }> = [
+    { key: 'loan_disbursement',        label: 'Loan disbursements',        hint: 'Releasing approved loan funds to the borrower. Acts as a second-line check on top of the existing loan approval workflow.' },
+    { key: 'loan_repayment',           label: 'Loan repayments',           hint: 'Borrower-side repayments via any channel (cash, M-Pesa, auto-debit, payroll).' },
+    { key: 'loan_settle',              label: 'Early settlements',         hint: 'Paying off the full outstanding balance ahead of schedule.' },
+    { key: 'loan_reverse',             label: 'Reversals',                 hint: 'Reversing a posted loan transaction. Always carries audit risk.' },
+    { key: 'loan_writeoff',            label: 'Write-offs',                hint: 'Board-authorised write-off of an unrecoverable loan. Cannot be reversed.' },
+    { key: 'loan_reschedule',          label: 'Rescheduling',              hint: 'Re-amortising remaining principal over a new term.' },
+    { key: 'loan_moratorium',          label: 'Moratoriums',               hint: 'Payment holidays — pushes unpaid installments forward.' },
+    { key: 'loan_settlement_discount', label: 'Settlement discounts',      hint: 'Accepting less than the full balance as full payment.' },
+  ];
+
+  return (
+    <>
+      <p className="muted" style={{ marginTop: 0 }}>
+        When a toggle is on, the action requires a second user to approve before it posts to
+        the ledger. The original submitter shows up in the Cash approvals queue under their own
+        name; a different user opens the row and clicks <strong>Approve &amp; post</strong>.
+      </p>
+
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-hd">
+          <h3>Deposits</h3>
+          <span className="card-sub">Cash actions on deposit accounts</span>
+        </div>
+        <div className="card-body">
+          {DEPOSIT_KINDS.map((k) => <ToggleRow key={k.key} k={k} t={t} disabled={!canEdit || busy} onFlip={flip} />)}
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-hd">
+          <h3>Shares</h3>
+          <span className="card-sub">Share capital operations</span>
+        </div>
+        <div className="card-body">
+          {SHARE_KINDS.map((k) => <ToggleRow key={k.key} k={k} t={t} disabled={!canEdit || busy} onFlip={flip} />)}
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-hd">
+          <h3>Loans</h3>
+          <span className="card-sub">Disbursement, servicing, and restructuring</span>
+        </div>
+        <div className="card-body">
+          {LOAN_KINDS.map((k) => <ToggleRow key={k.key} k={k} t={t} disabled={!canEdit || busy} onFlip={flip} />)}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-hd">
+          <h3>Self-approval</h3>
+          <span className="card-sub">Segregation of duties</span>
+        </div>
+        <div className="card-body">
+          <label className="row" style={{ alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={t.allow_self}
+              disabled={!canEdit || busy}
+              onChange={(e) => void flip('allow_self', e.target.checked)}
+            />
+            <span>Allow the same user to be both maker and checker</span>
+          </label>
+          <p className="muted tiny" style={{ marginTop: 8 }}>
+            Off (recommended): the user who submitted the action cannot approve it. Required for SASRA-aligned
+            segregation of duties. Turn on only for tiny SACCOs where the same person handles both roles.
+          </p>
+        </div>
+      </div>
+    </>
   );
 }
 

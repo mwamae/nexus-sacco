@@ -9,6 +9,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -26,11 +27,12 @@ import (
 )
 
 type ShareHandler struct {
-	DB      *db.Pool
-	Tenants *store.TenantStore
-	Members *store.MemberStore
-	Shares  *store.ShareStore
-	Logger  *slog.Logger
+	DB        *db.Pool
+	Tenants   *store.TenantStore
+	Members   *store.MemberStore
+	Shares    *store.ShareStore
+	Approvals *store.ApprovalsStore
+	Logger    *slog.Logger
 }
 
 // ─────────── Helpers ───────────
@@ -338,71 +340,57 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 	}
 	tid, _ := middleware.TenantIDFrom(r)
 
-	var resp postResp
+	payload := SharePurchasePayload{
+		MemberID:       memberID,
+		Shares:         in.Shares,
+		PaymentChannel: in.PaymentChannel,
+		PaymentRef:     in.PaymentRef,
+		Narration:      in.Narration,
+	}
+	var result *SharePostResult
+	var pending *domain.PendingApproval
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		policy, member, acct, err := h.loadContext(r.Context(), tx, memberID, true)
+		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
-		if err := requireWriteEligible(member, "buy"); err != nil {
-			return err
-		}
-		if acct.Status != domain.AccountActive {
-			return domain.ErrAccountClosed
-		}
-
-		// Enforce max-holding cap.
-		if policy.MaxSharesPctOfCapital.GreaterThan(decimal.Zero) {
-			total, err := h.Shares.TotalSharesIssuedTx(r.Context(), tx)
+		if toggles.SharePurchase {
+			policy, err := h.Tenants.SharePolicyTx(r.Context(), tx)
 			if err != nil {
 				return err
 			}
-			newMember := acct.SharesHeld + in.Shares
-			newTotal := total + in.Shares
-			if newTotal > 0 {
-				pct := decimal.NewFromInt(int64(newMember)).Mul(decimal.NewFromInt(100)).Div(decimal.NewFromInt(int64(newTotal)))
-				if pct.GreaterThan(policy.MaxSharesPctOfCapital) {
-					return domain.ErrExceedsMaxHolding
-				}
+			amount := policy.ParValue.Mul(decimal.NewFromInt(int64(in.Shares)))
+			m := memberID
+			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+				Kind:            domain.ApprovalKindSharePurchase,
+				Title:           fmt.Sprintf("Buy %d shares", in.Shares),
+				SubjectMemberID: &m,
+				Amount:          &amount,
+				Payload:         payload,
+				MakerUserID:     userID,
+			})
+			if qerr != nil {
+				return qerr
 			}
+			pending = pa
+			return nil
 		}
-
-		ch := in.PaymentChannel
-		ref := strNilIfEmpty(in.PaymentRef)
-		narr := strNilIfEmpty(in.Narration)
-
-		txn, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
-			Account:        acct,
-			TxnType:        domain.TxnPurchase,
-			SharesDelta:    in.Shares,
-			ParValueAtTxn:  policy.ParValue,
-			PaymentChannel: &ch,
-			PaymentRef:     ref,
-			Narration:      narr,
-			InitiatedBy:    userID,
-		})
+		res, err := h.ExecuteSharePurchaseTx(r.Context(), tx, payload, userID)
 		if err != nil {
 			return err
 		}
-		updated, err := h.Shares.GetAccountTx(r.Context(), tx, acct.ID)
-		if err != nil {
-			return err
-		}
-		cert, err := h.Shares.IssueCertificateTx(r.Context(), tx, acct.ID, member.ID, userID,
-			updated.SharesHeld, policy.ParValue, policy.CertificatePrefix)
-		if err != nil {
-			return err
-		}
-		_ = h.Members.TouchActivityTx(r.Context(), tx, memberID)
-
-		resp = postResp{Transaction: *txn, Account: *updated, Certificate: cert}
+		result = res
 		return nil
 	})
 	if err != nil {
 		writeBusinessErr(w, r, err)
 		return
 	}
-	httpx.Created(w, resp)
+	if pending != nil {
+		writePendingResponse(w, r, pending)
+		return
+	}
+	httpx.Created(w, result)
 }
 
 // ─────────── Transfer ───────────
@@ -449,125 +437,57 @@ func (h *ShareHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 	}
 	tid, _ := middleware.TenantIDFrom(r)
 
-	var out transferResp
+	payload := ShareTransferPayload{
+		FromMemberID: memberID,
+		ToMemberID:   in.ToMemberID,
+		Shares:       in.Shares,
+		Narration:    in.Narration,
+		Reason:       in.Reason,
+	}
+	var result *ShareTransferResult
+	var pending *domain.PendingApproval
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		policy, fromMember, fromAcct, err := h.loadContext(r.Context(), tx, memberID, false)
+		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
-		if err := requireWriteEligible(fromMember, "transfer"); err != nil {
-			return err
-		}
-		// Lien + availability check.
-		if domain.AvailableShares(fromAcct) < in.Shares {
-			if fromAcct.SharesPledged > 0 {
-				return domain.ErrLienBlocksAction
-			}
-			return domain.ErrInsufficientShares
-		}
-		// Min-holding check on transferer.
-		if fromAcct.SharesHeld-in.Shares < policy.MinSharesRequired {
-			return domain.ErrBelowMinHolding
-		}
-
-		_, toMember, toAcct, err := h.loadContext(r.Context(), tx, in.ToMemberID, true)
-		if err != nil {
-			return err
-		}
-		if err := requireWriteEligible(toMember, "receive"); err != nil {
-			return err
-		}
-		// Max-holding check on recipient.
-		if policy.MaxSharesPctOfCapital.GreaterThan(decimal.Zero) {
-			total, err := h.Shares.TotalSharesIssuedTx(r.Context(), tx)
+		if toggles.ShareTransfer {
+			policy, err := h.Tenants.SharePolicyTx(r.Context(), tx)
 			if err != nil {
 				return err
 			}
-			// Transfer is zero-sum: total stays unchanged.
-			if total > 0 {
-				pct := decimal.NewFromInt(int64(toAcct.SharesHeld + in.Shares)).
-					Mul(decimal.NewFromInt(100)).Div(decimal.NewFromInt(int64(total)))
-				if pct.GreaterThan(policy.MaxSharesPctOfCapital) {
-					return domain.ErrExceedsMaxHolding
-				}
+			amount := policy.ParValue.Mul(decimal.NewFromInt(int64(in.Shares)))
+			m := memberID
+			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+				Kind:            domain.ApprovalKindShareTransfer,
+				Title:           fmt.Sprintf("Transfer %d shares between members", in.Shares),
+				SubjectMemberID: &m,
+				Amount:          &amount,
+				Payload:         payload,
+				MakerUserID:     userID,
+			})
+			if qerr != nil {
+				return qerr
 			}
+			pending = pa
+			return nil
 		}
-
-		internal := domain.ChannelInternal
-		narration := in.Narration
-		if narration == "" {
-			narration = "Share transfer between members"
-		}
-		narr := &narration
-		reason := strNilIfEmpty(in.Reason)
-
-		outTxn, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
-			Account:             fromAcct,
-			TxnType:             domain.TxnTransferOut,
-			SharesDelta:         -in.Shares,
-			ParValueAtTxn:       policy.ParValue,
-			PaymentChannel:      &internal,
-			Narration:           narr,
-			CounterpartyAccount: toAcct,
-			InitiatedBy:         userID,
-			AuthorizedBy:        &userID,
-			AuthorizationReason: reason,
-		})
+		res, err := h.ExecuteShareTransferTx(r.Context(), tx, payload, userID)
 		if err != nil {
 			return err
 		}
-		// Re-read accounts (balances changed).
-		fromAcct, err = h.Shares.GetAccountTx(r.Context(), tx, fromAcct.ID)
-		if err != nil {
-			return err
-		}
-		inTxn, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
-			Account:             toAcct,
-			TxnType:             domain.TxnTransferIn,
-			SharesDelta:         in.Shares,
-			ParValueAtTxn:       policy.ParValue,
-			PaymentChannel:      &internal,
-			Narration:           narr,
-			CounterpartyAccount: fromAcct,
-			CounterpartyTxnID:   &outTxn.ID,
-			InitiatedBy:         userID,
-			AuthorizedBy:        &userID,
-			AuthorizationReason: reason,
-		})
-		if err != nil {
-			return err
-		}
-		if err := h.Shares.LinkCounterpartyTxnTx(r.Context(), tx, outTxn.ID, inTxn.ID); err != nil {
-			return err
-		}
-		toAcct, err = h.Shares.GetAccountTx(r.Context(), tx, toAcct.ID)
-		if err != nil {
-			return err
-		}
-		fromCert, err := h.Shares.IssueCertificateTx(r.Context(), tx, fromAcct.ID, fromMember.ID, userID,
-			fromAcct.SharesHeld, policy.ParValue, policy.CertificatePrefix)
-		if err != nil {
-			return err
-		}
-		toCert, err := h.Shares.IssueCertificateTx(r.Context(), tx, toAcct.ID, toMember.ID, userID,
-			toAcct.SharesHeld, policy.ParValue, policy.CertificatePrefix)
-		if err != nil {
-			return err
-		}
-		_ = h.Members.TouchActivityTx(r.Context(), tx, memberID)
-		_ = h.Members.TouchActivityTx(r.Context(), tx, in.ToMemberID)
-
-		out = transferResp{
-			From: postResp{Transaction: *outTxn, Account: *fromAcct, Certificate: fromCert},
-			To:   postResp{Transaction: *inTxn, Account: *toAcct, Certificate: toCert},
-		}
+		result = res
 		return nil
 	})
 	if err != nil {
 		writeBusinessErr(w, r, err)
 		return
 	}
-	httpx.Created(w, out)
+	if pending != nil {
+		writePendingResponse(w, r, pending)
+		return
+	}
+	httpx.Created(w, result)
 }
 
 // ─────────── Redemption ───────────
@@ -611,67 +531,59 @@ func (h *ShareHandler) Redeem(w http.ResponseWriter, r *http.Request) {
 	}
 	tid, _ := middleware.TenantIDFrom(r)
 
-	var resp postResp
+	payload := ShareRedeemPayload{
+		MemberID:                memberID,
+		Shares:                  in.Shares,
+		Reason:                  in.Reason,
+		Narration:               in.Narration,
+		PaymentRef:              in.PaymentRef,
+		PaymentChannel:          in.PaymentChan,
+		AcknowledgeBelowMinimum: in.AuthOverride,
+	}
+	var result *SharePostResult
+	var pending *domain.PendingApproval
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		policy, member, acct, err := h.loadContext(r.Context(), tx, memberID, false)
+		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
-		if err := requireWriteEligible(member, "redeem"); err != nil {
-			return err
-		}
-		if domain.AvailableShares(acct) < in.Shares {
-			if acct.SharesPledged > 0 {
-				return domain.ErrLienBlocksAction
+		if toggles.ShareRedeem {
+			policy, err := h.Tenants.SharePolicyTx(r.Context(), tx)
+			if err != nil {
+				return err
 			}
-			return domain.ErrInsufficientShares
+			amount := policy.ParValue.Mul(decimal.NewFromInt(int64(in.Shares)))
+			m := memberID
+			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+				Kind:            domain.ApprovalKindShareRedeem,
+				Title:           fmt.Sprintf("Redeem %d shares", in.Shares),
+				SubjectMemberID: &m,
+				Amount:          &amount,
+				Payload:         payload,
+				MakerUserID:     userID,
+			})
+			if qerr != nil {
+				return qerr
+			}
+			pending = pa
+			return nil
 		}
-		if acct.SharesHeld-in.Shares < policy.MinSharesRequired && !in.AuthOverride {
-			return domain.ErrBelowMinHolding
-		}
-
-		ch := in.PaymentChan
-		var chPtr *domain.PaymentChannel
-		if ch != "" {
-			chPtr = &ch
-		} else {
-			internal := domain.ChannelInternal
-			chPtr = &internal
-		}
-		reason := in.Reason
-		txn, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
-			Account:             acct,
-			TxnType:             domain.TxnRedemption,
-			SharesDelta:         -in.Shares,
-			ParValueAtTxn:       policy.ParValue,
-			PaymentChannel:      chPtr,
-			PaymentRef:          strNilIfEmpty(in.PaymentRef),
-			Narration:           strNilIfEmpty(in.Narration),
-			InitiatedBy:         userID,
-			AuthorizedBy:        &userID,
-			AuthorizationReason: &reason,
-		})
+		res, err := h.ExecuteShareRedeemTx(r.Context(), tx, payload, userID)
 		if err != nil {
 			return err
 		}
-		updated, err := h.Shares.GetAccountTx(r.Context(), tx, acct.ID)
-		if err != nil {
-			return err
-		}
-		cert, err := h.Shares.IssueCertificateTx(r.Context(), tx, acct.ID, member.ID, userID,
-			updated.SharesHeld, policy.ParValue, policy.CertificatePrefix)
-		if err != nil {
-			return err
-		}
-		_ = h.Members.TouchActivityTx(r.Context(), tx, memberID)
-		resp = postResp{Transaction: *txn, Account: *updated, Certificate: cert}
+		result = res
 		return nil
 	})
 	if err != nil {
 		writeBusinessErr(w, r, err)
 		return
 	}
-	httpx.Created(w, resp)
+	if pending != nil {
+		writePendingResponse(w, r, pending)
+		return
+	}
+	httpx.Created(w, result)
 }
 
 // ─────────── Adjustment ───────────
@@ -801,18 +713,48 @@ func (h *ShareHandler) PlaceLien(w http.ResponseWriter, r *http.Request) {
 	}
 	tid, _ := middleware.TenantIDFrom(r)
 
+	payload := ShareLienPayload{
+		MemberID:      memberID,
+		Shares:        in.Shares,
+		Reason:        in.Reason,
+		ReferenceKind: in.ReferenceKind,
+		ReferenceID:   in.ReferenceID,
+	}
 	var lien *domain.ShareLien
+	var pending *domain.PendingApproval
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		acct, err := h.Shares.GetAccountByMemberTx(r.Context(), tx, memberID)
+		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
-		lien, err = h.Shares.PlaceLienTx(r.Context(), tx, acct.ID, in.Shares, in.Reason,
-			strNilIfEmpty(in.ReferenceKind), strNilIfEmpty(in.ReferenceID), userID)
-		return err
+		if toggles.ShareLien {
+			m := memberID
+			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+				Kind:            domain.ApprovalKindShareLien,
+				Title:           fmt.Sprintf("Place lien on %d shares", in.Shares),
+				SubjectMemberID: &m,
+				Payload:         payload,
+				MakerUserID:     userID,
+			})
+			if qerr != nil {
+				return qerr
+			}
+			pending = pa
+			return nil
+		}
+		out, err := h.ExecuteShareLienTx(r.Context(), tx, payload, userID)
+		if err != nil {
+			return err
+		}
+		lien = out
+		return nil
 	})
 	if err != nil {
 		writeBusinessErr(w, r, err)
+		return
+	}
+	if pending != nil {
+		writePendingResponse(w, r, pending)
 		return
 	}
 	httpx.Created(w, lien)
@@ -889,60 +831,46 @@ func (h *ShareHandler) BonusIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	tid, _ := middleware.TenantIDFrom(r)
 
+	payload := ShareBonusPayload{
+		PctOfHolding: in.PctOfHolding,
+		Reason:       in.Reason,
+	}
 	var resp bonusIssueResp
 	resp.PctApplied = in.PctOfHolding
-	internal := domain.ChannelInternal
-
+	var pending *domain.PendingApproval
 	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		policy, err := h.Tenants.SharePolicyTx(r.Context(), tx)
+		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
-		accounts, err := h.Shares.ActiveAccountsTx(r.Context(), tx)
-		if err != nil {
-			return err
-		}
-
-		for i := range accounts {
-			a := accounts[i]
-			bonus := in.PctOfHolding.
-				Div(decimal.NewFromInt(100)).
-				Mul(decimal.NewFromInt(int64(a.SharesHeld))).
-				Floor()
-			n := int(bonus.IntPart())
-			if n <= 0 {
-				continue
-			}
-			reason := in.Reason
-			_, err := h.Shares.PostTxnTx(r.Context(), tx, store.PostInput{
-				Account:             &a,
-				TxnType:             domain.TxnBonusIssue,
-				SharesDelta:         n,
-				ParValueAtTxn:       policy.ParValue,
-				PaymentChannel:      &internal,
-				Narration:           &reason,
-				InitiatedBy:         userID,
-				AuthorizedBy:        &userID,
-				AuthorizationReason: &reason,
+		if toggles.ShareBonus {
+			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+				Kind:        domain.ApprovalKindShareBonus,
+				Title:       fmt.Sprintf("Bonus issue %s%% to all active accounts", in.PctOfHolding.String()),
+				Payload:     payload,
+				MakerUserID: userID,
 			})
-			if err != nil {
-				return err
+			if qerr != nil {
+				return qerr
 			}
-			updated, err := h.Shares.GetAccountTx(r.Context(), tx, a.ID)
-			if err != nil {
-				return err
-			}
-			if _, err := h.Shares.IssueCertificateTx(r.Context(), tx, a.ID, a.MemberID, userID,
-				updated.SharesHeld, policy.ParValue, policy.CertificatePrefix); err != nil {
-				return err
-			}
-			resp.IssuedToCount++
-			resp.TotalBonusShares += n
+			pending = pa
+			return nil
 		}
+		out, err := h.ExecuteShareBonusTx(r.Context(), tx, payload, userID)
+		if err != nil {
+			return err
+		}
+		resp.IssuedToCount = out.IssuedToCount
+		resp.TotalBonusShares = out.TotalBonusShares
+		resp.PctApplied = out.PctApplied
 		return nil
 	})
 	if err != nil {
 		writeBusinessErr(w, r, err)
+		return
+	}
+	if pending != nil {
+		writePendingResponse(w, r, pending)
 		return
 	}
 	httpx.Created(w, resp)

@@ -23,6 +23,11 @@ import Deposits from './pages/Deposits';
 import DepositProducts from './pages/DepositProducts';
 import InterestRunsPage from './pages/InterestRuns';
 import DividendRunsPage from './pages/DividendRuns';
+import LoanProductsPage from './pages/LoanProducts';
+import LoansPage from './pages/Loans';
+import CollectionsPage from './pages/Collections';
+import LoanReportsPage from './pages/LoanReports';
+import CashApprovalsPage from './pages/CashApprovals';
 
 function Gate() {
   const { status } = useAuth();
@@ -60,6 +65,11 @@ function Gate() {
   else if (path === '/deposits' || path.startsWith('/deposits/')) page = <Deposits />;
   else if (path === '/interest-runs' || path.startsWith('/interest-runs/')) page = <InterestRunsPage />;
   else if (path === '/dividend-runs' || path.startsWith('/dividend-runs/')) page = <DividendRunsPage />;
+  else if (path === '/loan-products' || path.startsWith('/loan-products/')) page = <LoanProductsPage />;
+  else if (path === '/loans' || path.startsWith('/loans/')) page = <LoansPage />;
+  else if (path === '/collections' || path.startsWith('/collections/')) page = <CollectionsPage />;
+  else if (path === '/loan-reports' || path.startsWith('/loan-reports/')) page = <LoanReportsPage />;
+  else if (path === '/cash-approvals' || path.startsWith('/cash-approvals/')) page = <CashApprovalsPage />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;

@@ -8,6 +8,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -25,12 +26,13 @@ import (
 )
 
 type DepositHandler struct {
-	DB       *db.Pool
-	Tenants  *store.TenantStore
-	Members  *store.MemberStore
-	Products *store.DepositProductStore
-	Deposits *store.DepositStore
-	Logger   *slog.Logger
+	DB        *db.Pool
+	Tenants   *store.TenantStore
+	Members   *store.MemberStore
+	Products  *store.DepositProductStore
+	Deposits  *store.DepositStore
+	Approvals *store.ApprovalsStore
+	Logger    *slog.Logger
 
 	// DuplicateLookback is how far back we look for a same-channel-ref
 	// duplicate before flagging a deposit. Default 10 minutes.
@@ -381,6 +383,12 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("valid channel is required"))
 		return
 	}
+	if in.ValueDate != "" {
+		if _, err := time.Parse("2006-01-02", in.ValueDate); err != nil {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("value_date must be YYYY-MM-DD"))
+			return
+		}
+	}
 	userID, _ := middleware.UserIDFrom(r)
 	if userID == uuid.Nil {
 		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
@@ -388,67 +396,61 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 	}
 	tid, _ := middleware.TenantIDFrom(r)
 
-	var vd *time.Time
-	if in.ValueDate != "" {
-		d, err := time.Parse("2006-01-02", in.ValueDate)
-		if err != nil {
-			httpx.WriteErr(w, r, httpx.ErrBadRequest("value_date must be YYYY-MM-DD"))
-			return
-		}
-		vd = &d
+	payload := DepositPayload{
+		AccountID:            accountID,
+		Amount:               in.Amount,
+		Channel:              in.Channel,
+		ChannelRef:           in.ChannelRef,
+		Narration:            in.Narration,
+		ValueDate:            in.ValueDate,
+		BypassDuplicateCheck: in.BypassDuplicateCheck,
 	}
 
-	var resp struct {
-		Transaction domain.DepositTransaction `json:"transaction"`
-		Account     domain.DepositAccount     `json:"account"`
-	}
+	var result *DepositResult
+	var pending *domain.PendingApproval
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		product, acct, _, err := h.loadProductAccount(r.Context(), tx, accountID)
+		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
-		if err := domain.EvaluateDeposit(product, acct, in.Amount); err != nil {
-			return err
-		}
-		if in.ChannelRef != "" && !in.BypassDuplicateCheck {
-			dup, err := h.Deposits.DuplicateExistsTx(r.Context(), tx, accountID, in.Amount, in.ChannelRef, h.lookback())
-			if err != nil {
-				return err
+		if toggles.Deposit {
+			_, acct, _, lerr := h.loadProductAccount(r.Context(), tx, accountID)
+			if lerr != nil {
+				return lerr
 			}
-			if dup {
-				return domain.ErrDuplicateTransaction
+			memberID := acct.MemberID
+			amount := in.Amount
+			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+				Kind:             domain.ApprovalKindDeposit,
+				Title:            fmt.Sprintf("Deposit to a/c %s", acct.AccountNo),
+				SubjectMemberID:  &memberID,
+				SubjectAccountID: &accountID,
+				Amount:           &amount,
+				Payload:          payload,
+				MakerUserID:      userID,
+			})
+			if qerr != nil {
+				return qerr
 			}
+			pending = pa
+			return nil
 		}
-		ch := in.Channel
-		ref := strNilIfEmpty(in.ChannelRef)
-		narr := strNilIfEmpty(in.Narration)
-		txn, err := h.Deposits.PostTxnTx(r.Context(), tx, store.PostDepInput{
-			Account:     acct,
-			TxnType:     domain.TxnDeposit,
-			Amount:      in.Amount,
-			ValueDate:   vd,
-			Channel:     &ch,
-			ChannelRef:  ref,
-			Narration:   narr,
-			InitiatedBy: userID,
-		})
+		res, err := h.ExecuteDepositTx(r.Context(), tx, payload, userID)
 		if err != nil {
 			return err
 		}
-		updated, err := h.Deposits.GetAccountTx(r.Context(), tx, accountID)
-		if err != nil {
-			return err
-		}
-		_ = h.Members.TouchActivityTx(r.Context(), tx, acct.MemberID)
-		resp.Transaction = *txn
-		resp.Account = *updated
+		result = res
 		return nil
 	})
 	if err != nil {
 		writeDepositErr(w, r, err)
 		return
 	}
-	httpx.Created(w, resp)
+	if pending != nil {
+		writePendingResponse(w, r, pending)
+		return
+	}
+	httpx.Created(w, result)
 }
 
 // ─────────── Withdrawal ───────────
@@ -482,66 +484,60 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, _ := middleware.UserIDFrom(r)
 	tid, _ := middleware.TenantIDFrom(r)
-
-	var resp struct {
-		Transaction       domain.DepositTransaction `json:"transaction"`
-		Account           domain.DepositAccount     `json:"account"`
-		RequiresApproval  bool                      `json:"requires_approval"`
+	payload := WithdrawalPayload{
+		AccountID:  accountID,
+		Amount:     in.Amount,
+		Channel:    in.Channel,
+		ChannelRef: in.ChannelRef,
+		Narration:  in.Narration,
+		Reason:     in.Reason,
 	}
+
+	var result *WithdrawalResult
+	var pending *domain.PendingApproval
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		product, acct, _, err := h.loadProductAccount(r.Context(), tx, accountID)
+		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
-		monthly, err := h.Deposits.WithdrawalCountThisMonthTx(r.Context(), tx, accountID, time.Now())
-		if err != nil {
-			return err
-		}
-		if err := domain.EvaluateWithdrawal(product, acct, in.Amount, time.Now(), monthly); err != nil {
-			return err
-		}
-		// Large-withdrawal hint — Phase 4 will gate via workflow. For now,
-		// flag it in the response and require an authorization reason.
-		if domain.IsLargeWithdrawal(product, in.Amount) {
-			if in.Reason == "" {
-				return httpx.ErrConflict("withdrawal exceeds the product's large-withdrawal threshold; reason is required (workflow gating ships in Phase 4)")
+		if toggles.Withdrawal {
+			_, acct, _, lerr := h.loadProductAccount(r.Context(), tx, accountID)
+			if lerr != nil {
+				return lerr
 			}
-			resp.RequiresApproval = true
+			memberID := acct.MemberID
+			amount := in.Amount
+			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+				Kind:             domain.ApprovalKindWithdrawal,
+				Title:            fmt.Sprintf("Withdrawal from a/c %s", acct.AccountNo),
+				SubjectMemberID:  &memberID,
+				SubjectAccountID: &accountID,
+				Amount:           &amount,
+				Payload:          payload,
+				MakerUserID:      userID,
+			})
+			if qerr != nil {
+				return qerr
+			}
+			pending = pa
+			return nil
 		}
-		ch := in.Channel
-		ref := strNilIfEmpty(in.ChannelRef)
-		narr := strNilIfEmpty(in.Narration)
-		reason := strNilIfEmpty(in.Reason)
-		txn, err := h.Deposits.PostTxnTx(r.Context(), tx, store.PostDepInput{
-			Account:             acct,
-			TxnType:             domain.TxnWithdrawal,
-			Amount:              in.Amount,
-			Channel:             &ch,
-			ChannelRef:          ref,
-			Narration:           narr,
-			InitiatedBy:         userID,
-			AuthorizedBy:        &userID,
-			AuthorizationReason: reason,
-		})
+		res, err := h.ExecuteWithdrawalTx(r.Context(), tx, payload, userID)
 		if err != nil {
 			return err
 		}
-		// Clear withdrawal-notice on successful withdrawal.
-		_ = h.Deposits.ClearWithdrawalNoticeTx(r.Context(), tx, accountID)
-		updated, err := h.Deposits.GetAccountTx(r.Context(), tx, accountID)
-		if err != nil {
-			return err
-		}
-		_ = h.Members.TouchActivityTx(r.Context(), tx, acct.MemberID)
-		resp.Transaction = *txn
-		resp.Account = *updated
+		result = res
 		return nil
 	})
 	if err != nil {
 		writeDepositErr(w, r, err)
 		return
 	}
-	httpx.Created(w, resp)
+	if pending != nil {
+		writePendingResponse(w, r, pending)
+		return
+	}
+	httpx.Created(w, result)
 }
 
 // ─────────── Withdrawal notice ───────────
@@ -612,93 +608,58 @@ func (h *DepositHandler) TransferBetweenOwn(w http.ResponseWriter, r *http.Reque
 	}
 	userID, _ := middleware.UserIDFrom(r)
 	tid, _ := middleware.TenantIDFrom(r)
-
-	var out struct {
-		From struct {
-			Transaction domain.DepositTransaction `json:"transaction"`
-			Account     domain.DepositAccount     `json:"account"`
-		} `json:"from"`
-		To struct {
-			Transaction domain.DepositTransaction `json:"transaction"`
-			Account     domain.DepositAccount     `json:"account"`
-		} `json:"to"`
+	payload := DepTransferPayload{
+		FromAccountID: fromID,
+		ToAccountID:   in.ToAccountID,
+		Amount:        in.Amount,
+		Narration:     in.Narration,
 	}
+
+	var result *DepTransferResult
+	var pending *domain.PendingApproval
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		fromProduct, fromAcct, fromMember, err := h.loadProductAccount(r.Context(), tx, fromID)
+		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
-		toProduct, toAcct, toMember, err := h.loadProductAccount(r.Context(), tx, in.ToAccountID)
+		if toggles.DepositTransfer {
+			_, fromAcct, fromMember, lerr := h.loadProductAccount(r.Context(), tx, fromID)
+			if lerr != nil {
+				return lerr
+			}
+			memberID := fromMember.ID
+			amount := in.Amount
+			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+				Kind:             domain.ApprovalKindDepositTransfer,
+				Title:            fmt.Sprintf("Transfer from a/c %s", fromAcct.AccountNo),
+				SubjectMemberID:  &memberID,
+				SubjectAccountID: &fromID,
+				Amount:           &amount,
+				Payload:          payload,
+				MakerUserID:      userID,
+			})
+			if qerr != nil {
+				return qerr
+			}
+			pending = pa
+			return nil
+		}
+		res, err := h.ExecuteDepTransferTx(r.Context(), tx, payload, userID)
 		if err != nil {
 			return err
 		}
-		// Same-member check.
-		if fromMember.ID != toMember.ID {
-			return httpx.ErrConflict("transfer endpoints are restricted to the same member's accounts")
-		}
-		monthly, err := h.Deposits.WithdrawalCountThisMonthTx(r.Context(), tx, fromID, time.Now())
-		if err != nil {
-			return err
-		}
-		if err := domain.EvaluateWithdrawal(fromProduct, fromAcct, in.Amount, time.Now(), monthly); err != nil {
-			return err
-		}
-		if err := domain.EvaluateDeposit(toProduct, toAcct, in.Amount); err != nil {
-			return err
-		}
-		internal := domain.DepChannelInternal
-		narration := in.Narration
-		if narration == "" {
-			narration = "Transfer between own deposit accounts"
-		}
-		narrPtr := &narration
-		outTxn, err := h.Deposits.PostTxnTx(r.Context(), tx, store.PostDepInput{
-			Account:             fromAcct,
-			TxnType:             domain.TxnDepTransferOut,
-			Amount:              in.Amount,
-			Channel:             &internal,
-			Narration:           narrPtr,
-			CounterpartyAccount: toAcct,
-			InitiatedBy:         userID,
-		})
-		if err != nil {
-			return err
-		}
-		fromAcct, err = h.Deposits.GetAccountTx(r.Context(), tx, fromID)
-		if err != nil {
-			return err
-		}
-		inTxn, err := h.Deposits.PostTxnTx(r.Context(), tx, store.PostDepInput{
-			Account:             toAcct,
-			TxnType:             domain.TxnDepTransferIn,
-			Amount:              in.Amount,
-			Channel:             &internal,
-			Narration:           narrPtr,
-			CounterpartyAccount: fromAcct,
-			CounterpartyTxnID:   &outTxn.ID,
-			InitiatedBy:         userID,
-		})
-		if err != nil {
-			return err
-		}
-		if err := h.Deposits.LinkCounterpartyTxnTx(r.Context(), tx, outTxn.ID, inTxn.ID); err != nil {
-			return err
-		}
-		toAcct, err = h.Deposits.GetAccountTx(r.Context(), tx, in.ToAccountID)
-		if err != nil {
-			return err
-		}
-		out.From.Transaction = *outTxn
-		out.From.Account = *fromAcct
-		out.To.Transaction = *inTxn
-		out.To.Account = *toAcct
+		result = res
 		return nil
 	})
 	if err != nil {
 		writeDepositErr(w, r, err)
 		return
 	}
-	httpx.Created(w, out)
+	if pending != nil {
+		writePendingResponse(w, r, pending)
+		return
+	}
+	httpx.Created(w, result)
 }
 
 // ─────────── Reversal ───────────

@@ -8,7 +8,7 @@ export type IconName =
   | 'settings' | 'bell' | 'bank' | 'plus' | 'check' | 'edit'
   | 'mail' | 'search' | 'chevron_r' | 'chevron_dn' | 'chevron_l'
   | 'arrow_up' | 'arrow_dn' | 'logout' | 'lock' | 'trash'
-  | 'building' | 'dot' | 'more' | 'eye' | 'refresh' | 'x';
+  | 'building' | 'dot' | 'more' | 'eye' | 'refresh' | 'x' | 'chart';
 
 const PATHS: Record<IconName, string> = {
   home: 'M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z',
@@ -38,6 +38,7 @@ const PATHS: Record<IconName, string> = {
   eye: 'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6',
   refresh: 'M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5',
   x: 'M18 6 6 18M6 6l12 12',
+  chart: 'M3 3v18h18M7 14l4-4 3 3 5-5',
 };
 
 type IconProps = {

@@ -171,7 +171,11 @@ export default function Shares() {
           onRun={async (pct, reason) => {
             try {
               const r = await bonusShareIssue({ pct_of_holding: pct, reason });
-              alert(`Issued ${r.total_bonus_shares} bonus shares to ${r.issued_to_count} member${r.issued_to_count === 1 ? '' : 's'} (${r.pct_applied}% of holding).`);
+              if (r.pending) {
+                alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
+              } else if (r.posted) {
+                alert(`Issued ${r.posted.total_bonus_shares} bonus shares to ${r.posted.issued_to_count} member${r.posted.issued_to_count === 1 ? '' : 's'} (${r.posted.pct_applied}% of holding).`);
+              }
               setBonusOpen(false);
               await reload();
             } catch (e) { alert(extractError(e)); }

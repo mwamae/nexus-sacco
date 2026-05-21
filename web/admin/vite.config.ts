@@ -89,6 +89,61 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        '/api/v1/loan-products': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/loan-purpose-categories': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/loan-applications': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/loan-guarantees': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/loans': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/loan-transactions': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/loan-reports': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/pending-approvals': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/approval-settings': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/collection-cases': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/promises': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/wht-schedule': {
           target: savingsTarget,
           changeOrigin: false,

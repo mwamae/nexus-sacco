@@ -1,0 +1,11 @@
+DROP TABLE IF EXISTS loan_legal_cases;
+DROP TABLE IF EXISTS loan_restructurings;
+DROP TABLE IF EXISTS loan_promises_to_pay;
+DROP TABLE IF EXISTS loan_collection_contacts;
+DROP TABLE IF EXISTS loan_collection_cases;
+DROP TYPE IF EXISTS loan_legal_case_status;
+DROP TYPE IF EXISTS loan_restructuring_kind;
+DROP TYPE IF EXISTS loan_ptp_status;
+DROP TYPE IF EXISTS loan_contact_outcome;
+DROP TYPE IF EXISTS loan_contact_kind;
+DROP TYPE IF EXISTS loan_collection_case_status;
