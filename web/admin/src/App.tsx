@@ -49,6 +49,7 @@ import FixedAssetsPage from './pages/Accounting/FixedAssets';
 import BudgetsPage from './pages/Accounting/Budgets';
 import BudgetDetailPage from './pages/Accounting/BudgetDetail';
 import BudgetVariancePage from './pages/Accounting/BudgetVariance';
+import SASRAReturnPage from './pages/Accounting/SASRAReturn';
 import ProvisioningPage from './pages/Loans/Provisioning';
 
 function Gate() {
@@ -113,6 +114,7 @@ function Gate() {
   else if (path === '/budgets') page = <BudgetsPage />;
   else if (path.match(/^\/budgets\/[^/]+\/variance$/)) page = <BudgetVariancePage />;
   else if (path.startsWith('/budgets/')) page = <BudgetDetailPage />;
+  else if (path === '/accounting/sasra-return') page = <SASRAReturnPage />;
   else if (path === '/provisioning' || path.startsWith('/provisioning/')) page = <ProvisioningPage />;
   else page = <Dashboard />;
 

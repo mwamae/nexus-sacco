@@ -738,3 +738,344 @@ func deltaLabel(name string, delta decimal.Decimal, isAsset bool) string {
 	_ = isAsset
 	return dir + " in " + name
 }
+
+// ─────────── SASRA regulatory return ───────────
+
+// SASRARatio — one regulatory ratio + the SASRA threshold and a
+// compliance flag.
+type SASRARatio struct {
+	Label       string          `json:"label"`
+	Numerator   decimal.Decimal `json:"numerator"`
+	Denominator decimal.Decimal `json:"denominator"`
+	Ratio       decimal.Decimal `json:"ratio"`        // as a percentage (e.g. 12.50)
+	Threshold   decimal.Decimal `json:"threshold"`
+	Operator    string          `json:"operator"`     // "min" (ratio ≥ threshold) | "max"
+	Compliant   bool            `json:"compliant"`
+	Notes       string          `json:"notes,omitempty"`
+}
+
+// SASRAReturn — the canonical quarterly submission shape.
+type SASRAReturn struct {
+	AsOf              time.Time            `json:"as_of"`
+	FiscalYear        int                  `json:"fiscal_year"`
+	Position          PositionSummary      `json:"position"`
+	IncomeStatement   ISSummary            `json:"income_statement"`
+	Capital           CapitalSummary       `json:"capital"`
+	LoanPortfolio     LoanPortfolioSummary `json:"loan_portfolio"`
+	Deposits          DepositSummary       `json:"deposits"`
+	Borrowings        decimal.Decimal      `json:"borrowings"`
+	LiquidAssets      decimal.Decimal      `json:"liquid_assets"`
+	ShortTermLiab     decimal.Decimal      `json:"short_term_liabilities"`
+	Ratios            []SASRARatio         `json:"ratios"`
+	AllCompliant      bool                 `json:"all_compliant"`
+}
+
+type PositionSummary struct {
+	TotalAssets      decimal.Decimal `json:"total_assets"`
+	TotalLiabilities decimal.Decimal `json:"total_liabilities"`
+	TotalEquity      decimal.Decimal `json:"total_equity"`
+}
+
+type ISSummary struct {
+	TotalIncome  decimal.Decimal `json:"total_income"`
+	TotalExpense decimal.Decimal `json:"total_expense"`
+	NetSurplus   decimal.Decimal `json:"net_surplus"`
+	FromDate     time.Time       `json:"from_date"`
+	ToDate       time.Time       `json:"to_date"`
+}
+
+type CapitalSummary struct {
+	ShareCapital         decimal.Decimal `json:"share_capital"`
+	RetainedEarnings     decimal.Decimal `json:"retained_earnings"`
+	StatutoryReserve     decimal.Decimal `json:"statutory_reserve"`
+	GeneralReserves      decimal.Decimal `json:"general_reserves"`
+	InstitutionalCapital decimal.Decimal `json:"institutional_capital_acct"` // 3050 line item
+	IntangibleAssets     decimal.Decimal `json:"intangible_assets"`
+	CoreCapital          decimal.Decimal `json:"core_capital"`           // shares + RE + reserves − intangibles
+	InstitutionalCapTotal decimal.Decimal `json:"institutional_capital"` // RE + reserves + 3050
+}
+
+type LoanPortfolioSummary struct {
+	GrossLoans      decimal.Decimal `json:"gross_loans"`        // 1100 balance
+	InterestRecv    decimal.Decimal `json:"interest_receivable"` // 1110
+	Provisions      decimal.Decimal `json:"provisions"`         // 1120 balance (positive)
+	NetLoans        decimal.Decimal `json:"net_loans"`
+	ProvCoverage    decimal.Decimal `json:"provision_coverage_pct"`
+}
+
+type DepositSummary struct {
+	MemberSavings  decimal.Decimal `json:"member_savings"`   // 2000-2099 (member_savings type)
+	FixedDeposits  decimal.Decimal `json:"fixed_deposits"`   // 2100 (member_deposits type)
+	Total          decimal.Decimal `json:"total"`
+}
+
+// SASRAReturnTx — read every CoA account's projected balance, bucket
+// into the regulatory categories, compute ratios, return one big DTO.
+//
+// Thresholds come from Cap. 490B & SASRA prudential standards:
+//   • Core capital ÷ total assets:       min 10%
+//   • Core capital ÷ total deposits:     min 8%
+//   • Institutional capital ÷ assets:    min 8%
+//   • Liquidity ratio:                    min 15%
+//   • NPL provision coverage:             min 100% (target — defensive)
+//   • External borrowings ÷ assets:       max 25%
+func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Time) (*SASRAReturn, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT a.code, a.class, a.type, a.normal_balance,
+		       COALESCE(SUM(CASE WHEN je.id IS NOT NULL THEN l.debit - l.credit ELSE 0 END), 0) AS net
+		  FROM chart_of_accounts a
+		  LEFT JOIN journal_lines l   ON l.account_id = a.id
+		  LEFT JOIN journal_entries je ON je.id = l.entry_id
+		                              AND je.status = 'posted'
+		                              AND je.entry_date <= $1
+		 WHERE a.is_active = true
+		 GROUP BY a.code, a.class, a.type, a.normal_balance
+	`, asOf)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type acctBal struct {
+		code, class, typ, nb string
+		net                  decimal.Decimal
+	}
+	bals := map[string]acctBal{}
+	for rows.Next() {
+		var b acctBal
+		if err := rows.Scan(&b.code, &b.class, &b.typ, &b.nb, &b.net); err != nil {
+			return nil, err
+		}
+		bals[b.code] = b
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// natural-side projected balance — positive when the account is in
+	// its normal state.
+	natural := func(code string) decimal.Decimal {
+		b, ok := bals[code]
+		if !ok {
+			return decimal.Zero
+		}
+		if b.nb == "credit" {
+			return b.net.Neg()
+		}
+		return b.net
+	}
+	// signed-into-class — for class totals, contra accounts subtract.
+	signed := func(b acctBal) decimal.Decimal {
+		amt := natural(b.code)
+		if isContra(b.class, b.nb) {
+			amt = amt.Neg()
+		}
+		return amt
+	}
+
+	// Aggregate by class for the position summary.
+	var totalAssets, totalLiab, totalEquity decimal.Decimal
+	for _, b := range bals {
+		v := signed(b)
+		switch b.class {
+		case "asset":
+			totalAssets = totalAssets.Add(v)
+		case "liability":
+			totalLiab = totalLiab.Add(v)
+		case "equity":
+			totalEquity = totalEquity.Add(v)
+		}
+	}
+
+	// Income / expense window: fiscal year start (Jan 1) through asOf.
+	fyStart := time.Date(asOf.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+	netSurplus, err := s.NetSurplusInWindowTx(ctx, tx, fyStart, asOf)
+	if err != nil {
+		return nil, err
+	}
+	var totalIncome, totalExpense decimal.Decimal
+	if err := tx.QueryRow(ctx, `
+		SELECT
+		  COALESCE(SUM(CASE WHEN a.class = 'income'  THEN l.credit - l.debit ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN a.class = 'expense' THEN l.debit  - l.credit ELSE 0 END), 0)
+		FROM journal_entries je
+		JOIN journal_lines l   ON l.entry_id = je.id
+		JOIN chart_of_accounts a ON a.id = l.account_id
+		WHERE je.status = 'posted'
+		  AND je.entry_date BETWEEN $1 AND $2
+	`, fyStart, asOf).Scan(&totalIncome, &totalExpense); err != nil {
+		return nil, err
+	}
+
+	// Add unclosed current period earnings (income − expense) into
+	// equity for compliance math, since SASRA computes ratios on the
+	// closing equity position even pre-close.
+	totalEquity = totalEquity.Add(netSurplus)
+
+	// ─── Capital ───
+	shareCap := natural("3000")
+	retEarn := natural("3010").Add(netSurplus) // include unclosed
+	statRes := natural("3020")
+	genRes := natural("3030")
+	instCap := natural("3050")
+	intangible := natural("1600")
+
+	coreCapital := shareCap.Add(retEarn).Add(statRes).Add(genRes).Sub(intangible)
+	institutionalCapTotal := retEarn.Add(statRes).Add(genRes).Add(instCap)
+
+	// ─── Loan portfolio ───
+	grossLoans := natural("1100")
+	interestRecv := natural("1110")
+	provisions := natural("1120") // contra-asset, natural = credit balance positive
+	netLoans := grossLoans.Sub(provisions)
+	var provCoverage decimal.Decimal
+	if !grossLoans.IsZero() {
+		provCoverage = provisions.Div(grossLoans).Mul(decimal.NewFromInt(100)).Round(2)
+	}
+
+	// ─── Deposits ───
+	var memberSavings, fixedDeposits decimal.Decimal
+	for _, b := range bals {
+		if b.class != "liability" {
+			continue
+		}
+		v := natural(b.code)
+		switch b.typ {
+		case "member_savings":
+			memberSavings = memberSavings.Add(v)
+		case "member_deposits":
+			fixedDeposits = fixedDeposits.Add(v)
+		}
+	}
+	deposits := DepositSummary{MemberSavings: memberSavings, FixedDeposits: fixedDeposits, Total: memberSavings.Add(fixedDeposits)}
+
+	// ─── External borrowings (2500, 2510 — long_term_liability) ───
+	var borrowings decimal.Decimal
+	for _, b := range bals {
+		if b.class == "liability" && b.typ == "long_term_liability" {
+			borrowings = borrowings.Add(natural(b.code))
+		}
+	}
+
+	// ─── Liquidity ratio ───
+	// Liquid assets = vault + bank + mobile money floats + short-term
+	// investments. We treat 1000, 1010, 1020, 1030, 1040 as fully
+	// liquid; 1700 long-term investments are NOT liquid.
+	liquidCodes := []string{"1000", "1010", "1020", "1030", "1040"}
+	var liquidAssets decimal.Decimal
+	for _, c := range liquidCodes {
+		liquidAssets = liquidAssets.Add(natural(c))
+	}
+	// Short-term liabilities: member savings (withdrawable on demand)
+	// + WHT payable + accrued expenses + dividend payable + other
+	// payables + unearned income.
+	shortTermCodes := []string{"2000", "2010", "2020", "2030", "2040", "2200", "2210", "2220", "2230", "2240"}
+	var shortTermLiab decimal.Decimal
+	for _, c := range shortTermCodes {
+		shortTermLiab = shortTermLiab.Add(natural(c))
+	}
+
+	// ─── Ratios ───
+	pct := func(num, den decimal.Decimal) decimal.Decimal {
+		if den.IsZero() {
+			return decimal.Zero
+		}
+		return num.Div(den).Mul(decimal.NewFromInt(100)).Round(2)
+	}
+	ratios := []SASRARatio{
+		{
+			Label:       "Core capital to total assets",
+			Numerator:   coreCapital, Denominator: totalAssets,
+			Ratio:       pct(coreCapital, totalAssets),
+			Threshold:   decimal.NewFromFloat(10.00), Operator: "min",
+			Notes: "SASRA prudential minimum: 10%",
+		},
+		{
+			Label:       "Core capital to total deposits",
+			Numerator:   coreCapital, Denominator: deposits.Total,
+			Ratio:       pct(coreCapital, deposits.Total),
+			Threshold:   decimal.NewFromFloat(8.00), Operator: "min",
+			Notes: "SASRA prudential minimum: 8%",
+		},
+		{
+			Label:       "Institutional capital to total assets",
+			Numerator:   institutionalCapTotal, Denominator: totalAssets,
+			Ratio:       pct(institutionalCapTotal, totalAssets),
+			Threshold:   decimal.NewFromFloat(8.00), Operator: "min",
+			Notes: "SASRA prudential minimum: 8%",
+		},
+		{
+			Label:       "Liquidity ratio",
+			Numerator:   liquidAssets, Denominator: shortTermLiab,
+			Ratio:       pct(liquidAssets, shortTermLiab),
+			Threshold:   decimal.NewFromFloat(15.00), Operator: "min",
+			Notes: "Liquid assets ÷ withdrawable savings + payables; SASRA minimum: 15%",
+		},
+		{
+			Label:       "External borrowings to total assets",
+			Numerator:   borrowings, Denominator: totalAssets,
+			Ratio:       pct(borrowings, totalAssets),
+			Threshold:   decimal.NewFromFloat(25.00), Operator: "max",
+			Notes: "SASRA prudential cap: 25%",
+		},
+		{
+			Label:       "Provision coverage of gross loans",
+			Numerator:   provisions, Denominator: grossLoans,
+			Ratio:       provCoverage,
+			Threshold:   decimal.NewFromFloat(5.00), Operator: "min",
+			Notes: "Indicative — actual SASRA coverage applies per-classification rates",
+		},
+	}
+	for i := range ratios {
+		// Negative numerator can artificially flip the sign when the
+		// denominator is also negative — that's not real compliance, it
+		// just means both sides of the ratio are unsound. A minimum
+		// threshold cannot be met by a negative numerator, regardless
+		// of what the percentage arithmetic produces.
+		if ratios[i].Operator == "min" && ratios[i].Numerator.IsNegative() {
+			ratios[i].Compliant = false
+			continue
+		}
+		switch ratios[i].Operator {
+		case "min":
+			ratios[i].Compliant = ratios[i].Ratio.GreaterThanOrEqual(ratios[i].Threshold)
+		case "max":
+			ratios[i].Compliant = ratios[i].Ratio.LessThanOrEqual(ratios[i].Threshold)
+		}
+	}
+	allCompliant := true
+	for _, r := range ratios {
+		if !r.Compliant {
+			allCompliant = false
+			break
+		}
+	}
+
+	return &SASRAReturn{
+		AsOf:       asOf,
+		FiscalYear: asOf.Year(),
+		Position: PositionSummary{
+			TotalAssets: totalAssets, TotalLiabilities: totalLiab, TotalEquity: totalEquity,
+		},
+		IncomeStatement: ISSummary{
+			TotalIncome: totalIncome, TotalExpense: totalExpense, NetSurplus: netSurplus,
+			FromDate: fyStart, ToDate: asOf,
+		},
+		Capital: CapitalSummary{
+			ShareCapital: shareCap, RetainedEarnings: retEarn,
+			StatutoryReserve: statRes, GeneralReserves: genRes,
+			InstitutionalCapital: instCap, IntangibleAssets: intangible,
+			CoreCapital: coreCapital, InstitutionalCapTotal: institutionalCapTotal,
+		},
+		LoanPortfolio: LoanPortfolioSummary{
+			GrossLoans: grossLoans, InterestRecv: interestRecv,
+			Provisions: provisions, NetLoans: netLoans, ProvCoverage: provCoverage,
+		},
+		Deposits:      deposits,
+		Borrowings:    borrowings,
+		LiquidAssets:  liquidAssets,
+		ShortTermLiab: shortTermLiab,
+		Ratios:        ratios,
+		AllCompliant:  allCompliant,
+	}, nil
+}

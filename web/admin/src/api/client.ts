@@ -4914,3 +4914,58 @@ export async function budgetVariance(id: string, from: string, to: string): Prom
   const r = await api.get(`/v1/budgets/${id}/variance?from=${from}&to=${to}`);
   return r.data.data;
 }
+
+// ─────────── SASRA Regulatory Return ───────────
+
+export type SASRARatio = {
+  label: string;
+  numerator: string;
+  denominator: string;
+  ratio: string;
+  threshold: string;
+  operator: 'min' | 'max';
+  compliant: boolean;
+  notes?: string;
+};
+
+export type SASRAReturn = {
+  as_of: string;
+  fiscal_year: number;
+  position: { total_assets: string; total_liabilities: string; total_equity: string };
+  income_statement: {
+    total_income: string;
+    total_expense: string;
+    net_surplus: string;
+    from_date: string;
+    to_date: string;
+  };
+  capital: {
+    share_capital: string;
+    retained_earnings: string;
+    statutory_reserve: string;
+    general_reserves: string;
+    institutional_capital_acct: string;
+    intangible_assets: string;
+    core_capital: string;
+    institutional_capital: string;
+  };
+  loan_portfolio: {
+    gross_loans: string;
+    interest_receivable: string;
+    provisions: string;
+    net_loans: string;
+    provision_coverage_pct: string;
+  };
+  deposits: { member_savings: string; fixed_deposits: string; total: string };
+  borrowings: string;
+  liquid_assets: string;
+  short_term_liabilities: string;
+  ratios: SASRARatio[];
+  all_compliant: boolean;
+};
+
+export async function sasraReturn(asOf?: string): Promise<SASRAReturn> {
+  const q = asOf ? `?as_of=${asOf}` : '';
+  const r = await api.get('/v1/reports/sasra-return' + q);
+  return r.data.data;
+}

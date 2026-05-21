@@ -230,6 +230,33 @@ func (h *ReportHandler) CashFlow(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, report)
 }
 
+// SASRAReturn — canonical SASRA quarterly submission with position
+// summary, capital, ratios + compliance flags. Single endpoint:
+//   GET /v1/reports/sasra-return?as_of=YYYY-MM-DD  (defaults to today)
+func (h *ReportHandler) SASRAReturn(w http.ResponseWriter, r *http.Request) {
+	asOf := time.Now()
+	if v := r.URL.Query().Get("as_of"); v != "" {
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("as_of must be YYYY-MM-DD"))
+			return
+		}
+		asOf = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC)
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var report *store.SASRAReturn
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		var err error
+		report, err = h.Reports.SASRAReturnTx(r.Context(), tx, asOf)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, report)
+}
+
 func (h *ReportHandler) GLDetail(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "account_id"))
 	if err != nil {
