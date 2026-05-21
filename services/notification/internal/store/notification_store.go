@@ -111,12 +111,13 @@ func (s *NotificationStore) GetTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) 
 
 // CreateDeliveryInput is the per-channel rendered content + initial status.
 type CreateDeliveryInput struct {
-	NotificationID uuid.UUID
-	Channel        domain.Channel
-	TemplateID     *uuid.UUID
-	Subject        *string
-	Body           string
-	Status         domain.Status // initial status
+	NotificationID  uuid.UUID
+	Channel         domain.Channel
+	TemplateID      *uuid.UUID
+	Subject         *string
+	Body            string
+	Status          domain.Status // initial status
+	AttachmentPaths []string      // storage paths the worker should attach
 }
 
 func (s *NotificationStore) CreateDeliveryTx(ctx context.Context, tx pgx.Tx, in CreateDeliveryInput) (*domain.Delivery, error) {
@@ -140,19 +141,23 @@ func (s *NotificationStore) CreateDeliveryTx(ctx context.Context, tx pgx.Tx, in 
 	case domain.StatusQueued:
 		queuedAtExpr = now
 	}
+	paths := in.AttachmentPaths
+	if paths == nil {
+		paths = []string{}
+	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO notification_deliveries (
 			tenant_id, notification_id, channel, template_id,
 			subject, body, status,
-			queued_at, delivered_at
+			queued_at, delivered_at, attachment_paths
 		) VALUES (
 			current_tenant_id(), $1, $2, $3,
 			$4, $5, $6,
-			`+queuedAtExpr+`, `+deliveredAtExpr+`
+			`+queuedAtExpr+`, `+deliveredAtExpr+`, $7
 		)
 		RETURNING `+deliveryCols,
 		in.NotificationID, string(in.Channel), in.TemplateID,
-		in.Subject, in.Body, string(status),
+		in.Subject, in.Body, string(status), paths,
 	)
 	return scanDelivery(row)
 }
@@ -161,7 +166,7 @@ const deliveryCols = `
 	id, tenant_id, notification_id, channel, template_id,
 	subject, body, status, attempt_count,
 	queued_at, sent_at, delivered_at, read_at, failed_at,
-	failure_reason, provider_message_id, created_at, updated_at
+	failure_reason, provider_message_id, attachment_paths, created_at, updated_at
 `
 
 func scanDelivery(row pgx.Row) (*domain.Delivery, error) {
@@ -171,7 +176,8 @@ func scanDelivery(row pgx.Row) (*domain.Delivery, error) {
 		&d.ID, &d.TenantID, &d.NotificationID, &channel, &d.TemplateID,
 		&d.Subject, &d.Body, &status, &d.AttemptCount,
 		&d.QueuedAt, &d.SentAt, &d.DeliveredAt, &d.ReadAt, &d.FailedAt,
-		&d.FailureReason, &d.ProviderMessageID, &d.CreatedAt, &d.UpdatedAt,
+		&d.FailureReason, &d.ProviderMessageID, &d.AttachmentPaths,
+		&d.CreatedAt, &d.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -332,15 +338,16 @@ func (s *NotificationStore) UnreadCountForUserTx(ctx context.Context, tx pgx.Tx,
 // rendered email body plus the recipient address from the parent
 // notification row.
 type DueEmailDelivery struct {
-	DeliveryID     uuid.UUID
-	NotificationID uuid.UUID
-	TenantID       uuid.UUID
-	Subject        string
-	Body           string
-	RecipientName  string
-	RecipientEmail string
-	AttemptCount   int
-	MaxAttempts    int
+	DeliveryID      uuid.UUID
+	NotificationID  uuid.UUID
+	TenantID        uuid.UUID
+	Subject         string
+	Body            string
+	RecipientName   string
+	RecipientEmail  string
+	AttachmentPaths []string
+	AttemptCount    int
+	MaxAttempts     int
 }
 
 // ClaimDueEmailsForTenantTx atomically marks up to `limit` email
@@ -373,11 +380,13 @@ func (s *NotificationStore) ClaimDueEmailsForTenantTx(
 			SET status = 'sent', attempt_count = attempt_count + 1, updated_at = now()
 			FROM due
 			WHERE d.id = due.id
-			RETURNING d.id, d.notification_id, d.tenant_id, d.subject, d.body, d.attempt_count, d.max_attempts
+			RETURNING d.id, d.notification_id, d.tenant_id, d.subject, d.body,
+			          d.attachment_paths, d.attempt_count, d.max_attempts
 		)
 		SELECT c.id, c.notification_id, c.tenant_id,
 		       COALESCE(c.subject, ''), c.body,
 		       n.recipient_name, COALESCE(n.recipient_email, ''),
+		       c.attachment_paths,
 		       c.attempt_count, c.max_attempts
 		FROM claimed c
 		JOIN notifications n ON n.id = c.notification_id
@@ -392,6 +401,7 @@ func (s *NotificationStore) ClaimDueEmailsForTenantTx(
 		if err := rows.Scan(
 			&d.DeliveryID, &d.NotificationID, &d.TenantID,
 			&d.Subject, &d.Body, &d.RecipientName, &d.RecipientEmail,
+			&d.AttachmentPaths,
 			&d.AttemptCount, &d.MaxAttempts,
 		); err != nil {
 			return nil, err

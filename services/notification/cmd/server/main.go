@@ -22,6 +22,7 @@ import (
 	"github.com/nexussacco/notification/internal/config"
 	"github.com/nexussacco/notification/internal/db"
 	"github.com/nexussacco/notification/internal/handler"
+	"github.com/nexussacco/notification/internal/pdf"
 	"github.com/nexussacco/notification/internal/store"
 	"github.com/nexussacco/notification/internal/worker"
 )
@@ -66,6 +67,25 @@ func main() {
 	notifs := store.NewNotificationStore(pool.Pool)
 	smtpStore := store.NewSMTPConfigStore(pool.Pool, cfg.JWTSecret)
 	smsStore := store.NewSMSConfigStore(pool.Pool, cfg.JWTSecret)
+	pdfStore := store.NewPDFStore(pool.Pool)
+
+	pdfStorage, err := pdf.NewStorage(cfg.PDFStorageDir)
+	if err != nil {
+		logger.Error("pdf storage", "err", err)
+		os.Exit(1)
+	}
+	pdfRenderer, err := pdf.NewRenderer(ctx)
+	if err != nil {
+		logger.Error("pdf renderer (chromedp)", "err", err)
+		os.Exit(1)
+	}
+	defer pdfRenderer.Close()
+	pdfGenerator := &pdf.Generator{
+		DB:       pool,
+		PDFs:     pdfStore,
+		Renderer: pdfRenderer,
+		Storage:  pdfStorage,
+	}
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 	realtime := bus.New()
@@ -76,7 +96,18 @@ func main() {
 		Templates:     templates,
 		Notifications: notifs,
 		Tenants:       tenants,
+		PDFs:          pdfStore,
+		PDFGenerator:  pdfGenerator,
+		PDFStorage:    pdfStorage,
 		Bus:           realtime,
+		InternalToken: cfg.InternalToken,
+		Logger:        logger,
+	}
+	pdfH := &handler.PDFHandler{
+		DB:            pool,
+		PDFs:          pdfStore,
+		Generator:     pdfGenerator,
+		Storage:       pdfStorage,
 		InternalToken: cfg.InternalToken,
 		Logger:        logger,
 	}
@@ -103,6 +134,7 @@ func main() {
 		SMTP:        smtpH,
 		SMS:         smsH,
 		SSE:         sseH,
+		PDF:         pdfH,
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,
@@ -114,6 +146,7 @@ func main() {
 		DB:           pool,
 		Notifs:       notifs,
 		SMTPStore:    smtpStore,
+		PDFStorage:   pdfStorage,
 		TickInterval: 10 * time.Second,
 		BatchSize:    25,
 		Logger:       logger,

@@ -29,6 +29,7 @@ import (
 	"github.com/nexussacco/notification/internal/domain"
 	"github.com/nexussacco/notification/internal/httpx"
 	"github.com/nexussacco/notification/internal/middleware"
+	"github.com/nexussacco/notification/internal/pdf"
 	"github.com/nexussacco/notification/internal/store"
 )
 
@@ -38,6 +39,9 @@ type Handler struct {
 	Templates     *store.TemplateStore
 	Notifications *store.NotificationStore
 	Tenants       *store.TenantStore
+	PDFs          *store.PDFStore
+	PDFGenerator  *pdf.Generator
+	PDFStorage    *pdf.Storage
 	Bus           *bus.Bus
 	InternalToken string
 	Logger        *slog.Logger
@@ -45,21 +49,35 @@ type Handler struct {
 
 // ─────────── Internal: POST /internal/v1/notify ───────────
 
+type pdfAttachmentReq struct {
+	DocumentType     string         `json:"document_type"`
+	SubjectMemberID  *uuid.UUID     `json:"subject_member_id,omitempty"`
+	SubjectLoanID    *uuid.UUID     `json:"subject_loan_id,omitempty"`
+	SubjectAccountID *uuid.UUID     `json:"subject_account_id,omitempty"`
+	SubjectLabel     string         `json:"subject_label,omitempty"`
+	Payload          map[string]any `json:"payload,omitempty"`
+}
+
 type notifyReq struct {
-	TenantID          uuid.UUID         `json:"tenant_id"`
-	EventCode         string            `json:"event_code"`
-	Priority          domain.Priority   `json:"priority,omitempty"`
-	Channels          []domain.Channel  `json:"channels,omitempty"` // override default_channels
-	RecipientMemberID *uuid.UUID        `json:"recipient_member_id,omitempty"`
-	RecipientUserID   *uuid.UUID        `json:"recipient_user_id,omitempty"`
-	RecipientName     string            `json:"recipient_name,omitempty"`
-	RecipientPhone    *string           `json:"recipient_phone,omitempty"`
-	RecipientEmail    *string           `json:"recipient_email,omitempty"`
-	SourceModule      *string           `json:"source_module,omitempty"`
-	SourceRecordID    *uuid.UUID        `json:"source_record_id,omitempty"`
-	DeepLink          *string           `json:"deep_link,omitempty"`
-	Payload           map[string]any    `json:"payload,omitempty"`
-	InitiatedBy       *uuid.UUID        `json:"initiated_by,omitempty"`
+	TenantID          uuid.UUID          `json:"tenant_id"`
+	EventCode         string             `json:"event_code"`
+	Priority          domain.Priority    `json:"priority,omitempty"`
+	Channels          []domain.Channel   `json:"channels,omitempty"` // override default_channels
+	RecipientMemberID *uuid.UUID         `json:"recipient_member_id,omitempty"`
+	RecipientUserID   *uuid.UUID         `json:"recipient_user_id,omitempty"`
+	RecipientName     string             `json:"recipient_name,omitempty"`
+	RecipientPhone    *string            `json:"recipient_phone,omitempty"`
+	RecipientEmail    *string            `json:"recipient_email,omitempty"`
+	SourceModule      *string            `json:"source_module,omitempty"`
+	SourceRecordID    *uuid.UUID         `json:"source_record_id,omitempty"`
+	DeepLink          *string            `json:"deep_link,omitempty"`
+	Payload           map[string]any     `json:"payload,omitempty"`
+	InitiatedBy       *uuid.UUID         `json:"initiated_by,omitempty"`
+	// PDFAttachments are generated inline and attached to the email
+	// delivery (and recorded as pdf_documents). In-app + SMS channels
+	// don't carry attachments but the documents are still listed on
+	// the member / loan / account record for later download.
+	PDFAttachments    []pdfAttachmentReq `json:"pdf_attachments,omitempty"`
 }
 
 type notifyResp struct {
@@ -92,6 +110,32 @@ func (h *Handler) Notify(w http.ResponseWriter, r *http.Request) {
 	if in.RecipientMemberID == nil && in.RecipientUserID == nil {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("recipient_member_id or recipient_user_id is required"))
 		return
+	}
+
+	// 1. Generate any requested PDF attachments BEFORE opening the main
+	//    notify tx — chromedp can take a few seconds and we don't want
+	//    to hold a DB connection that long. Each Generate call manages
+	//    its own short tx for the pdf_documents row.
+	var attachmentPaths []string
+	if len(in.PDFAttachments) > 0 && h.PDFGenerator != nil {
+		for _, a := range in.PDFAttachments {
+			doc, _, gerr := h.PDFGenerator.Generate(r.Context(), pdf.GenerateInput{
+				TenantID:         in.TenantID,
+				DocumentType:     a.DocumentType,
+				SubjectMemberID:  a.SubjectMemberID,
+				SubjectLoanID:    a.SubjectLoanID,
+				SubjectAccountID: a.SubjectAccountID,
+				SubjectLabel:     a.SubjectLabel,
+				Payload:          a.Payload,
+				GeneratedBy:      in.InitiatedBy,
+			})
+			if gerr != nil {
+				h.Logger.Warn("notify: pdf attach failed — sending without it",
+					"event", in.EventCode, "doc_type", a.DocumentType, "err", gerr)
+				continue
+			}
+			attachmentPaths = append(attachmentPaths, doc.StoragePath)
+		}
 	}
 
 	var out notifyResp
@@ -158,12 +202,17 @@ func (h *Handler) Notify(w http.ResponseWriter, r *http.Request) {
 				id := tpl.ID
 				templateID = &id
 			}
+			var atts []string
+			if ch == domain.ChannelEmail {
+				atts = attachmentPaths
+			}
 			d, err := h.Notifications.CreateDeliveryTx(r.Context(), tx, store.CreateDeliveryInput{
-				NotificationID: n.ID,
-				Channel:        ch,
-				TemplateID:     templateID,
-				Subject:        subject,
-				Body:           body,
+				NotificationID:  n.ID,
+				Channel:         ch,
+				TemplateID:      templateID,
+				Subject:         subject,
+				Body:            body,
+				AttachmentPaths: atts,
 			})
 			if err != nil {
 				return err

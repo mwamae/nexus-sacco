@@ -115,6 +115,7 @@ type Delivery struct {
 	FailedAt          *time.Time `json:"failed_at,omitempty"`
 	FailureReason     *string    `json:"failure_reason,omitempty"`
 	ProviderMessageID *string    `json:"provider_message_id,omitempty"`
+	AttachmentPaths   []string   `json:"attachment_paths,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
@@ -164,6 +165,41 @@ const (
 	SMSProviderSandbox    SMSProvider = "sandbox"
 	SMSProviderProduction SMSProvider = "production"
 )
+
+// ─────────── PDF documents (Stage 5) ───────────
+
+type PDFTemplate struct {
+	ID           uuid.UUID `json:"id"`
+	TenantID     uuid.UUID `json:"tenant_id"`
+	DocumentType string    `json:"document_type"`
+	VersionNo    int       `json:"version_no"`
+	Label        string    `json:"label"`
+	HTMLBody     string    `json:"html_body"`
+	PageSize     string    `json:"page_size"`
+	IsActive     bool      `json:"is_active"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type PDFDocument struct {
+	ID                uuid.UUID  `json:"id"`
+	TenantID          uuid.UUID  `json:"tenant_id"`
+	DocumentType      string     `json:"document_type"`
+	TemplateID        *uuid.UUID `json:"template_id,omitempty"`
+	TemplateVersion   *int       `json:"template_version,omitempty"`
+	SubjectMemberID   *uuid.UUID `json:"subject_member_id,omitempty"`
+	SubjectLoanID     *uuid.UUID `json:"subject_loan_id,omitempty"`
+	SubjectAccountID  *uuid.UUID `json:"subject_account_id,omitempty"`
+	SubjectLabel      string     `json:"subject_label"`
+	Payload           []byte     `json:"payload"`
+	StoragePath       string     `json:"-"`                // never returned to clients
+	FileSizeBytes     int        `json:"file_size_bytes"`
+	DownloadToken     *string    `json:"download_token,omitempty"`
+	TokenExpiresAt    *time.Time `json:"token_expires_at,omitempty"`
+	DownloadCount     int        `json:"download_count"`
+	LastDownloadedAt  *time.Time `json:"last_downloaded_at,omitempty"`
+	GeneratedAt       time.Time  `json:"generated_at"`
+	GeneratedBy       *uuid.UUID `json:"generated_by,omitempty"`
+}
 
 // SMSConfig is the per-tenant Africa's Talking configuration. ApiKey
 // and WebhookSecret are stored encrypted at rest; this struct may hold

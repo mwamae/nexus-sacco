@@ -16,6 +16,7 @@ type Deps struct {
 	SMTP        *SMTPHandler
 	SMS         *SMSHandler
 	SSE         *SSEHandler
+	PDF         *PDFHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -36,9 +37,13 @@ func Routes(d Deps) http.Handler {
 
 	// Internal endpoint — no tenant subdomain, no JWT, X-Internal-Token gate.
 	r.Post("/internal/v1/notify", d.Notify.Notify)
+	r.Post("/internal/v1/pdf/generate", d.PDF.GenerateInternal)
 
 	// Webhooks — tenant in URL path so RLS still applies. No JWT.
 	r.Post("/webhooks/at/delivery/{tenant_id}", d.SMS.ATDeliveryReport)
+
+	// Public time-limited PDF download by token. No JWT (the token is the auth).
+	r.Get("/d/{token}", d.PDF.PublicDownload)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
@@ -62,6 +67,10 @@ func Routes(d Deps) http.Handler {
 			r.Get("/notification-config/sms", d.SMS.Get)
 			r.Put("/notification-config/sms", d.SMS.Update)
 			r.Post("/notification-config/sms/test", d.SMS.Test)
+
+			r.Get("/pdf-documents", d.PDF.List)
+			r.Get("/pdf-documents/{id}", d.PDF.Get)
+			r.Get("/pdf-documents/{id}/download", d.PDF.Download)
 		})
 	})
 

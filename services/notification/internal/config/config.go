@@ -25,6 +25,9 @@ type Config struct {
 	// in X-Internal-Token when posting to /internal/v1/notify.
 	InternalToken string
 
+	// Filesystem root for generated PDFs. Never publicly served.
+	PDFStorageDir string
+
 	ReadHeaderTimeout time.Duration
 }
 
@@ -38,6 +41,7 @@ func Load() (*Config, error) {
 		JWTSecret:         []byte(must("JWT_SECRET")),
 		JWTIssuer:         getEnv("JWT_ISSUER", "nexus-identity"),
 		InternalToken:     getEnv("NOTIFICATION_INTERNAL_TOKEN", ""),
+		PDFStorageDir:     getEnv("NOTIFICATION_PDF_DIR", "/tmp/sacco-pdfs"),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if len(cfg.JWTSecret) < 32 {

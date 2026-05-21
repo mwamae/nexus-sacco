@@ -11,6 +11,7 @@ package smtp
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"html"
@@ -23,12 +24,19 @@ import (
 	"github.com/nexussacco/notification/internal/domain"
 )
 
+type Attachment struct {
+	Filename string
+	Data     []byte
+	MimeType string // defaults to application/pdf
+}
+
 type Message struct {
 	From        string // "Sender Name <user@example.com>"
 	ReplyTo     string
 	To          string // "Member Name <member@example.com>"
 	Subject     string
 	PlainBody   string
+	Attachments []Attachment
 }
 
 // Send delivers one message via the supplied SMTP config. Returns
@@ -72,8 +80,12 @@ func Send(cfg *domain.SMTPConfig, msg Message) (string, error) {
 // ─────────── Wire format ───────────
 
 func buildMIME(msg Message, messageID string) []byte {
-	// Multipart alternative: text/plain + text/html so any client renders.
-	boundary := "==NXBOUNDARY=="
+	// With attachments: multipart/mixed { multipart/alternative; attachments... }
+	// Without:          multipart/alternative
+	altBoundary := "==NXALT=="
+	mixedBoundary := "==NXMIX=="
+	hasAttach := len(msg.Attachments) > 0
+
 	var b strings.Builder
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("From: " + msg.From + "\r\n")
@@ -84,24 +96,57 @@ func buildMIME(msg Message, messageID string) []byte {
 	b.WriteString("Subject: " + msg.Subject + "\r\n")
 	b.WriteString("Message-ID: " + messageID + "\r\n")
 	b.WriteString("Date: " + time.Now().UTC().Format(time.RFC1123Z) + "\r\n")
-	b.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", boundary))
+	if hasAttach {
+		b.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=\"%s\"\r\n\r\n", mixedBoundary))
+		b.WriteString("--" + mixedBoundary + "\r\n")
+	}
+	b.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", altBoundary))
 
 	// Plain part.
-	b.WriteString("--" + boundary + "\r\n")
+	b.WriteString("--" + altBoundary + "\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
 	b.WriteString(msg.PlainBody)
 	b.WriteString("\r\n\r\n")
 
 	// HTML part.
-	b.WriteString("--" + boundary + "\r\n")
+	b.WriteString("--" + altBoundary + "\r\n")
 	b.WriteString("Content-Type: text/html; charset=utf-8\r\n")
 	b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
 	b.WriteString(htmlWrap(msg.PlainBody))
 	b.WriteString("\r\n\r\n")
+	b.WriteString("--" + altBoundary + "--\r\n")
 
-	b.WriteString("--" + boundary + "--\r\n")
+	if hasAttach {
+		for _, a := range msg.Attachments {
+			mt := a.MimeType
+			if mt == "" {
+				mt = "application/pdf"
+			}
+			b.WriteString("--" + mixedBoundary + "\r\n")
+			b.WriteString("Content-Type: " + mt + "; name=\"" + a.Filename + "\"\r\n")
+			b.WriteString("Content-Disposition: attachment; filename=\"" + a.Filename + "\"\r\n")
+			b.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
+			b.WriteString(base64Wrap(a.Data, 76))
+			b.WriteString("\r\n")
+		}
+		b.WriteString("--" + mixedBoundary + "--\r\n")
+	}
 	return []byte(b.String())
+}
+
+func base64Wrap(data []byte, lineLen int) string {
+	enc := base64.StdEncoding.EncodeToString(data)
+	var out strings.Builder
+	for i := 0; i < len(enc); i += lineLen {
+		end := i + lineLen
+		if end > len(enc) {
+			end = len(enc)
+		}
+		out.WriteString(enc[i:end])
+		out.WriteString("\r\n")
+	}
+	return out.String()
 }
 
 func htmlWrap(plain string) string {

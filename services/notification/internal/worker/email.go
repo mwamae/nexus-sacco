@@ -14,7 +14,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/nexussacco/notification/internal/db"
 	"github.com/nexussacco/notification/internal/domain"
+	"github.com/nexussacco/notification/internal/pdf"
 	"github.com/nexussacco/notification/internal/smtp"
 	"github.com/nexussacco/notification/internal/store"
 )
@@ -30,6 +33,7 @@ type EmailWorker struct {
 	DB           *db.Pool
 	Notifs       *store.NotificationStore
 	SMTPStore    *store.SMTPConfigStore
+	PDFStorage   *pdf.Storage // for reading attachments off disk
 	TickInterval time.Duration
 	BatchSize    int
 	Logger       *slog.Logger
@@ -144,17 +148,45 @@ func (w *EmailWorker) deliver(ctx context.Context, tenantID uuid.UUID, cfg *doma
 	if d.RecipientName != "" {
 		to = d.RecipientName + " <" + d.RecipientEmail + ">"
 	}
+	atts := w.loadAttachments(d.AttachmentPaths)
 	msgID, err := smtp.Send(cfg, smtp.Message{
-		From:      from,
-		To:        to,
-		Subject:   d.Subject,
-		PlainBody: d.Body,
+		From:        from,
+		To:          to,
+		Subject:     d.Subject,
+		PlainBody:   d.Body,
+		Attachments: atts,
 	})
 	if err == nil {
 		w.markSent(ctx, tenantID, d.DeliveryID, msgID)
 		return
 	}
 	w.handleFailure(ctx, tenantID, d, err)
+}
+
+func (w *EmailWorker) loadAttachments(paths []string) []smtp.Attachment {
+	if w.PDFStorage == nil || len(paths) == 0 {
+		return nil
+	}
+	out := make([]smtp.Attachment, 0, len(paths))
+	for _, p := range paths {
+		f, err := w.PDFStorage.Open(p)
+		if err != nil {
+			w.Logger.Warn("email worker: open attachment failed", "path", p, "err", err)
+			continue
+		}
+		data, err := io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			w.Logger.Warn("email worker: read attachment failed", "path", p, "err", err)
+			continue
+		}
+		out = append(out, smtp.Attachment{
+			Filename: filepath.Base(p),
+			Data:     data,
+			MimeType: "application/pdf",
+		})
+	}
+	return out
 }
 
 func (w *EmailWorker) markSent(ctx context.Context, tenantID, deliveryID uuid.UUID, providerMsgID string) {
