@@ -41,6 +41,26 @@ func scanJob(row pgx.Row) (*domain.ScheduledJob, error) {
 	return &j, nil
 }
 
+// ListAllAcrossTenantsTx returns every job across tenants — used by
+// the one-shot backfill to recompute next_run_at after a timezone or
+// cron-handling change. Runs unscoped; caller iterates by tenant.
+func (s *SchedulerStore) ListAllAcrossTenantsTx(ctx context.Context, tx pgx.Tx) ([]domain.ScheduledJob, error) {
+	rows, err := tx.Query(ctx, `SELECT `+jobCols+` FROM notification_scheduled_jobs ORDER BY tenant_id, job_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.ScheduledJob{}
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *j)
+	}
+	return out, rows.Err()
+}
+
 // ListActiveJobsAcrossTenantsTx — used by the scheduler tick to find
 // jobs that are due. Runs with no tenant context (RLS-aware); the
 // caller iterates by tenant after.

@@ -17,10 +17,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
 	"github.com/nexussacco/notification/internal/auth"
 	"github.com/nexussacco/notification/internal/bus"
 	"github.com/nexussacco/notification/internal/config"
 	"github.com/nexussacco/notification/internal/db"
+	"github.com/nexussacco/notification/internal/domain"
 	"github.com/nexussacco/notification/internal/handler"
 	"github.com/nexussacco/notification/internal/otp"
 	"github.com/nexussacco/notification/internal/pdf"
@@ -30,8 +34,9 @@ import (
 
 func main() {
 	migrate := flag.Bool("migrate", false, "run database migrations and exit")
+	backfillNextRuns := flag.Bool("backfill-next-runs", false, "recompute next_run_at for every scheduled job using the tenant's timezone, then exit")
 	flag.Parse()
-	if *migrate {
+	if *migrate || *backfillNextRuns {
 		_ = os.Setenv("DB_SKIP_SET_ROLE", "1")
 	}
 
@@ -59,6 +64,16 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("notification migrations applied")
+		return
+	}
+
+	if *backfillNextRuns {
+		n, err := backfillScheduledJobNextRuns(ctx, pool, logger)
+		if err != nil {
+			logger.Error("backfill next_run_at failed", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("backfill complete", "rows_updated", n)
 		return
 	}
 
@@ -251,6 +266,78 @@ func main() {
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// backfillScheduledJobNextRuns recomputes next_run_at for every row
+// in notification_scheduled_jobs using the tenant's configured
+// timezone. One-shot fixer after the timezone-aware scheduler shipped
+// — rows seeded under the old server-local interpretation get the
+// wrong wall-clock anchor and need rewriting before the worker would
+// catch up on its own.
+func backfillScheduledJobNextRuns(ctx context.Context, pool *db.Pool, logger *slog.Logger) (int, error) {
+	tenants := store.NewTenantStore(pool.Pool)
+	schedStore := store.NewSchedulerStore(pool.Pool)
+	notifs := store.NewNotificationStore(pool.Pool)
+	sched := worker.NewScheduler(pool, schedStore, notifs, tenants, worker.NewJobRegistry(), logger)
+
+	var jobs []domain.ScheduledJob
+	err := pool.WithTenantTx(ctx, uuid.Nil, func(tx pgx.Tx) error {
+		var err error
+		jobs, err = schedStore.ListAllAcrossTenantsTx(ctx, tx)
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("list jobs: %w", err)
+	}
+	logger.Info("backfill: jobs discovered", "count", len(jobs))
+
+	// Cache tenant locations so we don't hit the DB once per job for
+	// the same tenant.
+	locCache := map[uuid.UUID]*time.Location{}
+	tenantLoc := func(tid uuid.UUID) *time.Location {
+		if l, ok := locCache[tid]; ok {
+			return l
+		}
+		var tz string
+		_ = pool.WithTenantTx(ctx, tid, func(tx pgx.Tx) error {
+			var err error
+			tz, err = tenants.TimezoneTx(ctx, tx)
+			return err
+		})
+		loc, err := time.LoadLocation(tz)
+		if err != nil || loc == nil {
+			loc = time.UTC
+		}
+		locCache[tid] = loc
+		return loc
+	}
+
+	now := time.Now()
+	updated := 0
+	for _, j := range jobs {
+		loc := tenantLoc(j.TenantID)
+		next, err := sched.NextFiringIn(j.CronExpr, now, loc)
+		if err != nil {
+			logger.Warn("backfill: invalid cron — skipping",
+				"tenant", j.TenantID, "job_key", j.JobKey, "expr", j.CronExpr, "err", err)
+			continue
+		}
+		err = pool.WithTenantTx(ctx, j.TenantID, func(tx pgx.Tx) error {
+			_, exerr := tx.Exec(ctx,
+				`UPDATE notification_scheduled_jobs SET next_run_at = $2, updated_at = now() WHERE id = $1`,
+				j.ID, next)
+			return exerr
+		})
+		if err != nil {
+			return updated, fmt.Errorf("update job %s: %w", j.ID, err)
+		}
+		logger.Info("backfill: rewrote next_run_at",
+			"tenant", j.TenantID, "job_key", j.JobKey,
+			"cron", j.CronExpr, "tz", loc.String(),
+			"old", j.NextRunAt, "new", next)
+		updated++
+	}
+	return updated, nil
 }
 
 func newLogger(level, env string) *slog.Logger {
