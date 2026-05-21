@@ -12,8 +12,10 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +27,7 @@ import (
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -36,6 +39,7 @@ type LoanRepaymentHandler struct {
 	Loans     *store.LoanStore
 	Approvals *store.ApprovalsStore
 	Notifier  *notifier.Client
+	Posting   *posting.Client
 	Logger    *slog.Logger
 }
 
@@ -143,8 +147,83 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
+	// Auto-post the GL entry for the repayment. A repayment splits
+	// across principal / interest / penalty / fees per the allocation
+	// — each non-zero piece becomes a credit line against the
+	// matching income or receivable account, balanced by a single
+	// cash-side debit.
+	h.postRepaymentToGL(r, tid, result, in.Channel)
 	h.emitRepayment(r, tid, userID, result)
 	httpx.Created(w, result)
+}
+
+// postRepaymentToGL — auto-post per the SACCO accounting rules:
+//
+//   Debit  Cash / M-Pesa / Bank            (total repaid)
+//   Credit Member Loans Receivable          (principal portion)
+//   Credit Loan Interest Income             (interest portion)
+//   Credit Penalty Income                   (penalty portion)
+//   Credit Loan Processing Fee Income       (fees portion — close enough as the bucket name doesn't distinguish)
+//
+// We only emit the credit lines that are non-zero so the journal entry
+// stays clean.
+func (h *LoanRepaymentHandler) postRepaymentToGL(r *http.Request, tenantID uuid.UUID, result *LoanRepayResult, channel string) {
+	if h.Posting == nil || result == nil {
+		return
+	}
+	cashAcct := repaymentCashAccount(channel)
+	lines := []posting.Line{
+		{AccountCode: cashAcct, Debit: result.Transaction.Amount, Narration: "Cash received"},
+	}
+	a := result.Allocation
+	if !a.Principal.IsZero() {
+		lines = append(lines, posting.Line{
+			AccountCode: "1100", Credit: a.Principal, Narration: "Principal repaid",
+		})
+	}
+	if !a.Interest.IsZero() {
+		lines = append(lines, posting.Line{
+			AccountCode: "4000", Credit: a.Interest, Narration: "Loan interest income",
+		})
+	}
+	if !a.Penalty.IsZero() {
+		lines = append(lines, posting.Line{
+			AccountCode: "4030", Credit: a.Penalty, Narration: "Penalty income",
+		})
+	}
+	if !a.Fees.IsZero() {
+		lines = append(lines, posting.Line{
+			AccountCode: "4010", Credit: a.Fees, Narration: "Loan fees income",
+		})
+	}
+	narration := fmt.Sprintf("Repayment on loan %s", result.Loan.LoanNo)
+	err := h.Posting.Post(r.Context(), posting.PostInput{
+		TenantID:     tenantID,
+		EntryDate:    time.Now(),
+		SourceModule: "savings.loans.repayment",
+		SourceRef:    result.Transaction.ID.String(),
+		Narration:    narration,
+		Lines:        lines,
+	})
+	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
+		h.Logger.Error("auto-post loan repayment failed",
+			"tenant", tenantID, "loan", result.Loan.ID, "err", err)
+	}
+}
+
+func repaymentCashAccount(channel string) string {
+	switch strings.ToLower(channel) {
+	case "mpesa":
+		return "1030"
+	case "bank", "bank_transfer":
+		return "1020"
+	case "auto_savings":
+		return "2000" // Repayment came from the member's savings account
+	case "payroll":
+		return "1020" // Payroll deduction flowing through bank
+	default:
+		return "1000" // Cash / teller default
+	}
 }
 
 // emitRepayment fires LOAN_REPAYMENT_RECEIVED post-commit. We also

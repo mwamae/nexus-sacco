@@ -11,9 +11,11 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +27,7 @@ import (
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -39,6 +42,7 @@ type LoanHandler struct {
 	Deposits     *store.DepositStore
 	Approvals    *store.ApprovalsStore
 	Notifier     *notifier.Client
+	Posting      *posting.Client
 	Logger       *slog.Logger
 }
 
@@ -287,6 +291,11 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
+	// Auto-post the GL entry for the disbursement before notifying
+	// the member — same spec rule used by deposits/withdrawals:
+	//     Debit  Member Loans Receivable
+	//     Credit Cash / M-Pesa / Bank   (per channel)
+	h.postLoanDisbursementToGL(r, tid, result, in.Channel)
 	// Notify borrower that the loan was disbursed.
 	if h.Notifier != nil && result != nil {
 		var member *store.MemberLite
@@ -447,3 +456,54 @@ func loadLoanTxnsTx(ctx context.Context, tx pgx.Tx, loanID uuid.UUID) ([]domain.
 }
 
 var _ = errors.New
+
+// postLoanDisbursementToGL — auto-post the GL entry for a successful
+// disbursement. The cash-side account follows the disbursement
+// channel ("mpesa", "bank", "internal", …). The receivable-side
+// account is the canonical 1100 Member Loans Receivable; finer-
+// grained per-product accounts can be wired in once posting_rules
+// gain product scope.
+func (h *LoanHandler) postLoanDisbursementToGL(r *http.Request, tenantID uuid.UUID, result *LoanDisbursementResult, channel string) {
+	if h.Posting == nil || result == nil {
+		return
+	}
+	cashAcct := loanDisbursementCashAccount(channel)
+	amount := result.Disbursement.Amount
+	if amount.IsZero() {
+		amount = result.Loan.Principal
+	}
+	narration := fmt.Sprintf("Loan %s disbursement via %s",
+		result.Loan.LoanNo, channel)
+	err := h.Posting.Post(r.Context(), posting.PostInput{
+		TenantID:     tenantID,
+		EntryDate:    time.Now(),
+		SourceModule: "savings.loans.disbursement",
+		SourceRef:    result.Disbursement.ID.String(),
+		Narration:    narration,
+		Lines: []posting.Line{
+			{AccountCode: "1100", Debit: amount, Narration: "Loan receivable created"},
+			{AccountCode: cashAcct, Credit: amount, Narration: "Cash disbursed"},
+		},
+	})
+	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
+		h.Logger.Error("auto-post loan disbursement failed",
+			"tenant", tenantID, "loan", result.Loan.ID, "err", err)
+	}
+}
+
+// loanDisbursementCashAccount maps the free-text channel string used
+// by the disbursement payload to a CoA code. "internal" means the
+// proceeds landed in the member's savings account (no cash actually
+// moved); we credit the savings liability rather than a cash account.
+func loanDisbursementCashAccount(channel string) string {
+	switch strings.ToLower(channel) {
+	case "mpesa":
+		return "1030"
+	case "bank", "bank_transfer":
+		return "1020"
+	case "internal", "savings":
+		return "2000" // Ordinary Savings Deposits — the loan lands in the member's savings
+	default:
+		return "1000"
+	}
+}

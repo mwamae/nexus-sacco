@@ -30,6 +30,13 @@ type Config struct {
 	// Notification service (Phase 7e / Stage 1+).
 	NotificationURL           string
 	NotificationInternalToken string
+
+	// Accounting service for auto-posting GL entries on every
+	// transaction. Blank URL disables posting (dev mode); the client
+	// returns ErrPostingDisabled which handlers can treat as
+	// non-fatal during the integration rollout.
+	AccountingURL           string
+	AccountingInternalToken string
 }
 
 func Load() (*Config, error) {
@@ -46,6 +53,8 @@ func Load() (*Config, error) {
 		SavingsURL:                getEnv("SAVINGS_SELF_URL", "http://localhost:8084"),
 		NotificationURL:           getEnv("NOTIFICATION_SERVICE_URL", "http://localhost:8085"),
 		NotificationInternalToken: getEnv("NOTIFICATION_INTERNAL_TOKEN", ""),
+		AccountingURL:             getEnv("ACCOUNTING_SERVICE_URL", "http://localhost:8086"),
+		AccountingInternalToken:   getEnv("ACCOUNTING_INTERNAL_TOKEN", ""),
 	}
 	if len(cfg.JWTSecret) < 32 {
 		return nil, errors.New("JWT_SECRET must be at least 32 bytes")

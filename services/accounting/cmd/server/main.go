@@ -81,7 +81,11 @@ func main() {
 			DB: pool, CoA: coaStore, Journals: journalStore,
 			Periods: periodStore, Engine: engine, Logger: logger,
 		},
-		Reports:     &handler.ReportHandler{DB: pool, Reports: reportStore, Logger: logger},
+		Reports: &handler.ReportHandler{DB: pool, Reports: reportStore, Logger: logger},
+		InternalPost: &handler.InternalPostHandler{
+			DB: pool, Engine: engine,
+			InternalToken: cfg.InternalToken, Logger: logger,
+		},
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,

@@ -122,6 +122,126 @@ type GLDetailRow struct {
 	SourceRef   *string         `json:"source_ref,omitempty"`
 }
 
+// BalanceSheetRow — one balance sheet line. Detail rows have an
+// AccountID; the handler interleaves section subtotals on top.
+type BalanceSheetRow struct {
+	AccountID   *uuid.UUID          `json:"account_id,omitempty"`
+	AccountCode string              `json:"account_code,omitempty"`
+	AccountName string              `json:"account_name"`
+	Class       domain.AccountClass `json:"class"`
+	Amount      decimal.Decimal     `json:"amount"`
+}
+
+// BalanceSheetTx — assets / liabilities / equity at `asOf`, computed
+// purely from posted journal entries. Returns one row per non-zero
+// account ordered by code; the handler groups + subtotals.
+func (s *ReportStore) BalanceSheetTx(ctx context.Context, tx pgx.Tx, asOf time.Time) ([]BalanceSheetRow, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT a.id, a.code, a.name, a.class, a.normal_balance,
+		       COALESCE(SUM(l.debit  - l.credit), 0) AS net
+		FROM chart_of_accounts a
+		LEFT JOIN journal_lines l   ON l.account_id = a.id
+		LEFT JOIN journal_entries je ON je.id = l.entry_id
+		                            AND je.status = 'posted'
+		                            AND je.entry_date <= $1
+		WHERE a.class IN ('asset', 'liability', 'equity')
+		  AND a.is_active = true
+		GROUP BY a.id, a.code, a.name, a.class, a.normal_balance
+		ORDER BY a.code
+	`, asOf)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []BalanceSheetRow{}
+	for rows.Next() {
+		var (
+			id        uuid.UUID
+			code, nm  string
+			cls, nb   string
+			net       decimal.Decimal
+		)
+		if err := rows.Scan(&id, &code, &nm, &cls, &nb, &net); err != nil {
+			return nil, err
+		}
+		// Project the net (debits − credits) onto the account's
+		// natural side so balances display as positive when the
+		// account is in its normal state.
+		amount := net
+		if nb == "credit" {
+			amount = amount.Neg()
+		}
+		if amount.IsZero() {
+			continue
+		}
+		out = append(out, BalanceSheetRow{
+			AccountID:   &id,
+			AccountCode: code,
+			AccountName: nm,
+			Class:       domain.AccountClass(cls),
+			Amount:      amount,
+		})
+	}
+	return out, rows.Err()
+}
+
+// IncomeStatementRow — same shape as balance sheet rows but for
+// income/expense accounts within a [from, to] window.
+type IncomeStatementRow struct {
+	AccountID   *uuid.UUID          `json:"account_id,omitempty"`
+	AccountCode string              `json:"account_code,omitempty"`
+	AccountName string              `json:"account_name"`
+	Class       domain.AccountClass `json:"class"`
+	Amount      decimal.Decimal     `json:"amount"`
+}
+
+func (s *ReportStore) IncomeStatementTx(ctx context.Context, tx pgx.Tx, from, to time.Time) ([]IncomeStatementRow, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT a.id, a.code, a.name, a.class, a.normal_balance,
+		       COALESCE(SUM(l.debit - l.credit), 0) AS net
+		FROM chart_of_accounts a
+		LEFT JOIN journal_lines l   ON l.account_id = a.id
+		LEFT JOIN journal_entries je ON je.id = l.entry_id
+		                            AND je.status = 'posted'
+		                            AND je.entry_date BETWEEN $1 AND $2
+		WHERE a.class IN ('income', 'expense')
+		  AND a.is_active = true
+		GROUP BY a.id, a.code, a.name, a.class, a.normal_balance
+		ORDER BY a.code
+	`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []IncomeStatementRow{}
+	for rows.Next() {
+		var (
+			id       uuid.UUID
+			code, nm string
+			cls, nb  string
+			net      decimal.Decimal
+		)
+		if err := rows.Scan(&id, &code, &nm, &cls, &nb, &net); err != nil {
+			return nil, err
+		}
+		amount := net
+		if nb == "credit" {
+			amount = amount.Neg()
+		}
+		if amount.IsZero() {
+			continue
+		}
+		out = append(out, IncomeStatementRow{
+			AccountID:   &id,
+			AccountCode: code,
+			AccountName: nm,
+			Class:       domain.AccountClass(cls),
+			Amount:      amount,
+		})
+	}
+	return out, rows.Err()
+}
+
 func (s *ReportStore) GLDetailTx(ctx context.Context, tx pgx.Tx, accountID uuid.UUID, from, to time.Time, limit int) ([]GLDetailRow, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 1000

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -24,6 +25,7 @@ import (
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -34,6 +36,7 @@ type ShareHandler struct {
 	Shares    *store.ShareStore
 	Approvals *store.ApprovalsStore
 	Notifier  *notifier.Client
+	Posting   *posting.Client
 	Logger    *slog.Logger
 }
 
@@ -392,8 +395,59 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
+	// Auto-post the GL entry:
+	//   Debit  Cash / M-Pesa / Bank / Savings  (per payment channel)
+	//   Credit Member Share Capital (equity)
+	h.postSharePurchaseToGL(r, tid, result, in.PaymentChannel)
 	h.emitSharePurchase(r, tid, userID, result)
 	httpx.Created(w, result)
+}
+
+// shareChannelCashAccount picks the debit-side CoA code for the
+// channel a share purchase came in through. "internal" means the cost
+// was deducted from the member's savings — debit the savings
+// liability (member's savings goes down).
+func shareChannelCashAccount(ch domain.PaymentChannel) string {
+	switch ch {
+	case domain.ChannelMpesa:
+		return "1030"
+	case domain.ChannelAirtelMoney:
+		return "1040"
+	case domain.ChannelBankTransfer, domain.ChannelPayroll, domain.ChannelStandingOrder:
+		return "1020"
+	case domain.ChannelInternal:
+		return "2000"
+	default:
+		return "1000"
+	}
+}
+
+func (h *ShareHandler) postSharePurchaseToGL(r *http.Request, tenantID uuid.UUID, result *SharePostResult, ch domain.PaymentChannel) {
+	if h.Posting == nil || result == nil {
+		return
+	}
+	amount := result.Transaction.Amount
+	if amount.IsZero() {
+		return
+	}
+	cashAcct := shareChannelCashAccount(ch)
+	narration := fmt.Sprintf("Share purchase %d shares · %s",
+		result.Transaction.SharesDelta, result.Account.AccountNo)
+	err := h.Posting.Post(r.Context(), posting.PostInput{
+		TenantID:     tenantID,
+		EntryDate:    time.Now(),
+		SourceModule: "savings.shares.purchase",
+		SourceRef:    result.Transaction.ID.String(),
+		Narration:    narration,
+		Lines: []posting.Line{
+			{AccountCode: cashAcct, Debit: amount, Narration: "Payment received"},
+			{AccountCode: "3000", Credit: amount, Narration: "Member share capital"},
+		},
+	})
+	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
+		h.Logger.Error("auto-post share purchase failed",
+			"tenant", tenantID, "tx", result.Transaction.ID, "err", err)
+	}
 }
 
 // ─────────── Transfer ───────────

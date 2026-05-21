@@ -23,6 +23,7 @@ import (
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -34,6 +35,7 @@ type DepositHandler struct {
 	Deposits  *store.DepositStore
 	Approvals *store.ApprovalsStore
 	Notifier  *notifier.Client
+	Posting   *posting.Client
 	Logger    *slog.Logger
 
 	// DuplicateLookback is how far back we look for a same-channel-ref
@@ -452,6 +454,7 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
+	h.postDepositToGL(r, tid, result, in.Channel)
 	h.emitDeposit(r, tid, userID, result, "DEPOSIT_RECEIVED")
 	httpx.Created(w, result)
 }
@@ -540,8 +543,88 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
+	h.postWithdrawalToGL(r, tid, result, in.Channel)
 	h.emitWithdrawal(r, tid, userID, result, "WITHDRAWAL_PROCESSED", "")
 	httpx.Created(w, result)
+}
+
+// channelCashAccount maps the payment channel on a deposit/withdrawal
+// to the corresponding cash-side account in the default CoA. The
+// member-side leg is always 2000 (Ordinary Savings Deposits) for now;
+// product-aware mapping lands when posting_rules become product-scoped
+// in a later phase.
+func channelCashAccount(ch domain.DepositChannel) string {
+	switch ch {
+	case domain.DepChannelMpesa:
+		return "1030" // M-Pesa Float
+	case domain.DepChannelAirtelMoney:
+		return "1040" // Airtel Money Float
+	case domain.DepChannelBankTransfer:
+		return "1020" // Bank Current Account
+	default:
+		return "1000" // Cash on Hand (cash, teller, standing order, fallback)
+	}
+}
+
+// postDepositToGL fires the auto-post journal entry after a successful
+// deposit. Spec rule:
+//     Debit  cash/m-pesa/bank   (per channel)
+//     Credit member savings     (liability)
+// Posting failure is logged loudly — the deposit itself already
+// committed, so we don't unwind. A follow-up reconciliation report
+// surfaces unposted transactions; the accounting team can replay them
+// via the manual journal entry path.
+func (h *DepositHandler) postDepositToGL(r *http.Request, tenantID uuid.UUID, result *DepositResult, ch domain.DepositChannel) {
+	if h.Posting == nil || result == nil {
+		return
+	}
+	amount := result.Transaction.Amount
+	cashAcct := channelCashAccount(ch)
+	narration := fmt.Sprintf("Deposit %s to a/c %s",
+		amount.StringFixed(2), result.Account.AccountNo)
+	err := h.Posting.Post(r.Context(), posting.PostInput{
+		TenantID:     tenantID,
+		EntryDate:    time.Now(),
+		SourceModule: "savings.deposits",
+		SourceRef:    result.Transaction.ID.String(),
+		Narration:    narration,
+		Lines: []posting.Line{
+			{AccountCode: cashAcct, Debit: amount, Narration: "Cash received"},
+			{AccountCode: "2000", Credit: amount, Narration: "Member savings credited"},
+		},
+	})
+	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
+		h.Logger.Error("auto-post deposit failed",
+			"tenant", tenantID, "tx", result.Transaction.ID, "err", err)
+	}
+}
+
+// postWithdrawalToGL fires the auto-post for a withdrawal. Spec rule:
+//     Debit  member savings   (liability)
+//     Credit cash/m-pesa      (per channel)
+func (h *DepositHandler) postWithdrawalToGL(r *http.Request, tenantID uuid.UUID, result *WithdrawalResult, ch domain.DepositChannel) {
+	if h.Posting == nil || result == nil {
+		return
+	}
+	amount := result.Transaction.Amount
+	cashAcct := channelCashAccount(ch)
+	narration := fmt.Sprintf("Withdrawal %s from a/c %s",
+		amount.StringFixed(2), result.Account.AccountNo)
+	err := h.Posting.Post(r.Context(), posting.PostInput{
+		TenantID:     tenantID,
+		EntryDate:    time.Now(),
+		SourceModule: "savings.deposits",
+		SourceRef:    result.Transaction.ID.String(),
+		Narration:    narration,
+		Lines: []posting.Line{
+			{AccountCode: "2000", Debit: amount, Narration: "Member savings debited"},
+			{AccountCode: cashAcct, Credit: amount, Narration: "Cash paid out"},
+		},
+	})
+	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
+		h.Logger.Error("auto-post withdrawal failed",
+			"tenant", tenantID, "tx", result.Transaction.ID, "err", err)
+	}
 }
 
 // emitDeposit / emitWithdrawal — fire notifications post-commit. We

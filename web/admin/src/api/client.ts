@@ -4180,3 +4180,46 @@ export async function glDetail(accountId: string, from: string, to: string): Pro
   const r = await api.get(`/v1/reports/gl-detail/${accountId}?from=${from}&to=${to}`);
   return r.data.data;
 }
+
+// ─────────── Balance Sheet + Income Statement (Phase 2) ───────────
+
+export type BalanceSheetRow = {
+  account_id?: string | null;
+  account_code?: string;
+  account_name: string;
+  class: AccountClass;
+  amount: string;
+};
+
+export async function balanceSheet(asOf?: string): Promise<{
+  as_of: string;
+  items: BalanceSheetRow[];
+  total_assets: string;
+  total_liabilities: string;
+  total_equity: string;
+  balanced: boolean;
+}> {
+  const q = asOf ? `?as_of=${asOf}` : '';
+  const r = await api.get('/v1/reports/balance-sheet' + q);
+  return r.data.data;
+}
+
+export type IncomeStatementRow = {
+  account_id?: string | null;
+  account_code?: string;
+  account_name: string;
+  class: AccountClass;
+  amount: string;
+};
+
+export async function incomeStatement(from: string, to: string): Promise<{
+  from: string;
+  to: string;
+  items: IncomeStatementRow[];
+  total_income: string;
+  total_expense: string;
+  net_surplus: string;
+}> {
+  const r = await api.get(`/v1/reports/income-statement?from=${from}&to=${to}`);
+  return r.data.data;
+}

@@ -61,6 +61,85 @@ func (h *ReportHandler) TrialBalance(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// BalanceSheet — snapshot at the given as-of date. Defaults to today.
+func (h *ReportHandler) BalanceSheet(w http.ResponseWriter, r *http.Request) {
+	asOf := time.Now()
+	if v := r.URL.Query().Get("as_of"); v != "" {
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("as_of must be YYYY-MM-DD"))
+			return
+		}
+		asOf = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC)
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var rows []store.BalanceSheetRow
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		var err error
+		rows, err = h.Reports.BalanceSheetTx(r.Context(), tx, asOf)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var totalAssets, totalLiab, totalEquity decimal.Decimal
+	for _, r := range rows {
+		switch r.Class {
+		case domain.ClassAsset:
+			totalAssets = totalAssets.Add(r.Amount)
+		case domain.ClassLiability:
+			totalLiab = totalLiab.Add(r.Amount)
+		case domain.ClassEquity:
+			totalEquity = totalEquity.Add(r.Amount)
+		}
+	}
+	httpx.OK(w, map[string]any{
+		"as_of":             asOf.Format("2006-01-02"),
+		"items":             rows,
+		"total_assets":      totalAssets,
+		"total_liabilities": totalLiab,
+		"total_equity":      totalEquity,
+		"balanced":          totalAssets.Equal(totalLiab.Add(totalEquity)),
+	})
+}
+
+// IncomeStatement — income and expenses for a window, plus net surplus.
+func (h *ReportHandler) IncomeStatement(w http.ResponseWriter, r *http.Request) {
+	from, to, ok := parseDateRange(w, r)
+	if !ok {
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var rows []store.IncomeStatementRow
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		var err error
+		rows, err = h.Reports.IncomeStatementTx(r.Context(), tx, from, to)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var totalIncome, totalExpense decimal.Decimal
+	for _, r := range rows {
+		switch r.Class {
+		case domain.ClassIncome:
+			totalIncome = totalIncome.Add(r.Amount)
+		case domain.ClassExpense:
+			totalExpense = totalExpense.Add(r.Amount)
+		}
+	}
+	httpx.OK(w, map[string]any{
+		"from":          from.Format("2006-01-02"),
+		"to":            to.Format("2006-01-02"),
+		"items":         rows,
+		"total_income":  totalIncome,
+		"total_expense": totalExpense,
+		"net_surplus":   totalIncome.Sub(totalExpense),
+	})
+}
+
 func (h *ReportHandler) GLDetail(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "account_id"))
 	if err != nil {

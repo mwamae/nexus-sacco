@@ -25,14 +25,15 @@ import (
 )
 
 type Deps struct {
-	CoA         *CoAHandler
-	Periods     *PeriodHandler
-	Journals    *JournalHandler
-	Reports     *ReportHandler
-	TenantStore *store.TenantStore
-	Issuer      *auth.TokenIssuer
-	AppDomain   string
-	Logger      *slog.Logger
+	CoA          *CoAHandler
+	Periods      *PeriodHandler
+	Journals     *JournalHandler
+	Reports      *ReportHandler
+	InternalPost *InternalPostHandler
+	TenantStore  *store.TenantStore
+	Issuer       *auth.TokenIssuer
+	AppDomain    string
+	Logger       *slog.Logger
 }
 
 func Routes(d Deps) http.Handler {
@@ -46,6 +47,10 @@ func Routes(d Deps) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	// Internal service-to-service posting. No JWT — gated by the
+	// shared X-Internal-Token header. Tenant id is passed in the body.
+	r.Post("/internal/v1/post", d.InternalPost.Post)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
@@ -73,6 +78,8 @@ func Routes(d Deps) http.Handler {
 
 			// Reports
 			r.Get("/reports/trial-balance", d.Reports.TrialBalance)
+			r.Get("/reports/balance-sheet", d.Reports.BalanceSheet)
+			r.Get("/reports/income-statement", d.Reports.IncomeStatement)
 			r.Get("/reports/gl-detail/{account_id}", d.Reports.GLDetail)
 		})
 	})

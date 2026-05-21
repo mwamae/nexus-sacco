@@ -27,6 +27,7 @@ import (
 	"github.com/nexussacco/savings/internal/db"
 	"github.com/nexussacco/savings/internal/handler"
 	"github.com/nexussacco/savings/internal/notifier"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -89,6 +90,7 @@ func main() {
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
 	notifyClient := notifier.New(cfg.NotificationURL, cfg.NotificationInternalToken, logger)
+	postingClient := posting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
 	shareH := &handler.ShareHandler{
 		DB:        pool,
 		Tenants:   tenants,
@@ -96,6 +98,7 @@ func main() {
 		Shares:    shareStore,
 		Approvals: approvalsStore,
 		Notifier:  notifyClient,
+		Posting:   postingClient,
 		Logger:    logger,
 	}
 	productH := &handler.ProductHandler{
@@ -111,6 +114,7 @@ func main() {
 		Deposits:  depositStore,
 		Approvals: approvalsStore,
 		Notifier:  notifyClient,
+		Posting:   postingClient,
 		Logger:    logger,
 	}
 	interestH := &handler.InterestHandler{
@@ -154,6 +158,7 @@ func main() {
 		Deposits:     depositStore,
 		Approvals:    approvalsStore,
 		Notifier:     notifyClient,
+		Posting:      postingClient,
 		Logger:       logger,
 	}
 	loanRepayH := &handler.LoanRepaymentHandler{
@@ -164,6 +169,7 @@ func main() {
 		Loans:     loanStore,
 		Approvals: approvalsStore,
 		Notifier:  notifyClient,
+		Posting:   postingClient,
 		Logger:    logger,
 	}
 	loanCollectH := &handler.LoanCollectionsHandler{
