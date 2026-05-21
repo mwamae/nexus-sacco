@@ -28,6 +28,7 @@ import LoansPage from './pages/Loans';
 import CollectionsPage from './pages/Collections';
 import LoanReportsPage from './pages/LoanReports';
 import CashApprovalsPage from './pages/CashApprovals';
+import NotificationsPage from './pages/Notifications';
 
 function Gate() {
   const { status } = useAuth();
@@ -70,6 +71,7 @@ function Gate() {
   else if (path === '/collections' || path.startsWith('/collections/')) page = <CollectionsPage />;
   else if (path === '/loan-reports' || path.startsWith('/loan-reports/')) page = <LoanReportsPage />;
   else if (path === '/cash-approvals' || path.startsWith('/cash-approvals/')) page = <CashApprovalsPage />;
+  else if (path === '/notifications' || path.startsWith('/notifications/')) page = <NotificationsPage />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;

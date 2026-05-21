@@ -3257,3 +3257,78 @@ export async function updateApprovalSettings(input: Partial<ApprovalToggles>): P
   const r = await api.put('/v1/approval-settings', input);
   return r.data.data;
 }
+
+// ───────────────────────────── Notifications (Stage 1) ─────────────────────────────
+
+export type NotificationPriority = 'info' | 'success' | 'warning' | 'error';
+export type NotificationStatus =
+  | 'pending' | 'queued' | 'sent' | 'delivered' | 'read' | 'failed';
+export type NotificationChannel = 'in_app' | 'sms' | 'email';
+
+export type NotificationFeedItem = {
+  id: string;
+  tenant_id: string;
+  event_code: string;
+  priority: NotificationPriority;
+  recipient_member_id?: string;
+  recipient_user_id?: string;
+  recipient_name: string;
+  source_module?: string;
+  source_record_id?: string;
+  deep_link?: string;
+  payload: any;
+  created_at: string;
+  body: string;
+  in_app_status: NotificationStatus;
+  read_at?: string;
+};
+
+export type NotificationDelivery = {
+  id: string;
+  notification_id: string;
+  channel: NotificationChannel;
+  subject?: string;
+  body: string;
+  status: NotificationStatus;
+  attempt_count: number;
+  queued_at?: string;
+  sent_at?: string;
+  delivered_at?: string;
+  read_at?: string;
+  failed_at?: string;
+  failure_reason?: string;
+  provider_message_id?: string;
+  created_at: string;
+};
+
+export type NotificationLogEntry = NotificationFeedItem & {
+  deliveries: NotificationDelivery[];
+};
+
+export async function getNotificationFeed(unread = false, limit = 50): Promise<{ items: NotificationFeedItem[]; total: number }> {
+  const p = new URLSearchParams();
+  if (unread) p.set('unread', '1');
+  if (limit) p.set('limit', String(limit));
+  const r = await api.get('/v1/notifications' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+
+export async function getNotificationUnreadCount(): Promise<number> {
+  const r = await api.get('/v1/notifications/unread');
+  return r.data.data?.unread ?? 0;
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  await api.post(`/v1/notifications/${id}/read`);
+}
+
+export async function markAllNotificationsRead(): Promise<number> {
+  const r = await api.post('/v1/notifications/mark-all-read');
+  return r.data.data?.marked ?? 0;
+}
+
+export async function getNotificationLog(limit = 50, offset = 0): Promise<{ items: NotificationLogEntry[]; total: number }> {
+  const p = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const r = await api.get('/v1/notifications/log?' + p.toString());
+  return r.data.data;
+}

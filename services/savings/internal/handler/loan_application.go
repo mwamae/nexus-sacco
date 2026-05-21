@@ -27,6 +27,7 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -37,6 +38,7 @@ type LoanApplicationHandler struct {
 	LoanProducts *store.LoanProductStore
 	Applications *store.LoanApplicationStore
 	Guarantees   *store.LoanGuaranteeStore
+	Notifier     *notifier.Client
 	Logger       *slog.Logger
 }
 
@@ -544,6 +546,41 @@ func (h *LoanApplicationHandler) Approve(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		writeLoanAppErr(w, r, err)
 		return
+	}
+	// Fire LOAN_APPROVED through the central notifier. Non-blocking on
+	// the caller's perspective — the approval already committed above.
+	if h.Notifier != nil && out != nil {
+		approvedAmt := "0"
+		if out.ApprovedAmount != nil {
+			approvedAmt = out.ApprovedAmount.String()
+		}
+		termMonths := 0
+		if out.ApprovedTermMonths != nil {
+			termMonths = *out.ApprovedTermMonths
+		}
+		rate := "0"
+		if out.ApprovedInterestRatePct != nil {
+			rate = out.ApprovedInterestRatePct.String()
+		}
+		deepLink := "/loans/applications/" + out.ID.String()
+		sourceModule := "savings.loans"
+		recordID := out.ID
+		h.Notifier.Notify(r.Context(), notifier.Request{
+			TenantID:        tid,
+			EventCode:       "LOAN_APPROVED",
+			RecipientUserID: &userID,
+			RecipientName:   "Loan officer",
+			SourceModule:    &sourceModule,
+			SourceRecordID:  &recordID,
+			DeepLink:        &deepLink,
+			InitiatedBy:     &userID,
+			Payload: map[string]any{
+				"application_no":  out.ApplicationNo,
+				"approved_amount": approvedAmt,
+				"term_months":     termMonths,
+				"interest_rate":   rate,
+			},
+		})
 	}
 	httpx.OK(w, out)
 }

@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS notification_preferences;
+DROP TABLE IF EXISTS notification_deliveries;
+DROP TABLE IF EXISTS notifications;
+DROP TABLE IF EXISTS notification_templates;
+DROP TABLE IF EXISTS notification_events;
+DROP TYPE IF EXISTS notification_status;
+DROP TYPE IF EXISTS notification_channel;
+DROP TYPE IF EXISTS notification_priority;
+DROP TYPE IF EXISTS notification_category;

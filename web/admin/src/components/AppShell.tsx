@@ -8,6 +8,7 @@ import { isPlatformHost } from '../auth/tenant';
 import { fetchTenantLogo, getTenantSettings } from '../api/client';
 import { Avatar } from './Avatar';
 import { Icon, type IconName } from './Icon';
+import { NotificationBell } from './NotificationBell';
 
 type NavItem = {
   href: string;
@@ -160,7 +161,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
           ))}
         </div>
         <div className="spacer" />
-        <div className="tb-status">
+        <NotificationBell />
+        <div className="tb-status" style={{ marginLeft: 12 }}>
           <span className="tb-status-dot" />
           <span>{user?.email}</span>
         </div>

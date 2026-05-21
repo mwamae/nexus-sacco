@@ -26,6 +26,10 @@ type Config struct {
 	// Workflow integration — used for large-withdrawal / dividend / interest approvals.
 	WorkflowURL  string
 	SavingsURL   string
+
+	// Notification service (Phase 7e / Stage 1+).
+	NotificationURL           string
+	NotificationInternalToken string
 }
 
 func Load() (*Config, error) {
@@ -38,8 +42,10 @@ func Load() (*Config, error) {
 		JWTSecret:         []byte(must("JWT_SECRET")),
 		JWTIssuer:         getEnv("JWT_ISSUER", "nexus-identity"),
 		ReadHeaderTimeout: 5 * time.Second,
-		WorkflowURL:       getEnv("WORKFLOW_SERVICE_URL", "http://localhost:8083"),
-		SavingsURL:        getEnv("SAVINGS_SELF_URL", "http://localhost:8084"),
+		WorkflowURL:               getEnv("WORKFLOW_SERVICE_URL", "http://localhost:8083"),
+		SavingsURL:                getEnv("SAVINGS_SELF_URL", "http://localhost:8084"),
+		NotificationURL:           getEnv("NOTIFICATION_SERVICE_URL", "http://localhost:8085"),
+		NotificationInternalToken: getEnv("NOTIFICATION_INTERNAL_TOKEN", ""),
 	}
 	if len(cfg.JWTSecret) < 32 {
 		return nil, errors.New("JWT_SECRET must be at least 32 bytes")

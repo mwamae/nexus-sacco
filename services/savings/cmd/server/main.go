@@ -26,6 +26,7 @@ import (
 	"github.com/nexussacco/savings/internal/config"
 	"github.com/nexussacco/savings/internal/db"
 	"github.com/nexussacco/savings/internal/handler"
+	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -128,6 +129,7 @@ func main() {
 		Products: loanProductStore,
 		Logger:   logger,
 	}
+	notifyClient := notifier.New(cfg.NotificationURL, cfg.NotificationInternalToken, logger)
 	loanAppH := &handler.LoanApplicationHandler{
 		DB:           pool,
 		Tenants:      tenants,
@@ -135,6 +137,7 @@ func main() {
 		LoanProducts: loanProductStore,
 		Applications: loanAppStore,
 		Guarantees:   loanGuarStore,
+		Notifier:     notifyClient,
 		Logger:       logger,
 	}
 	loanH := &handler.LoanHandler{

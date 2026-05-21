@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
   const memberTarget = env.VITE_MEMBER_TARGET || 'http://localhost:8082';
   const workflowTarget = env.VITE_WORKFLOW_TARGET || 'http://localhost:8083';
   const savingsTarget = env.VITE_SAVINGS_TARGET || 'http://localhost:8084';
+  const notificationTarget = env.VITE_NOTIFICATION_TARGET || 'http://localhost:8085';
 
   // More specific keys must come before the catch-all so vite-proxy
   // routes /api/v1/members* to the member service, not identity.
@@ -121,6 +122,21 @@ export default defineConfig(({ mode }) => {
         },
         '/api/v1/loan-reports': {
           target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/notifications': {
+          target: notificationTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/notification-events': {
+          target: notificationTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/notification-templates': {
+          target: notificationTarget,
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
