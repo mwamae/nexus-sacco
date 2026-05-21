@@ -4545,3 +4545,128 @@ export async function bankReconciliation(bankAccountID: string, asOf?: string): 
   const r = await api.get(`/v1/bank-accounts/${bankAccountID}/reconciliation${q}`);
   return r.data.data;
 }
+
+// ─────────── Cash & Float Management ───────────
+
+export type Till = {
+  id: string;
+  code: string;
+  name: string;
+  branch?: string | null;
+  gl_account_code: string;
+  vault_account_code: string;
+  variance_account_code: string;
+  max_float?: string | null;
+  is_active: boolean;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TillSession = {
+  id: string;
+  till_id: string;
+  teller_user_id: string;
+  status: 'open' | 'closed';
+  opening_float: string;
+  expected_close: string;
+  actual_close?: string | null;
+  variance: string;
+  variance_journal_entry_id?: string | null;
+  opened_at: string;
+  opened_by: string;
+  closed_at?: string | null;
+  closed_by?: string | null;
+  notes?: string | null;
+};
+
+export type CashTransfer = {
+  id: string;
+  transfer_type: 'vault_to_till' | 'till_to_vault' | 'till_to_till' | 'opening_float' | 'closing_return' | 'variance_adjustment';
+  from_till_id?: string | null;
+  to_till_id?: string | null;
+  session_id?: string | null;
+  amount: string;
+  reference?: string | null;
+  narration?: string | null;
+  journal_entry_id?: string | null;
+  transferred_at: string;
+  transferred_by: string;
+};
+
+export type CashPosition = {
+  vault_balance: string;
+  till_balance: string;
+  variance_balance: string;
+  grand_total: string;
+  till_breakdown: {
+    till_id: string;
+    till_code: string;
+    till_name: string;
+    has_open_session: boolean;
+    session_id?: string | null;
+    teller_user_id?: string | null;
+    expected_balance: string;
+  }[];
+};
+
+export async function listTills(): Promise<{ items: Till[]; total: number }> {
+  const r = await api.get('/v1/tills');
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function createTill(input: {
+  code: string; name: string; branch?: string; max_float?: string; notes?: string;
+}): Promise<Till> {
+  const r = await api.post('/v1/tills', input);
+  return r.data.data;
+}
+
+export async function getTillDetail(id: string): Promise<{ till: Till; current_session?: TillSession | null }> {
+  const r = await api.get(`/v1/tills/${id}`);
+  return r.data.data;
+}
+
+export async function listTillSessions(tillID: string): Promise<{ items: TillSession[]; total: number }> {
+  const r = await api.get(`/v1/tills/${tillID}/sessions`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function openTillSession(input: {
+  till_id: string; teller_user_id: string; opening_float: string; notes?: string;
+}): Promise<TillSession> {
+  const r = await api.post('/v1/till-sessions', input);
+  return r.data.data;
+}
+
+export async function getTillSession(id: string): Promise<{ session: TillSession; transfers: CashTransfer[] }> {
+  const r = await api.get(`/v1/till-sessions/${id}`);
+  return r.data.data;
+}
+
+export async function closeTillSession(id: string, actualClose: string, notes?: string): Promise<TillSession> {
+  const r = await api.post(`/v1/till-sessions/${id}/close`, { actual_close: actualClose, notes });
+  return r.data.data;
+}
+
+export async function createCashTransfer(input: {
+  transfer_type: 'vault_to_till' | 'till_to_vault' | 'till_to_till';
+  from_till_id?: string;
+  to_till_id?: string;
+  amount: string;
+  reference?: string;
+  narration?: string;
+}): Promise<CashTransfer> {
+  const r = await api.post('/v1/cash-transfers', input);
+  return r.data.data;
+}
+
+export async function listCashTransfers(): Promise<{ items: CashTransfer[]; total: number }> {
+  const r = await api.get('/v1/cash-transfers');
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function getCashPosition(): Promise<CashPosition> {
+  const r = await api.get('/v1/cash-position');
+  return r.data.data;
+}

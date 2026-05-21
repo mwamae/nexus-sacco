@@ -67,6 +67,7 @@ func main() {
 	reportStore := store.NewReportStore(pool.Pool)
 	fyStore := store.NewFiscalYearStore(pool.Pool)
 	bankStore := store.NewBankStore(pool.Pool)
+	cashStore := store.NewCashStore(pool.Pool)
 
 	engine := &posting.Engine{
 		CoA:      coaStore,
@@ -89,6 +90,9 @@ func main() {
 		},
 		Bank: &handler.BankHandler{
 			DB: pool, Bank: bankStore, CoA: coaStore, Engine: engine, Logger: logger,
+		},
+		Cash: &handler.CashHandler{
+			DB: pool, Cash: cashStore, Engine: engine, Logger: logger,
 		},
 		InternalPost: &handler.InternalPostHandler{
 			DB: pool, Engine: engine,

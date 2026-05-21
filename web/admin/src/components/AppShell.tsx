@@ -72,6 +72,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         { href: '/accounting/cash-flow',         label: 'Cash Flow',         icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/year-end-close',    label: 'Year-end close',    icon: 'check', show: !onPlatform && hasPermission('tenant:settings:edit') },
         { href: '/bank-accounts',                label: 'Bank reconciliation', icon: 'bank', show: !onPlatform && hasPermission('tenant:settings:view') },
+        { href: '/cash-management',              label: 'Cash & float',      icon: 'bank',  show: !onPlatform && hasPermission('tenant:settings:view') },
       ],
     },
     {

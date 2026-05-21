@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS cash_transfers;
+DROP TABLE IF EXISTS till_sessions;
+DROP TABLE IF EXISTS tills;

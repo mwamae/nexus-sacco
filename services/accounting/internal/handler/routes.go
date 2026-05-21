@@ -31,6 +31,7 @@ type Deps struct {
 	Reports      *ReportHandler
 	FiscalYear   *FiscalYearHandler
 	Bank         *BankHandler
+	Cash         *CashHandler
 	InternalPost *InternalPostHandler
 	TenantStore  *store.TenantStore
 	Issuer       *auth.TokenIssuer
@@ -105,6 +106,18 @@ func Routes(d Deps) http.Handler {
 			r.Post("/bank-statement-lines/{id}/unmatch", d.Bank.Unmatch)
 			r.Post("/bank-statement-lines/{id}/exclude", d.Bank.Exclude)
 			r.Post("/bank-statement-lines/{id}/post-adjustment", d.Bank.PostAdjustment)
+
+			// Cash & Float management
+			r.Get("/tills", d.Cash.ListTills)
+			r.Post("/tills", d.Cash.CreateTill)
+			r.Get("/tills/{id}", d.Cash.GetTill)
+			r.Get("/tills/{id}/sessions", d.Cash.ListTillSessions)
+			r.Post("/till-sessions", d.Cash.OpenSession)
+			r.Get("/till-sessions/{id}", d.Cash.GetSession)
+			r.Post("/till-sessions/{id}/close", d.Cash.CloseSession)
+			r.Get("/cash-transfers", d.Cash.ListTransfers)
+			r.Post("/cash-transfers", d.Cash.CreateTransfer)
+			r.Get("/cash-position", d.Cash.CashPosition)
 		})
 	})
 
