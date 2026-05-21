@@ -29,6 +29,7 @@ type Deps struct {
 	Periods      *PeriodHandler
 	Journals     *JournalHandler
 	Reports      *ReportHandler
+	FiscalYear   *FiscalYearHandler
 	InternalPost *InternalPostHandler
 	TenantStore  *store.TenantStore
 	Issuer       *auth.TokenIssuer
@@ -80,7 +81,13 @@ func Routes(d Deps) http.Handler {
 			r.Get("/reports/trial-balance", d.Reports.TrialBalance)
 			r.Get("/reports/balance-sheet", d.Reports.BalanceSheet)
 			r.Get("/reports/income-statement", d.Reports.IncomeStatement)
+			r.Get("/reports/changes-in-equity", d.Reports.ChangesInEquity)
+			r.Get("/reports/cash-flow", d.Reports.CashFlow)
 			r.Get("/reports/gl-detail/{account_id}", d.Reports.GLDetail)
+
+			// Fiscal year close
+			r.Get("/fiscal-years", d.FiscalYear.List)
+			r.Post("/fiscal-years/{year}/close", d.FiscalYear.Close)
 		})
 	})
 

@@ -39,6 +39,9 @@ import JournalEntriesPage from './pages/Accounting/JournalEntries';
 import TrialBalancePage from './pages/Accounting/TrialBalance';
 import BalanceSheetPage from './pages/Accounting/BalanceSheet';
 import IncomeStatementPage from './pages/Accounting/IncomeStatement';
+import ChangesInEquityPage from './pages/Accounting/ChangesInEquity';
+import CashFlowPage from './pages/Accounting/CashFlow';
+import FiscalYearClosePage from './pages/Accounting/FiscalYearClose';
 import ProvisioningPage from './pages/Loans/Provisioning';
 
 function Gate() {
@@ -93,6 +96,9 @@ function Gate() {
   else if (path === '/accounting/trial-balance') page = <TrialBalancePage />;
   else if (path === '/accounting/balance-sheet') page = <BalanceSheetPage />;
   else if (path === '/accounting/income-statement') page = <IncomeStatementPage />;
+  else if (path === '/accounting/changes-in-equity') page = <ChangesInEquityPage />;
+  else if (path === '/accounting/cash-flow') page = <CashFlowPage />;
+  else if (path === '/accounting/year-end-close') page = <FiscalYearClosePage />;
   else if (path === '/provisioning' || path.startsWith('/provisioning/')) page = <ProvisioningPage />;
   else page = <Dashboard />;
 

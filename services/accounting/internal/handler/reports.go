@@ -166,6 +166,70 @@ func (h *ReportHandler) IncomeStatement(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// ChangesInEquity — per-equity-account opening/increase/decrease/
+// closing over [from, to], plus the period's net surplus (income −
+// expense) surfaced as a derived line that explains the movement in
+// retained earnings before year-end close.
+func (h *ReportHandler) ChangesInEquity(w http.ResponseWriter, r *http.Request) {
+	from, to, ok := parseDateRange(w, r)
+	if !ok {
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var rows []store.ChangesInEquityRow
+	var netSurplus decimal.Decimal
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		var err error
+		rows, err = h.Reports.ChangesInEquityTx(r.Context(), tx, from, to)
+		if err != nil {
+			return err
+		}
+		netSurplus, err = h.Reports.NetSurplusInWindowTx(r.Context(), tx, from, to)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var totalOpening, totalIncrease, totalDecrease, totalClosing decimal.Decimal
+	for _, r := range rows {
+		totalOpening = totalOpening.Add(r.Opening)
+		totalIncrease = totalIncrease.Add(r.Increase)
+		totalDecrease = totalDecrease.Add(r.Decrease)
+		totalClosing = totalClosing.Add(r.Closing)
+	}
+	httpx.OK(w, map[string]any{
+		"from":           from.Format("2006-01-02"),
+		"to":             to.Format("2006-01-02"),
+		"items":          rows,
+		"total_opening":  totalOpening,
+		"total_increase": totalIncrease,
+		"total_decrease": totalDecrease,
+		"total_closing":  totalClosing,
+		"net_surplus":    netSurplus,
+	})
+}
+
+// CashFlow — indirect-method statement of cash flows.
+func (h *ReportHandler) CashFlow(w http.ResponseWriter, r *http.Request) {
+	from, to, ok := parseDateRange(w, r)
+	if !ok {
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var report *store.CashFlowReport
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		var err error
+		report, err = h.Reports.CashFlowTx(r.Context(), tx, from, to)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, report)
+}
+
 func (h *ReportHandler) GLDetail(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "account_id"))
 	if err != nil {

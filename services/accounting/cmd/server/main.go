@@ -65,6 +65,7 @@ func main() {
 	periodStore := store.NewPeriodStore(pool.Pool)
 	journalStore := store.NewJournalStore(pool.Pool)
 	reportStore := store.NewReportStore(pool.Pool)
+	fyStore := store.NewFiscalYearStore(pool.Pool)
 
 	engine := &posting.Engine{
 		CoA:      coaStore,
@@ -82,6 +83,9 @@ func main() {
 			Periods: periodStore, Engine: engine, Logger: logger,
 		},
 		Reports: &handler.ReportHandler{DB: pool, Reports: reportStore, Logger: logger},
+		FiscalYear: &handler.FiscalYearHandler{
+			DB: pool, FY: fyStore, Periods: periodStore, Engine: engine, Logger: logger,
+		},
 		InternalPost: &handler.InternalPostHandler{
 			DB: pool, Engine: engine,
 			InternalToken: cfg.InternalToken, Logger: logger,

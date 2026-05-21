@@ -4286,3 +4286,87 @@ export async function postProvisionRun(id: string): Promise<ProvisionRun> {
 export async function supersedeProvisionRun(id: string): Promise<void> {
   await api.post(`/v1/provisioning/runs/${id}/supersede`);
 }
+
+// ─────────── Statement of Changes in Equity ───────────
+
+export type ChangesInEquityRow = {
+  account_id?: string | null;
+  account_code?: string;
+  account_name: string;
+  account_type?: string;
+  opening: string;
+  increase: string;
+  decrease: string;
+  closing: string;
+};
+
+export async function changesInEquity(from: string, to: string): Promise<{
+  from: string;
+  to: string;
+  items: ChangesInEquityRow[];
+  total_opening: string;
+  total_increase: string;
+  total_decrease: string;
+  total_closing: string;
+  net_surplus: string;
+}> {
+  const r = await api.get(`/v1/reports/changes-in-equity?from=${from}&to=${to}`);
+  return r.data.data;
+}
+
+// ─────────── Cash Flow Statement ───────────
+
+export type CashFlowRow = {
+  label: string;
+  amount: string;
+  account_codes?: string[];
+};
+
+export type CashFlowSection = {
+  name: string;
+  rows: CashFlowRow[];
+  subtotal: string;
+};
+
+export async function cashFlow(from: string, to: string): Promise<{
+  from: string;
+  to: string;
+  net_surplus: string;
+  sections: CashFlowSection[];
+  net_change_in_cash: string;
+  opening_cash: string;
+  closing_cash: string;
+  reconciles: boolean;
+}> {
+  const r = await api.get(`/v1/reports/cash-flow?from=${from}&to=${to}`);
+  return r.data.data;
+}
+
+// ─────────── Fiscal year close ───────────
+
+export type FiscalYearClose = {
+  id: string;
+  tenant_id: string;
+  year: number;
+  fy_start: string;
+  fy_end: string;
+  closing_entry_id: string;
+  total_income: string;
+  total_expense: string;
+  net_surplus: string;
+  income_accounts: number;
+  expense_accounts: number;
+  closed_at: string;
+  closed_by: string;
+  notes?: string | null;
+};
+
+export async function listFiscalYearCloses(): Promise<{ items: FiscalYearClose[]; total: number }> {
+  const r = await api.get('/v1/fiscal-years');
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function closeFiscalYear(year: number, notes?: string): Promise<FiscalYearClose> {
+  const r = await api.post(`/v1/fiscal-years/${year}/close`, notes ? { notes } : {});
+  return r.data.data;
+}

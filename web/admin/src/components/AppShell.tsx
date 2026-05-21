@@ -68,6 +68,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
         { href: '/accounting/trial-balance',     label: 'Trial Balance',     icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/balance-sheet',     label: 'Balance Sheet',     icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/income-statement',  label: 'Income Statement',  icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
+        { href: '/accounting/changes-in-equity', label: 'Changes in Equity', icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
+        { href: '/accounting/cash-flow',         label: 'Cash Flow',         icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
+        { href: '/accounting/year-end-close',    label: 'Year-end close',    icon: 'check', show: !onPlatform && hasPermission('tenant:settings:edit') },
       ],
     },
     {
