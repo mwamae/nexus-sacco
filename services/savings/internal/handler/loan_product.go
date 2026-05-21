@@ -5,8 +5,10 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -23,6 +25,47 @@ type LoanProductHandler struct {
 	DB       *db.Pool
 	Products *store.LoanProductStore
 	Logger   *slog.Logger
+}
+
+// feeIn is the request-side shape for a single product fee. id is
+// optional on create + update — the store regenerates rows each save.
+type feeIn struct {
+	Name   string               `json:"name"`
+	Amount decimal.Decimal      `json:"amount"`
+	IsPct  bool                 `json:"is_pct"`
+	Timing domain.LoanFeeTiming `json:"timing"`
+}
+
+func feesFromReq(in []feeIn) ([]domain.LoanProductFee, error) {
+	out := make([]domain.LoanProductFee, 0, len(in))
+	for i, f := range in {
+		name := strings.TrimSpace(f.Name)
+		if name == "" {
+			return nil, fmt.Errorf("fee #%d is missing a name", i+1)
+		}
+		if f.Amount.LessThan(decimal.Zero) {
+			return nil, fmt.Errorf("fee %q has negative amount", name)
+		}
+		t := f.Timing
+		if t == "" {
+			t = domain.FeeUpfront
+		}
+		if !validTiming(t) {
+			return nil, fmt.Errorf("fee %q has invalid timing %q", name, t)
+		}
+		out = append(out, domain.LoanProductFee{
+			Name: name, Amount: f.Amount, IsPct: f.IsPct, Timing: t, DisplayOrder: i + 1,
+		})
+	}
+	return out, nil
+}
+
+func validTiming(t domain.LoanFeeTiming) bool {
+	switch t {
+	case domain.FeeUpfront, domain.FeeAddedToLoan, domain.FeeAtEachInstallment:
+		return true
+	}
+	return false
 }
 
 type loanProductReq struct {
@@ -46,17 +89,9 @@ type loanProductReq struct {
 	InterestMethod             domain.LoanInterestMethod         `json:"interest_method"`
 	RepaymentMethod            domain.LoanRepaymentMethod        `json:"repayment_method"`
 
-	ProcessingFee              decimal.Decimal                   `json:"processing_fee"`
-	ProcessingFeeIsPct         *bool                             `json:"processing_fee_is_pct,omitempty"`
-	ProcessingFeeTiming        domain.LoanFeeTiming              `json:"processing_fee_timing"`
-
-	InsuranceFee               decimal.Decimal                   `json:"insurance_fee"`
-	InsuranceFeeIsPct          *bool                             `json:"insurance_fee_is_pct,omitempty"`
-	InsuranceFeeTiming         domain.LoanFeeTiming              `json:"insurance_fee_timing"`
-
-	AppraisalFee               decimal.Decimal                   `json:"appraisal_fee"`
-	AppraisalFeeIsPct          *bool                             `json:"appraisal_fee_is_pct,omitempty"`
-	AppraisalFeeTiming         domain.LoanFeeTiming              `json:"appraisal_fee_timing"`
+	// Fees is the full list of fees this product charges. Send an empty
+	// array (or omit the field) to charge no fees. Any names are allowed.
+	Fees                       []feeIn                           `json:"fees,omitempty"`
 
 	PenaltyRatePct             decimal.Decimal                   `json:"penalty_rate_pct"`
 
@@ -112,27 +147,8 @@ func (in *loanProductReq) fill(p *domain.LoanProduct) error {
 		}
 		p.RepaymentMethod = in.RepaymentMethod
 	}
-	if in.ProcessingFeeTiming != "" {
-		p.ProcessingFeeTiming = in.ProcessingFeeTiming
-	}
-	if in.InsuranceFeeTiming != "" {
-		p.InsuranceFeeTiming = in.InsuranceFeeTiming
-	}
-	if in.AppraisalFeeTiming != "" {
-		p.AppraisalFeeTiming = in.AppraisalFeeTiming
-	}
 	if in.CollateralRequirement != "" {
 		p.CollateralRequirement = in.CollateralRequirement
-	}
-	// Boolean overrides
-	if in.ProcessingFeeIsPct != nil {
-		p.ProcessingFeeIsPct = *in.ProcessingFeeIsPct
-	}
-	if in.InsuranceFeeIsPct != nil {
-		p.InsuranceFeeIsPct = *in.InsuranceFeeIsPct
-	}
-	if in.AppraisalFeeIsPct != nil {
-		p.AppraisalFeeIsPct = *in.AppraisalFeeIsPct
 	}
 	if in.GuarantorMustBeMember != nil {
 		p.GuarantorMustBeMember = *in.GuarantorMustBeMember
@@ -154,9 +170,6 @@ func (in *loanProductReq) fill(p *domain.LoanProduct) error {
 	p.DefaultTermMonths = in.DefaultTermMonths
 	p.GracePeriodMonths = in.GracePeriodMonths
 	p.InterestRatePct = in.InterestRatePct
-	p.ProcessingFee = in.ProcessingFee
-	p.InsuranceFee = in.InsuranceFee
-	p.AppraisalFee = in.AppraisalFee
 	p.PenaltyRatePct = in.PenaltyRatePct
 	p.MinGuarantors = in.MinGuarantors
 	p.MaxGuarantorExposurePct = in.MaxGuarantorExposurePct
@@ -165,6 +178,11 @@ func (in *loanProductReq) fill(p *domain.LoanProduct) error {
 	p.WorkflowDefinitionCode = in.WorkflowDefinitionCode
 	p.AutoApprovalThreshold = in.AutoApprovalThreshold
 	p.AutoApprovalMinScore = in.AutoApprovalMinScore
+	fees, ferr := feesFromReq(in.Fees)
+	if ferr != nil {
+		return ferr
+	}
+	p.Fees = fees
 	return nil
 }
 
@@ -201,44 +219,16 @@ func (h *LoanProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if in.MultiplierBasis == "" {
 		in.MultiplierBasis = domain.MultiplierNone
 	}
-	if in.ProcessingFeeTiming == "" {
-		in.ProcessingFeeTiming = domain.FeeUpfront
-	}
-	if in.InsuranceFeeTiming == "" {
-		in.InsuranceFeeTiming = domain.FeeUpfront
-	}
-	if in.AppraisalFeeTiming == "" {
-		in.AppraisalFeeTiming = domain.FeeUpfront
-	}
 	userID, _ := middleware.UserIDFrom(r)
 	tid, _ := middleware.TenantIDFrom(r)
-	defaultActive := true
-	defaultPctTrue := true
-	defaultPctFalse := false
-	defaultMember := true
-	defaultConcurrent := false
-	defaultTopup := false
-	defaultRefi := false
 	p := &domain.LoanProduct{
 		IsActive:              true,
-		ProcessingFeeIsPct:    true,
-		InsuranceFeeIsPct:     true,
-		AppraisalFeeIsPct:     false,
 		GuarantorMustBeMember: true,
 		AllowConcurrent:       false,
 		AllowTopup:            false,
 		AllowRefinance:        false,
 		CreatedBy:             &userID,
 	}
-	// Stash defaults so &fields point to non-nil values when fill() reads them — fill() handles its own pointer checks.
-	_ = defaultActive
-	_ = defaultPctTrue
-	_ = defaultPctFalse
-	_ = defaultMember
-	_ = defaultConcurrent
-	_ = defaultTopup
-	_ = defaultRefi
-
 	if err := in.fill(p); err != nil {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest(err.Error()))
 		return

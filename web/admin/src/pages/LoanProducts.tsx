@@ -15,6 +15,7 @@ import {
   type LoanCategory,
   type LoanCollateralRequirement,
   type LoanFeeTiming,
+  type LoanProductFee,
   type LoanInterestMethod,
   type LoanMultiplierBasis,
   type LoanProduct,
@@ -103,6 +104,7 @@ export default function LoanProductsPage() {
                   <th>Rate</th>
                   <th>Multiplier</th>
                   <th>Guarantors</th>
+                  <th>Fees</th>
                   <th>Auto-approve</th>
                   <th style={{ width: 1 }}></th>
                 </tr>
@@ -127,6 +129,9 @@ export default function LoanProductsPage() {
                         : `${p.multiplier_value}× ${p.multiplier_basis.replace('_', ' ')}`}
                     </td>
                     <td className="mono tiny">{p.min_guarantors}</td>
+                    <td className="tiny">
+                      <FeeSummary p={p} currency={currency} />
+                    </td>
                     <td className="tiny">
                       {p.auto_approval_threshold
                         ? <span>≤ {currency} {fmt(p.auto_approval_threshold)}{p.auto_approval_min_score != null && <span className="muted"> · score ≥ {p.auto_approval_min_score}</span>}</span>
@@ -207,15 +212,14 @@ function ProductModal({ initial, currency, onClose, onSaved }: {
   const [interestMethod, setInterestMethod] = useState<LoanInterestMethod>(initial?.interest_method ?? 'reducing_balance');
   const [repayMethod, setRepayMethod] = useState<LoanRepaymentMethod>(initial?.repayment_method ?? 'reducing_balance');
 
-  const [procFee, setProcFee] = useState(initial?.processing_fee ?? '0');
-  const [procFeeIsPct, setProcFeeIsPct] = useState(initial?.processing_fee_is_pct ?? true);
-  const [procFeeTiming, setProcFeeTiming] = useState<LoanFeeTiming>(initial?.processing_fee_timing ?? 'upfront');
-  const [insFee, setInsFee] = useState(initial?.insurance_fee ?? '0');
-  const [insFeeIsPct, setInsFeeIsPct] = useState(initial?.insurance_fee_is_pct ?? true);
-  const [insFeeTiming, setInsFeeTiming] = useState<LoanFeeTiming>(initial?.insurance_fee_timing ?? 'upfront');
-  const [appFee, setAppFee] = useState(initial?.appraisal_fee ?? '0');
-  const [appFeeIsPct, setAppFeeIsPct] = useState(initial?.appraisal_fee_is_pct ?? false);
-  const [appFeeTiming, setAppFeeTiming] = useState<LoanFeeTiming>(initial?.appraisal_fee_timing ?? 'upfront');
+  // Free-form fee list. Pre-populated from initial.fees on edit. New
+  // products start empty — the SACCO adds whatever fees they actually
+  // charge.
+  const [fees, setFees] = useState<LoanProductFee[]>(
+    initial?.fees && initial.fees.length > 0
+      ? initial.fees.map((f) => ({ ...f }))
+      : [],
+  );
   const [penaltyRate, setPenaltyRate] = useState(initial?.penalty_rate_pct ?? '0');
 
   const [minGuar, setMinGuar] = useState(initial?.min_guarantors ?? 0);
@@ -254,15 +258,13 @@ function ProductModal({ initial, currency, onClose, onSaved }: {
       interest_rate_pct: rate,
       interest_method: interestMethod,
       repayment_method: repayMethod,
-      processing_fee: procFee,
-      processing_fee_is_pct: procFeeIsPct,
-      processing_fee_timing: procFeeTiming,
-      insurance_fee: insFee,
-      insurance_fee_is_pct: insFeeIsPct,
-      insurance_fee_timing: insFeeTiming,
-      appraisal_fee: appFee,
-      appraisal_fee_is_pct: appFeeIsPct,
-      appraisal_fee_timing: appFeeTiming,
+      fees: fees.map((f, i) => ({
+        name: f.name.trim(),
+        amount: f.amount,
+        is_pct: f.is_pct,
+        timing: f.timing,
+        display_order: i + 1,
+      })),
       penalty_rate_pct: penaltyRate,
       min_guarantors: minGuar,
       max_guarantor_exposure_pct: maxGuarExp,
@@ -394,15 +396,46 @@ function ProductModal({ initial, currency, onClose, onSaved }: {
           </Section>
 
           <Section title={`Fees (${currency})`}>
-            <FeeRow label="Processing" value={procFee} setValue={setProcFee}
-              isPct={procFeeIsPct} setIsPct={setProcFeeIsPct}
-              timing={procFeeTiming} setTiming={setProcFeeTiming} />
-            <FeeRow label="Insurance / LPF" value={insFee} setValue={setInsFee}
-              isPct={insFeeIsPct} setIsPct={setInsFeeIsPct}
-              timing={insFeeTiming} setTiming={setInsFeeTiming} />
-            <FeeRow label="Appraisal" value={appFee} setValue={setAppFee}
-              isPct={appFeeIsPct} setIsPct={setAppFeeIsPct}
-              timing={appFeeTiming} setTiming={setAppFeeTiming} />
+            <p className="muted tiny" style={{ marginTop: 0 }}>
+              Define any fees this product charges (Processing, Insurance / LPF, Appraisal, CRB filing, SMS notification, etc.).
+              You can have zero, one, or many. Remove any you don't want — none are required.
+            </p>
+            {fees.length === 0 && (
+              <p className="muted" style={{ margin: '8px 0', padding: 10, background: 'var(--surface-2)', border: '1px dashed var(--border)', borderRadius: 4 }}>
+                No fees configured. The full principal will be disbursed.
+              </p>
+            )}
+            {fees.map((f, idx) => (
+              <FeeEditorRow
+                key={idx}
+                fee={f}
+                onChange={(next) => setFees((arr) => arr.map((x, i) => i === idx ? next : x))}
+                onRemove={() => setFees((arr) => arr.filter((_, i) => i !== idx))}
+                onMoveUp={idx > 0 ? () => setFees((arr) => swapAt(arr, idx, idx - 1)) : undefined}
+                onMoveDown={idx < fees.length - 1 ? () => setFees((arr) => swapAt(arr, idx, idx + 1)) : undefined}
+              />
+            ))}
+            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+              <button type="button" className="btn btn-sm" onClick={() => setFees((arr) => [...arr, {
+                name: '', amount: '0', is_pct: false, timing: 'upfront' as LoanFeeTiming, display_order: arr.length + 1,
+              }])}>+ Add fee</button>
+              {[
+                { name: 'Processing fee', amount: '2.5', is_pct: true, timing: 'upfront' as LoanFeeTiming },
+                { name: 'Insurance / LPF fee', amount: '1', is_pct: true, timing: 'upfront' as LoanFeeTiming },
+                { name: 'Appraisal fee', amount: '500', is_pct: false, timing: 'upfront' as LoanFeeTiming },
+                { name: 'CRB filing fee', amount: '150', is_pct: false, timing: 'upfront' as LoanFeeTiming },
+              ]
+                .filter((preset) => !fees.some((f) => f.name.trim().toLowerCase() === preset.name.toLowerCase()))
+                .map((preset) => (
+                  <button key={preset.name} type="button" className="btn btn-sm btn-ghost"
+                    title={`Quick-add ${preset.name}`}
+                    onClick={() => setFees((arr) => [...arr, {
+                      ...preset, display_order: arr.length + 1,
+                    }])}>
+                    + {preset.name}
+                  </button>
+                ))}
+            </div>
           </Section>
 
           <Section title="Eligibility">
@@ -482,29 +515,100 @@ function ProductModal({ initial, currency, onClose, onSaved }: {
   );
 }
 
-function FeeRow({ label, value, setValue, isPct, setIsPct, timing, setTiming }: {
-  label: string; value: string; setValue: (s: string) => void;
-  isPct: boolean; setIsPct: (b: boolean) => void;
-  timing: LoanFeeTiming; setTiming: (t: LoanFeeTiming) => void;
+function swapAt<T>(arr: T[], i: number, j: number): T[] {
+  const out = arr.slice();
+  [out[i], out[j]] = [out[j], out[i]];
+  return out;
+}
+
+function FeeEditorRow({ fee, onChange, onRemove, onMoveUp, onMoveDown }: {
+  fee: LoanProductFee;
+  onChange: (next: LoanProductFee) => void;
+  onRemove: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }) {
   return (
-    <div className="grid-3" style={{ alignItems: 'flex-end', marginBottom: 6 }}>
-      <Field label={`${label} fee`}>
-        <input className="input mono" value={value} onChange={(e) => setValue(e.target.value)} />
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: '2fr 1.2fr 0.9fr 1.6fr auto',
+      gap: 8, alignItems: 'flex-end', marginBottom: 8,
+      padding: 8, background: 'var(--surface-2)', borderRadius: 4,
+    }}>
+      <Field label="Fee name">
+        <input
+          className="input"
+          value={fee.name}
+          onChange={(e) => onChange({ ...fee, name: e.target.value })}
+          placeholder="e.g. Processing fee"
+        />
       </Field>
-      <Field label="Calculation">
-        <select className="input" value={isPct ? 'pct' : 'flat'} onChange={(e) => setIsPct(e.target.value === 'pct')}>
+      <Field label="Amount">
+        <input
+          className="input mono"
+          value={fee.amount}
+          onChange={(e) => onChange({ ...fee, amount: e.target.value })}
+          placeholder="0.00"
+        />
+      </Field>
+      <Field label="Type">
+        <select className="input" value={fee.is_pct ? 'pct' : 'flat'}
+          onChange={(e) => onChange({ ...fee, is_pct: e.target.value === 'pct' })}>
           <option value="pct">% of principal</option>
           <option value="flat">Flat amount</option>
         </select>
       </Field>
       <Field label="Timing">
-        <select className="input" value={timing} onChange={(e) => setTiming(e.target.value as LoanFeeTiming)}>
+        <select className="input" value={fee.timing}
+          onChange={(e) => onChange({ ...fee, timing: e.target.value as LoanFeeTiming })}>
           <option value="upfront">Upfront (deduct at disbursement)</option>
           <option value="added_to_loan">Added to loan principal</option>
           <option value="at_each_installment">Charged each installment</option>
         </select>
       </Field>
+      <div style={{ display: 'flex', gap: 4, paddingBottom: 10 }}>
+        <button type="button" className="btn btn-sm btn-ghost" title="Move up" disabled={!onMoveUp} onClick={onMoveUp}>↑</button>
+        <button type="button" className="btn btn-sm btn-ghost" title="Move down" disabled={!onMoveDown} onClick={onMoveDown}>↓</button>
+        <button type="button" className="btn btn-sm" title="Remove this fee" onClick={onRemove} style={{ color: 'var(--neg)' }}>Remove</button>
+      </div>
+    </div>
+  );
+}
+
+// Compact per-product fee chip strip rendered in the list view. Skips
+// any fee whose amount is zero so an "all-zero" product reads as "—"
+// rather than three cluttery zero rows.
+const TIMING_TAG: Record<string, string> = {
+  upfront: 'upfront',
+  added_to_loan: '+loan',
+  at_each_installment: '/inst',
+};
+// Short label for the chip strip — first word of the fee name plus a
+// fallback to the full name if it's a single word. Keeps chips compact
+// without losing intent.
+function shortFeeLabel(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length <= 14) return trimmed;
+  const first = trimmed.split(/\s+/)[0];
+  return first.length >= 3 ? first : trimmed.slice(0, 14) + '…';
+}
+
+function FeeSummary({ p, currency }: { p: LoanProduct; currency: string }) {
+  const rows = (p.fees ?? []).filter((r) => parseFloat(r.amount) > 0);
+  if (rows.length === 0) return <span className="muted">—</span>;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+      {rows.map((r) => (
+        <span key={r.id ?? r.name} className="mono tiny" title={`${r.name} · ${TIMING_TAG[r.timing] ?? r.timing}`}
+          style={{
+            padding: '1px 6px', borderRadius: 3,
+            background: 'var(--surface-2)', border: '1px solid var(--border)',
+          }}
+        >
+          {shortFeeLabel(r.name)} {r.is_pct ? `${r.amount}%` : `${currency} ${fmt(r.amount)}`}
+          <span className="muted" style={{ marginLeft: 3 }}>({TIMING_TAG[r.timing] ?? r.timing})</span>
+        </span>
+      ))}
     </div>
   );
 }

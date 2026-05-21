@@ -1,5 +1,6 @@
-// Loan product configuration — CRUD against loan_products plus a
-// thin helper for the per-tenant purpose category list.
+// Loan product configuration — CRUD against loan_products + the
+// per-product fee list in loan_product_fees, plus a thin helper for
+// the per-tenant purpose category list.
 
 package store
 
@@ -28,9 +29,6 @@ const loanProductCols = `
 	min_amount, max_amount, multiplier_basis, multiplier_value,
 	min_term_months, max_term_months, default_term_months, grace_period_months,
 	interest_rate_pct, interest_method, repayment_method,
-	processing_fee, processing_fee_is_pct, processing_fee_timing,
-	insurance_fee, insurance_fee_is_pct, insurance_fee_timing,
-	appraisal_fee, appraisal_fee_is_pct, appraisal_fee_timing,
 	penalty_rate_pct,
 	min_guarantors, max_guarantor_exposure_pct, guarantor_must_be_member,
 	collateral_requirement,
@@ -47,9 +45,6 @@ func scanLoanProduct(row pgx.Row) (*domain.LoanProduct, error) {
 		&p.MinAmount, &p.MaxAmount, &p.MultiplierBasis, &p.MultiplierValue,
 		&p.MinTermMonths, &p.MaxTermMonths, &p.DefaultTermMonths, &p.GracePeriodMonths,
 		&p.InterestRatePct, &p.InterestMethod, &p.RepaymentMethod,
-		&p.ProcessingFee, &p.ProcessingFeeIsPct, &p.ProcessingFeeTiming,
-		&p.InsuranceFee, &p.InsuranceFeeIsPct, &p.InsuranceFeeTiming,
-		&p.AppraisalFee, &p.AppraisalFeeIsPct, &p.AppraisalFeeTiming,
 		&p.PenaltyRatePct,
 		&p.MinGuarantors, &p.MaxGuarantorExposurePct, &p.GuarantorMustBeMember,
 		&p.CollateralRequirement,
@@ -61,6 +56,7 @@ func scanLoanProduct(row pgx.Row) (*domain.LoanProduct, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.Fees = []domain.LoanProductFee{}
 	return &p, nil
 }
 
@@ -71,9 +67,6 @@ func (s *LoanProductStore) CreateTx(ctx context.Context, tx pgx.Tx, p *domain.Lo
 			min_amount, max_amount, multiplier_basis, multiplier_value,
 			min_term_months, max_term_months, default_term_months, grace_period_months,
 			interest_rate_pct, interest_method, repayment_method,
-			processing_fee, processing_fee_is_pct, processing_fee_timing,
-			insurance_fee, insurance_fee_is_pct, insurance_fee_timing,
-			appraisal_fee, appraisal_fee_is_pct, appraisal_fee_timing,
 			penalty_rate_pct,
 			min_guarantors, max_guarantor_exposure_pct, guarantor_must_be_member,
 			collateral_requirement,
@@ -86,25 +79,19 @@ func (s *LoanProductStore) CreateTx(ctx context.Context, tx pgx.Tx, p *domain.Lo
 			$6, $7, $8, $9,
 			$10, $11, $12, $13,
 			$14, $15, $16,
-			$17, $18, $19,
-			$20, $21, $22,
-			$23, $24, $25,
-			$26,
-			$27, $28, $29,
-			$30,
-			$31, $32, $33,
-			$34, $35, $36,
-			$37, $38,
-			$39
+			$17,
+			$18, $19, $20,
+			$21,
+			$22, $23, $24,
+			$25, $26, $27,
+			$28, $29,
+			$30
 		)
 		RETURNING `+loanProductCols,
 		p.Code, p.Name, p.Category, p.Description, p.IsActive,
 		p.MinAmount, p.MaxAmount, p.MultiplierBasis, p.MultiplierValue,
 		p.MinTermMonths, p.MaxTermMonths, p.DefaultTermMonths, p.GracePeriodMonths,
 		p.InterestRatePct, p.InterestMethod, p.RepaymentMethod,
-		p.ProcessingFee, p.ProcessingFeeIsPct, p.ProcessingFeeTiming,
-		p.InsuranceFee, p.InsuranceFeeIsPct, p.InsuranceFeeTiming,
-		p.AppraisalFee, p.AppraisalFeeIsPct, p.AppraisalFeeTiming,
 		p.PenaltyRatePct,
 		p.MinGuarantors, p.MaxGuarantorExposurePct, p.GuarantorMustBeMember,
 		p.CollateralRequirement,
@@ -113,7 +100,19 @@ func (s *LoanProductStore) CreateTx(ctx context.Context, tx pgx.Tx, p *domain.Lo
 		p.AllowTopup, p.AllowRefinance,
 		p.CreatedBy,
 	)
-	return scanLoanProduct(row)
+	created, err := scanLoanProduct(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ReplaceFeesTx(ctx, tx, created.ID, p.Fees); err != nil {
+		return nil, err
+	}
+	fees, err := s.FeesByProductTx(ctx, tx, created.ID)
+	if err != nil {
+		return nil, err
+	}
+	created.Fees = fees
+	return created, nil
 }
 
 func (s *LoanProductStore) UpdateTx(ctx context.Context, tx pgx.Tx, p *domain.LoanProduct) (*domain.LoanProduct, error) {
@@ -123,15 +122,13 @@ func (s *LoanProductStore) UpdateTx(ctx context.Context, tx pgx.Tx, p *domain.Lo
 			min_amount = $6, max_amount = $7, multiplier_basis = $8, multiplier_value = $9,
 			min_term_months = $10, max_term_months = $11, default_term_months = $12, grace_period_months = $13,
 			interest_rate_pct = $14, interest_method = $15, repayment_method = $16,
-			processing_fee = $17, processing_fee_is_pct = $18, processing_fee_timing = $19,
-			insurance_fee = $20, insurance_fee_is_pct = $21, insurance_fee_timing = $22,
-			appraisal_fee = $23, appraisal_fee_is_pct = $24, appraisal_fee_timing = $25,
-			penalty_rate_pct = $26,
-			min_guarantors = $27, max_guarantor_exposure_pct = $28, guarantor_must_be_member = $29,
-			collateral_requirement = $30,
-			min_membership_months = $31, min_shares_required = $32, allow_concurrent = $33,
-			workflow_definition_code = $34, auto_approval_threshold = $35, auto_approval_min_score = $36,
-			allow_topup = $37, allow_refinance = $38
+			penalty_rate_pct = $17,
+			min_guarantors = $18, max_guarantor_exposure_pct = $19, guarantor_must_be_member = $20,
+			collateral_requirement = $21,
+			min_membership_months = $22, min_shares_required = $23, allow_concurrent = $24,
+			workflow_definition_code = $25, auto_approval_threshold = $26, auto_approval_min_score = $27,
+			allow_topup = $28, allow_refinance = $29,
+			updated_at = now()
 		WHERE id = $1
 		RETURNING `+loanProductCols,
 		p.ID,
@@ -139,9 +136,6 @@ func (s *LoanProductStore) UpdateTx(ctx context.Context, tx pgx.Tx, p *domain.Lo
 		p.MinAmount, p.MaxAmount, p.MultiplierBasis, p.MultiplierValue,
 		p.MinTermMonths, p.MaxTermMonths, p.DefaultTermMonths, p.GracePeriodMonths,
 		p.InterestRatePct, p.InterestMethod, p.RepaymentMethod,
-		p.ProcessingFee, p.ProcessingFeeIsPct, p.ProcessingFeeTiming,
-		p.InsuranceFee, p.InsuranceFeeIsPct, p.InsuranceFeeTiming,
-		p.AppraisalFee, p.AppraisalFeeIsPct, p.AppraisalFeeTiming,
 		p.PenaltyRatePct,
 		p.MinGuarantors, p.MaxGuarantorExposurePct, p.GuarantorMustBeMember,
 		p.CollateralRequirement,
@@ -153,7 +147,18 @@ func (s *LoanProductStore) UpdateTx(ctx context.Context, tx pgx.Tx, p *domain.Lo
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ReplaceFeesTx(ctx, tx, out.ID, p.Fees); err != nil {
+		return nil, err
+	}
+	fees, err := s.FeesByProductTx(ctx, tx, out.ID)
+	if err != nil {
+		return nil, err
+	}
+	out.Fees = fees
+	return out, nil
 }
 
 func (s *LoanProductStore) GetTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*domain.LoanProduct, error) {
@@ -162,7 +167,15 @@ func (s *LoanProductStore) GetTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	return p, err
+	if err != nil {
+		return nil, err
+	}
+	fees, err := s.FeesByProductTx(ctx, tx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	p.Fees = fees
+	return p, nil
 }
 
 func (s *LoanProductStore) ListTx(ctx context.Context, tx pgx.Tx, includeInactive bool) ([]domain.LoanProduct, error) {
@@ -176,7 +189,7 @@ func (s *LoanProductStore) ListTx(ctx context.Context, tx pgx.Tx, includeInactiv
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.LoanProduct
+	out := []domain.LoanProduct{}
 	for rows.Next() {
 		p, err := scanLoanProduct(rows)
 		if err != nil {
@@ -184,7 +197,29 @@ func (s *LoanProductStore) ListTx(ctx context.Context, tx pgx.Tx, includeInactiv
 		}
 		out = append(out, *p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Hydrate fees in a single query keyed by product_id, then fan out.
+	if len(out) == 0 {
+		return out, nil
+	}
+	ids := make([]uuid.UUID, 0, len(out))
+	for _, p := range out {
+		ids = append(ids, p.ID)
+	}
+	feeMap, err := s.feesByProductsTx(ctx, tx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if fs, ok := feeMap[out[i].ID]; ok {
+			out[i].Fees = fs
+		} else {
+			out[i].Fees = []domain.LoanProductFee{}
+		}
+	}
+	return out, nil
 }
 
 func (s *LoanProductStore) DeleteTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
@@ -201,6 +236,90 @@ func (s *LoanProductStore) DeleteTx(ctx context.Context, tx pgx.Tx, id uuid.UUID
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// ─────────── Fee sub-table ───────────
+
+const loanProductFeeCols = `
+	id, product_id, name, amount, is_pct, timing, display_order, created_at, updated_at
+`
+
+func scanLoanProductFee(row pgx.Row) (*domain.LoanProductFee, error) {
+	var f domain.LoanProductFee
+	err := row.Scan(
+		&f.ID, &f.ProductID, &f.Name, &f.Amount, &f.IsPct, &f.Timing, &f.DisplayOrder,
+		&f.CreatedAt, &f.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+func (s *LoanProductStore) FeesByProductTx(ctx context.Context, tx pgx.Tx, productID uuid.UUID) ([]domain.LoanProductFee, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT `+loanProductFeeCols+` FROM loan_product_fees WHERE product_id = $1 ORDER BY display_order, name`,
+		productID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.LoanProductFee{}
+	for rows.Next() {
+		f, err := scanLoanProductFee(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *f)
+	}
+	return out, rows.Err()
+}
+
+func (s *LoanProductStore) feesByProductsTx(ctx context.Context, tx pgx.Tx, productIDs []uuid.UUID) (map[uuid.UUID][]domain.LoanProductFee, error) {
+	out := make(map[uuid.UUID][]domain.LoanProductFee, len(productIDs))
+	rows, err := tx.Query(ctx,
+		`SELECT `+loanProductFeeCols+` FROM loan_product_fees WHERE product_id = ANY($1) ORDER BY product_id, display_order, name`,
+		productIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		f, err := scanLoanProductFee(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[f.ProductID] = append(out[f.ProductID], *f)
+	}
+	return out, rows.Err()
+}
+
+// ReplaceFeesTx deletes existing fees on the product and inserts the new
+// list. Display order is taken from the slice position so the caller
+// controls ordering implicitly. Empty `fees` is fine — the product is
+// left with no fees, matching the user request to allow zero fees.
+func (s *LoanProductStore) ReplaceFeesTx(ctx context.Context, tx pgx.Tx, productID uuid.UUID, fees []domain.LoanProductFee) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM loan_product_fees WHERE product_id = $1`, productID); err != nil {
+		return err
+	}
+	for i, f := range fees {
+		if f.Name == "" {
+			return fmt.Errorf("fee at position %d has no name", i)
+		}
+		if f.Timing == "" {
+			f.Timing = domain.FeeUpfront
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO loan_product_fees (
+				tenant_id, product_id, name, amount, is_pct, timing, display_order
+			) VALUES (current_tenant_id(), $1, $2, $3, $4, $5, $6)
+		`, productID, f.Name, f.Amount, f.IsPct, string(f.Timing), i+1); err != nil {
+			return err
+		}
 	}
 	return nil
 }

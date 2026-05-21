@@ -2264,6 +2264,16 @@ export type LoanCategory = 'short_term' | 'medium_term' | 'long_term' | 'emergen
 export type LoanInterestMethod = 'flat_rate' | 'reducing_balance';
 export type LoanRepaymentMethod = 'reducing_balance' | 'flat_rate' | 'bullet' | 'interest_only';
 export type LoanFeeTiming = 'upfront' | 'added_to_loan' | 'at_each_installment';
+
+export type LoanProductFee = {
+  id?: string;
+  product_id?: string;
+  name: string;
+  amount: string;
+  is_pct: boolean;
+  timing: LoanFeeTiming;
+  display_order: number;
+};
 export type LoanCollateralRequirement = 'required' | 'optional' | 'not_applicable';
 export type LoanMultiplierBasis = 'none' | 'shares' | 'deposits' | 'shares_plus_deposits';
 
@@ -2285,15 +2295,7 @@ export type LoanProduct = {
   interest_rate_pct: string;
   interest_method: LoanInterestMethod;
   repayment_method: LoanRepaymentMethod;
-  processing_fee: string;
-  processing_fee_is_pct: boolean;
-  processing_fee_timing: LoanFeeTiming;
-  insurance_fee: string;
-  insurance_fee_is_pct: boolean;
-  insurance_fee_timing: LoanFeeTiming;
-  appraisal_fee: string;
-  appraisal_fee_is_pct: boolean;
-  appraisal_fee_timing: LoanFeeTiming;
+  fees: LoanProductFee[];
   penalty_rate_pct: string;
   min_guarantors: number;
   max_guarantor_exposure_pct: string;
@@ -2481,6 +2483,14 @@ export type LoanAppListItem = {
   product_name: string;
 };
 
+export type ScheduleFeeLine = {
+  name: string;
+  amount: string;
+  is_pct: boolean;
+  rate: string;
+  timing: 'upfront' | 'added_to_loan' | 'at_each_installment';
+};
+
 export type ScheduleSnapshot = {
   generated_at: string;
   principal: string;
@@ -2500,6 +2510,10 @@ export type ScheduleSnapshot = {
     total_due: string;
     outstanding_after: string;
   }>;
+  fees: ScheduleFeeLine[] | null;
+  total_upfront_fees: string;
+  total_recurring_fees: string;
+  net_disbursed: string;
   total_principal: string;
   total_interest: string;
   total_payable: string;

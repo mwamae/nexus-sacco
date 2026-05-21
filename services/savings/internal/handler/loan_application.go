@@ -211,6 +211,7 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 			created.RequestedTermMonths, product.GracePeriodMonths,
 			product.InterestMethod, product.RepaymentMethod,
 			time.Now().UTC(),
+			product,
 		)
 		if err := h.Applications.StoreAppScheduleSnapshotTx(r.Context(), tx, created.ID, snap); err != nil {
 			return err
@@ -532,6 +533,7 @@ func (h *LoanApplicationHandler) Approve(w http.ResponseWriter, r *http.Request)
 			*amt, *ratePct, *term, product.GracePeriodMonths,
 			product.InterestMethod, product.RepaymentMethod,
 			time.Now().UTC(),
+			product,
 		)
 		if err := h.Applications.StoreAppScheduleSnapshotTx(r.Context(), tx, id, snap); err != nil {
 			return err

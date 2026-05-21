@@ -185,6 +185,25 @@ const (
 
 // ─────────── Entities ───────────
 
+// LoanProductFee is one line on a product's fee schedule. A product may
+// have zero, one, or many of these. Tenant can name them anything (e.g.
+// "Disbursement fee", "CRB filing fee", "Stamp duty") and toggle each
+// between %-of-principal and flat-amount, with one of three timings:
+//   upfront            — deducted from the disbursement
+//   added_to_loan      — added to principal so it amortises with the loan
+//   at_each_installment — charged on every installment row
+type LoanProductFee struct {
+	ID           uuid.UUID       `json:"id,omitempty"`
+	ProductID    uuid.UUID       `json:"product_id,omitempty"`
+	Name         string          `json:"name"`
+	Amount       decimal.Decimal `json:"amount"`
+	IsPct        bool            `json:"is_pct"`
+	Timing       LoanFeeTiming   `json:"timing"`
+	DisplayOrder int             `json:"display_order"`
+	CreatedAt    time.Time       `json:"created_at,omitempty"`
+	UpdatedAt    time.Time       `json:"updated_at,omitempty"`
+}
+
 type LoanProduct struct {
 	ID                       uuid.UUID                 `json:"id"`
 	TenantID                 uuid.UUID                 `json:"tenant_id"`
@@ -204,15 +223,10 @@ type LoanProduct struct {
 	InterestRatePct          decimal.Decimal           `json:"interest_rate_pct"`
 	InterestMethod           LoanInterestMethod        `json:"interest_method"`
 	RepaymentMethod          LoanRepaymentMethod       `json:"repayment_method"`
-	ProcessingFee            decimal.Decimal           `json:"processing_fee"`
-	ProcessingFeeIsPct       bool                      `json:"processing_fee_is_pct"`
-	ProcessingFeeTiming      LoanFeeTiming             `json:"processing_fee_timing"`
-	InsuranceFee             decimal.Decimal           `json:"insurance_fee"`
-	InsuranceFeeIsPct        bool                      `json:"insurance_fee_is_pct"`
-	InsuranceFeeTiming       LoanFeeTiming             `json:"insurance_fee_timing"`
-	AppraisalFee             decimal.Decimal           `json:"appraisal_fee"`
-	AppraisalFeeIsPct        bool                      `json:"appraisal_fee_is_pct"`
-	AppraisalFeeTiming       LoanFeeTiming             `json:"appraisal_fee_timing"`
+	// Fees: free-form per-product list. May be empty if the product
+	// charges no fees. Loaded into the struct by the store; never
+	// populated by direct SELECTs against loan_products alone.
+	Fees                     []LoanProductFee          `json:"fees"`
 	PenaltyRatePct           decimal.Decimal           `json:"penalty_rate_pct"`
 	MinGuarantors            int                       `json:"min_guarantors"`
 	MaxGuarantorExposurePct  decimal.Decimal           `json:"max_guarantor_exposure_pct"`

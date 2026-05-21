@@ -64,20 +64,13 @@ func (h *LoanHandler) ExecuteDisbursementTx(
 	if err := h.Loans.SaveScheduleTx(ctx, tx, loan.ID, schedule); err != nil {
 		return nil, err
 	}
-	// Upfront fees.
+	// Upfront fees — iterate the per-product fee list. added_to_loan and
+	// at_each_installment fees are not posted at disbursement time
+	// (Phase 6d covers the deferred-fee plumbing); for now we treat
+	// only upfront fees as cash-out at disbursement.
 	var upfrontFees decimal.Decimal
-	fees := []struct {
-		Name   string
-		Amount decimal.Decimal
-		IsPct  bool
-		Timing domain.LoanFeeTiming
-	}{
-		{"Processing fee", product.ProcessingFee, product.ProcessingFeeIsPct, product.ProcessingFeeTiming},
-		{"Insurance / LPF fee", product.InsuranceFee, product.InsuranceFeeIsPct, product.InsuranceFeeTiming},
-		{"Appraisal fee", product.AppraisalFee, product.AppraisalFeeIsPct, product.AppraisalFeeTiming},
-	}
 	out := &LoanDisbursementResult{Fees: []domain.LoanTransaction{}}
-	for _, f := range fees {
+	for _, f := range product.Fees {
 		if f.Timing != domain.FeeUpfront {
 			continue
 		}

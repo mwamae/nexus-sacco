@@ -5,7 +5,7 @@
 //   /loans/applications/<id>    → application detail (score, actions)
 //   /loans/<id>                 → loan detail (schedule, transactions)
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   acceptLoanOffer,
   approveLoanApplication,
@@ -81,7 +81,7 @@ function ListsView() {
         <div>
           <div className="eyebrow">Lending · Operations</div>
           <h1>Loans</h1>
-          <div className="page-sub">Applications, scoring, approval, and active loan accounts.</div>
+          <div className="page-sub">Applications, scoring, approval, and disbursed loan accounts.</div>
         </div>
         <div className="page-hd-actions">
           {canApply && (
@@ -96,7 +96,7 @@ function ListsView() {
 
       <div className="row" style={{ gap: 4, marginBottom: 14 }}>
         <button className="btn btn-sm" data-active={tab === 'apps' || undefined} onClick={() => setTab('apps')}>Applications</button>
-        <button className="btn btn-sm" data-active={tab === 'loans' || undefined} onClick={() => setTab('loans')}>Active loans</button>
+        <button className="btn btn-sm" data-active={tab === 'loans' || undefined} onClick={() => setTab('loans')}>Loans</button>
       </div>
 
       {tab === 'apps' ? <AppList /> : <LoanList />}
@@ -221,11 +221,26 @@ function LoanList() {
   }
   useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [status]);
 
+  // Per-status counts of the rows currently in view. Used by the filter
+  // chip strip so the user can see "0 active · 1 settled · 2 written-off"
+  // at a glance instead of inferring it from the table.
+  const countsByStatus = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const it of items) c[it.loan.status] = (c[it.loan.status] ?? 0) + 1;
+    return c;
+  }, [items]);
+
+  const STATUS_ORDER: LoanStatus[] = [
+    'active', 'in_arrears', 'restructured', 'pending_disbursement',
+    'settled', 'written_off', 'defaulted', 'closed',
+  ];
+  const filterStatus = (s: '' | LoanStatus) => () => setStatus(s);
+
   return (
     <div className="card">
       <div className="card-hd">
         <h3>Loan accounts</h3>
-        <span className="card-sub">{total} total</span>
+        <span className="card-sub">{total} {status ? `${status.replace(/_/g, ' ')}` : 'total (all statuses)'}</span>
         <div className="card-hd-actions">
           <select className="input" style={{ height: 26, fontSize: 12 }} value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">All statuses</option>
@@ -235,6 +250,24 @@ function LoanList() {
           </select>
         </div>
       </div>
+      {!status && items.length > 0 && (
+        <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button className="btn btn-sm" data-active onClick={filterStatus('')}>All · {items.length}</button>
+          {STATUS_ORDER
+            .filter((s) => (countsByStatus[s] ?? 0) > 0)
+            .map((s) => (
+              <button key={s} className="btn btn-sm" onClick={filterStatus(s)}>
+                {s.replace(/_/g, ' ')} · {countsByStatus[s]}
+              </button>
+            ))}
+        </div>
+      )}
+      {status && (
+        <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)' }}>
+          <button className="btn btn-sm" onClick={filterStatus('')}>← All statuses</button>
+          <span className="muted tiny" style={{ marginLeft: 8 }}>Showing only <strong>{status.replace(/_/g, ' ')}</strong></span>
+        </div>
+      )}
       <div className="card-body flush">
         {err && <div style={{ padding: 12 }}><div className="alert alert-error">{err}</div></div>}
         {items.length === 0 && !err && <div className="empty">No loans yet. Approved applications appear here after disbursement.</div>}
@@ -533,10 +566,45 @@ function AppDetail({ appId }: { appId: string }) {
           <div className="card-body">
             <div className="grid-4" style={{ marginBottom: 12 }}>
               <KV label="Principal" value={`${currency} ${fmt(d.schedule.principal)}`} />
+              <KV label="Net disbursed" value={`${currency} ${fmt(d.schedule.net_disbursed ?? d.schedule.principal)}`} />
               <KV label="Installment" value={`${currency} ${fmt(d.schedule.installment)} / month`} />
-              <KV label="Total interest" value={`${currency} ${fmt(d.schedule.total_interest)}`} />
               <KV label="Total payable" value={`${currency} ${fmt(d.schedule.total_payable)}`} />
             </div>
+            {(d.schedule.fees ?? []).length > 0 && (
+              <div style={{ marginBottom: 14, padding: 10, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 4 }}>
+                <div className="muted tiny" style={{ marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.5px' }}>Fees (product configuration)</div>
+                <table style={{ width: '100%', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ textAlign: 'left' }}>
+                      <th style={{ fontWeight: 500, color: 'var(--fg-3)' }}>Fee</th>
+                      <th style={{ fontWeight: 500, color: 'var(--fg-3)' }}>Rate</th>
+                      <th style={{ fontWeight: 500, color: 'var(--fg-3)' }}>Timing</th>
+                      <th style={{ fontWeight: 500, color: 'var(--fg-3)', textAlign: 'right' }}>Amount ({currency})</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(d.schedule.fees ?? []).map((f) => (
+                      <tr key={f.name}>
+                        <td>{f.name}</td>
+                        <td className="mono">{f.is_pct ? `${f.rate}% of principal` : `${currency} ${fmt(f.rate)} flat`}</td>
+                        <td className="muted">{f.timing.replace(/_/g, ' ')}</td>
+                        <td className="mono" style={{ textAlign: 'right' }}>{fmt(f.amount)}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ borderTop: '1px solid var(--border)' }}>
+                      <td colSpan={3} className="muted">Upfront fees (deducted at disbursement)</td>
+                      <td className="mono" style={{ textAlign: 'right' }}><strong>{fmt(d.schedule.total_upfront_fees)}</strong></td>
+                    </tr>
+                    {parseFloat(d.schedule.total_recurring_fees ?? '0') > 0 && (
+                      <tr>
+                        <td colSpan={3} className="muted">Per-installment fees (× {d.schedule.term_months} installments)</td>
+                        <td className="mono" style={{ textAlign: 'right' }}><strong>{fmt(d.schedule.total_recurring_fees)}</strong></td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
             <table className="tbl">
               <thead>
                 <tr>
