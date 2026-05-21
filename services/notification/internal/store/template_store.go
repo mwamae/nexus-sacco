@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -70,4 +71,60 @@ func (s *TemplateStore) ListTx(ctx context.Context, tx pgx.Tx) ([]domain.Templat
 		out = append(out, *t)
 	}
 	return out, rows.Err()
+}
+
+func (s *TemplateStore) GetTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*domain.Template, error) {
+	row := tx.QueryRow(ctx, `SELECT `+templateCols+` FROM notification_templates WHERE id = $1`, id)
+	t, err := scanTemplate(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return t, err
+}
+
+// CreateTx inserts a new template. The (tenant_id, event_code, channel)
+// combination is unique among active templates — to roll out a new
+// version, deactivate the existing one first or use UpdateTx.
+type UpsertTemplateInput struct {
+	EventCode string
+	Channel   domain.Channel
+	Subject   *string
+	Body      string
+	IsActive  bool
+}
+
+func (s *TemplateStore) CreateTx(ctx context.Context, tx pgx.Tx, in UpsertTemplateInput) (*domain.Template, error) {
+	row := tx.QueryRow(ctx, `
+		INSERT INTO notification_templates (tenant_id, event_code, channel, subject, body, is_active)
+		VALUES (current_tenant_id(), $1, $2, $3, $4, $5)
+		RETURNING `+templateCols,
+		in.EventCode, string(in.Channel), in.Subject, in.Body, in.IsActive,
+	)
+	return scanTemplate(row)
+}
+
+func (s *TemplateStore) UpdateTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, in UpsertTemplateInput) (*domain.Template, error) {
+	row := tx.QueryRow(ctx, `
+		UPDATE notification_templates
+		SET event_code = $2, channel = $3, subject = $4, body = $5, is_active = $6, updated_at = now()
+		WHERE id = $1
+		RETURNING `+templateCols,
+		id, in.EventCode, string(in.Channel), in.Subject, in.Body, in.IsActive,
+	)
+	t, err := scanTemplate(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return t, err
+}
+
+func (s *TemplateStore) DeleteTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	tag, err := tx.Exec(ctx, `DELETE FROM notification_templates WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

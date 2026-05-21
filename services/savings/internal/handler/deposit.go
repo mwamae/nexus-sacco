@@ -22,6 +22,7 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -32,6 +33,7 @@ type DepositHandler struct {
 	Products  *store.DepositProductStore
 	Deposits  *store.DepositStore
 	Approvals *store.ApprovalsStore
+	Notifier  *notifier.Client
 	Logger    *slog.Logger
 
 	// DuplicateLookback is how far back we look for a same-channel-ref
@@ -450,6 +452,7 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
+	h.emitDeposit(r, tid, userID, result, "DEPOSIT_RECEIVED")
 	httpx.Created(w, result)
 }
 
@@ -537,7 +540,99 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
+	h.emitWithdrawal(r, tid, userID, result, "WITHDRAWAL_PROCESSED", "")
 	httpx.Created(w, result)
+}
+
+// emitDeposit / emitWithdrawal — fire notifications post-commit. We
+// re-fetch the member contact info so SMS/email channels have what
+// they need (the executor only returned account + transaction).
+func (h *DepositHandler) emitDeposit(
+	r *http.Request, tenantID, actorID uuid.UUID,
+	result *DepositResult, eventCode string,
+) {
+	if h.Notifier == nil || result == nil {
+		return
+	}
+	var member *store.MemberLite
+	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		var err error
+		member, err = h.Members.GetTx(r.Context(), tx, result.Account.MemberID)
+		return err
+	})
+	if member == nil {
+		return
+	}
+	sourceModule := "savings.deposits"
+	recordID := result.Transaction.ID
+	deepLink := "/deposits/" + result.Account.ID.String()
+	memberID := member.ID
+	h.Notifier.Notify(r.Context(), notifier.Request{
+		TenantID:          tenantID,
+		EventCode:         eventCode,
+		RecipientMemberID: &memberID,
+		RecipientName:     member.FullName,
+		RecipientPhone:    strNilIfEmpty(member.Phone),
+		RecipientEmail:    strNilIfEmpty(member.Email),
+		SourceModule:      &sourceModule,
+		SourceRecordID:    &recordID,
+		DeepLink:          &deepLink,
+		InitiatedBy:       nonZeroUUID(actorID),
+		Payload: map[string]any{
+			"member_no":      member.MemberNo,
+			"full_name":      member.FullName,
+			"account_no":     result.Account.AccountNo,
+			"amount":         result.Transaction.Amount.String(),
+			"new_balance":    result.Account.CurrentBalance.String(),
+			"reference":      derefString(result.Transaction.ChannelRef),
+			"value_date":     result.Transaction.ValueDate,
+		},
+	})
+}
+
+func (h *DepositHandler) emitWithdrawal(
+	r *http.Request, tenantID, actorID uuid.UUID,
+	result *WithdrawalResult, eventCode, rejectReason string,
+) {
+	if h.Notifier == nil || result == nil {
+		return
+	}
+	var member *store.MemberLite
+	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		var err error
+		member, err = h.Members.GetTx(r.Context(), tx, result.Account.MemberID)
+		return err
+	})
+	if member == nil {
+		return
+	}
+	sourceModule := "savings.deposits"
+	recordID := result.Transaction.ID
+	deepLink := "/deposits/" + result.Account.ID.String()
+	memberID := member.ID
+	payload := map[string]any{
+		"member_no":   member.MemberNo,
+		"full_name":   member.FullName,
+		"account_no":  result.Account.AccountNo,
+		"amount":      result.Transaction.Amount.String(),
+		"new_balance": result.Account.CurrentBalance.String(),
+	}
+	if rejectReason != "" {
+		payload["rejection_reason"] = rejectReason
+	}
+	h.Notifier.Notify(r.Context(), notifier.Request{
+		TenantID:          tenantID,
+		EventCode:         eventCode,
+		RecipientMemberID: &memberID,
+		RecipientName:     member.FullName,
+		RecipientPhone:    strNilIfEmpty(member.Phone),
+		RecipientEmail:    strNilIfEmpty(member.Email),
+		SourceModule:      &sourceModule,
+		SourceRecordID:    &recordID,
+		DeepLink:          &deepLink,
+		InitiatedBy:       nonZeroUUID(actorID),
+		Payload:           payload,
+	})
 }
 
 // ─────────── Withdrawal notice ───────────

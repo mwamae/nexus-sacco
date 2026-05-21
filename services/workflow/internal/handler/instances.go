@@ -29,6 +29,7 @@ import (
 	"github.com/nexussacco/workflow/internal/httpx"
 	"github.com/nexussacco/workflow/internal/jsonlogic"
 	"github.com/nexussacco/workflow/internal/middleware"
+	"github.com/nexussacco/workflow/internal/notifier"
 	"github.com/nexussacco/workflow/internal/store"
 )
 
@@ -41,6 +42,7 @@ type InstanceHandler struct {
 	HTTP            *http.Client      // for webhook delivery
 	CallbackTimeout time.Duration
 	Logger          *slog.Logger
+	Notifier        *notifier.Client
 }
 
 // ─────────── POST /v1/workflow-instances ───────────
@@ -190,6 +192,13 @@ func (h *InstanceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Webhook delivery if terminal (out-of-txn).
 	if i.Status == domain.StatusApproved {
 		h.fireCallback(r.Context(), tenantID, i)
+	}
+	// Notify approvers that a new request landed in their queue. We
+	// only fire when the instance is still pending (someone needs to
+	// act); auto-approved chains skip notification — the host module
+	// is already getting a webhook.
+	if i.Status != domain.StatusApproved {
+		h.fireApprovalNotification(r.Context(), tenantID, i, "APPROVAL_REQUEST_SENT")
 	}
 	httpx.Created(w, i)
 }
@@ -448,7 +457,53 @@ func (h *InstanceHandler) Action(w http.ResponseWriter, r *http.Request) {
 	if fireCallback {
 		h.fireCallback(r.Context(), tenantID, updated)
 	}
+	// Mirror the action onto the notification stream. ESCALATE has its
+	// own event; APPROVE / REJECT / CANCEL all roll up to APPROVAL_ACTIONED
+	// with the action embedded in the payload.
+	switch action {
+	case domain.ActEscalate:
+		h.fireApprovalNotification(r.Context(), tenantID, updated, "APPROVAL_ESCALATED")
+	case domain.ActApprove, domain.ActReject, domain.ActCancel:
+		h.fireApprovalNotification(r.Context(), tenantID, updated, "APPROVAL_ACTIONED")
+	}
 	httpx.OK(w, updated)
+}
+
+// fireApprovalNotification routes a workflow event through the central
+// notification service. Recipient is the request initiator (so they
+// know their request moved); for APPROVAL_REQUEST_SENT we'd ideally
+// also page the approvers, but that requires a user-ID list which
+// the current instance shape doesn't carry cheaply — covered by the
+// in-app inbox via approval:view dashboards.
+func (h *InstanceHandler) fireApprovalNotification(ctx context.Context, tenantID uuid.UUID, inst *domain.Instance, eventCode string) {
+	if h.Notifier == nil || inst == nil {
+		return
+	}
+	sourceModule := "workflow"
+	recordID := inst.ID
+	deepLink := "/approvals/" + inst.ID.String()
+	payload := map[string]any{
+		"process_kind": inst.ProcessKind,
+		"status":       string(inst.Status),
+		"subject_kind": inst.SubjectKind,
+		"subject_id":   inst.SubjectID,
+	}
+	// Notify the initiator about their request's progress.
+	var recipient *uuid.UUID
+	if inst.InitiatorID != nil && *inst.InitiatorID != uuid.Nil {
+		id := *inst.InitiatorID
+		recipient = &id
+	}
+	h.Notifier.Notify(ctx, notifier.Request{
+		TenantID:        tenantID,
+		EventCode:       eventCode,
+		RecipientUserID: recipient,
+		RecipientName:   "Request initiator",
+		SourceModule:    &sourceModule,
+		SourceRecordID:  &recordID,
+		DeepLink:        &deepLink,
+		Payload:         payload,
+	})
 }
 
 // ─────────── GET /v1/workflows/dashboard ───────────

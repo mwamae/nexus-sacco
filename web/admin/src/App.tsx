@@ -29,6 +29,9 @@ import CollectionsPage from './pages/Collections';
 import LoanReportsPage from './pages/LoanReports';
 import CashApprovalsPage from './pages/CashApprovals';
 import NotificationsPage from './pages/Notifications';
+import CampaignsPage from './pages/Campaigns';
+import ScheduledJobsPage from './pages/ScheduledJobs';
+import NotificationTemplatesPage from './pages/NotificationTemplates';
 
 function Gate() {
   const { status } = useAuth();
@@ -72,6 +75,9 @@ function Gate() {
   else if (path === '/loan-reports' || path.startsWith('/loan-reports/')) page = <LoanReportsPage />;
   else if (path === '/cash-approvals' || path.startsWith('/cash-approvals/')) page = <CashApprovalsPage />;
   else if (path === '/notifications' || path.startsWith('/notifications/')) page = <NotificationsPage />;
+  else if (path === '/campaigns' || path.startsWith('/campaigns/')) page = <CampaignsPage />;
+  else if (path === '/scheduled-jobs' || path.startsWith('/scheduled-jobs/')) page = <ScheduledJobsPage />;
+  else if (path === '/notification-templates' || path.startsWith('/notification-templates/')) page = <NotificationTemplatesPage />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;

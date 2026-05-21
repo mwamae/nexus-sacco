@@ -20,6 +20,7 @@ type Deps struct {
 	OTP         *OTPHandler
 	Campaign    *CampaignHandler
 	Scheduler   *SchedulerHandler
+	Template    *TemplateHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -64,6 +65,12 @@ func Routes(d Deps) http.Handler {
 			r.Get("/notifications/log", d.Notify.Log)
 			r.Get("/notification-events", d.Notify.ListEvents)
 			r.Get("/notification-templates", d.Notify.ListTemplates)
+			r.Post("/notification-templates", d.Template.Create)
+			r.Post("/notification-templates/preview", d.Template.Preview)
+			r.Get("/notification-templates/{id}", d.Template.Get)
+			r.Put("/notification-templates/{id}", d.Template.Update)
+			r.Delete("/notification-templates/{id}", d.Template.Delete)
+			r.Post("/notification-templates/{id}/clone", d.Template.Clone)
 
 			r.Get("/notification-config/smtp", d.SMTP.Get)
 			r.Put("/notification-config/smtp", d.SMTP.Update)

@@ -24,6 +24,7 @@ import (
 	"github.com/nexussacco/member/internal/config"
 	"github.com/nexussacco/member/internal/db"
 	"github.com/nexussacco/member/internal/handler"
+	"github.com/nexussacco/member/internal/notifier"
 	"github.com/nexussacco/member/internal/storage"
 	"github.com/nexussacco/member/internal/store"
 )
@@ -86,15 +87,18 @@ func main() {
 	statusStore := store.NewStatusChangeStore(pool.Pool)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
+	notifyClient := notifier.New(cfg.NotificationURL, cfg.NotificationInternalToken, logger)
 
 	memH := &handler.MemberHandler{
 		DB: pool, Members: members, Relations: rels, Documents: docs, Audit: auditStore,
 		Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
+		Notifier: notifyClient,
 	}
 	orgH := &handler.OrgHandler{
 		DB: pool, Orgs: orgs, Documents: orgDocs, Officials: officials,
 		Signatories: signatories, Banking: banking, Contacts: contacts,
 		Audit: auditStore, Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
+		Notifier: notifyClient,
 	}
 	statusH := &handler.StatusHandler{
 		DB: pool, Members: members, Status: statusStore, Audit: auditStore,
@@ -104,6 +108,7 @@ func main() {
 		WorkflowProcessKind: cfg.WorkflowProcessKind,
 		DefaultDormancyDays: cfg.DefaultDormancyDays,
 		HTTP:                &http.Client{Timeout: 10 * time.Second},
+		Notifier:            notifyClient,
 	}
 
 	// CLI: run the dormancy detector for a single tenant and exit.

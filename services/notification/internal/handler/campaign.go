@@ -14,10 +14,13 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -36,7 +39,47 @@ type CampaignHandler struct {
 	Campaigns *store.CampaignStore
 	Audience  *store.AudienceStore
 	Templates *store.TemplateStore
+	Tenants   *store.TenantStore
 	Logger    *slog.Logger
+}
+
+// parseScheduledForTx interprets a `scheduled_for` value from the admin
+// API. We accept two formats:
+//   • RFC3339 with explicit offset — used as-is (back-compat for any
+//     external callers that already include a timezone).
+//   • Naive ISO ("2006-01-02T15:04:05" or "...T15:04") — interpreted
+//     against the tenant's configured timezone, then converted to UTC.
+//
+// The naive form matches what <input type="datetime-local"> emits in
+// browsers, so admins see "9am" mean 9am in their SACCO's local time
+// regardless of where the admin is logged in from.
+func (h *CampaignHandler) parseScheduledForTx(ctx context.Context, tx pgx.Tx, raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t, nil
+	}
+	tz, err := h.Tenants.TimezoneTx(ctx, tx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		// Misconfigured tenant TZ — fall back to UTC rather than refuse
+		// to schedule. The admin will see the absolute UTC time on the
+		// returned campaign row and can diagnose.
+		loc = time.UTC
+	}
+	for _, layout := range []string{
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+	} {
+		if t, err := time.ParseInLocation(layout, raw, loc); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, errors.New("scheduled_for must be RFC3339 or a naive ISO timestamp (YYYY-MM-DDTHH:MM[:SS])")
 }
 
 type campaignReq struct {
@@ -59,22 +102,13 @@ func (h *CampaignHandler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("name and event_code are required"))
 		return
 	}
-	var scheduledFor *time.Time
-	if in.ScheduledFor != nil && *in.ScheduledFor != "" {
-		t, err := time.Parse(time.RFC3339, *in.ScheduledFor)
-		if err != nil {
-			httpx.WriteErr(w, r, httpx.ErrBadRequest("scheduled_for must be RFC3339"))
-			return
-		}
-		scheduledFor = &t
-	}
-
 	tid, _ := middleware.TenantIDFrom(r)
 	userID, _ := middleware.UserIDFrom(r)
 
 	// Pre-compute the estimated recipient count so the row carries it
 	// from creation. Lets the list view show "X recipients" without
-	// re-resolving on every render.
+	// re-resolving on every render. Also resolve scheduled_for inside
+	// the same tenant tx so we can pick up the tenant's timezone.
 	audienceJSON, _ := json.Marshal(in.Audience)
 	filter, ferr := store.ParseAudience(audienceJSON)
 	if ferr != nil {
@@ -83,10 +117,18 @@ func (h *CampaignHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		estimated int
-		out       *domain.Campaign
+		estimated    int
+		out          *domain.Campaign
+		scheduledFor *time.Time
 	)
 	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		if in.ScheduledFor != nil && *in.ScheduledFor != "" {
+			t, perr := h.parseScheduledForTx(r.Context(), tx, *in.ScheduledFor)
+			if perr != nil {
+				return httpx.ErrBadRequest(perr.Error())
+			}
+			scheduledFor = &t
+		}
 		n, err := h.Audience.ResolveCountTx(r.Context(), tx, filter)
 		if err != nil {
 			return err
@@ -256,13 +298,12 @@ func (h *CampaignHandler) Schedule(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, err)
 		return
 	}
-	t, perr := time.Parse(time.RFC3339, in.ScheduledFor)
-	if perr != nil {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("scheduled_for must be RFC3339"))
-		return
-	}
 	tid, _ := middleware.TenantIDFrom(r)
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		t, perr := h.parseScheduledForTx(r.Context(), tx, in.ScheduledFor)
+		if perr != nil {
+			return httpx.ErrBadRequest(perr.Error())
+		}
 		c, err := h.Campaigns.GetTx(r.Context(), tx, id)
 		if err != nil {
 			return err

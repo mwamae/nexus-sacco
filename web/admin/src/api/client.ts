@@ -3468,3 +3468,259 @@ export async function listOTPRequests(opts: { status?: string; purpose?: string;
   const r = await api.get('/v1/otp-requests' + (p.toString() ? '?' + p.toString() : ''));
   return r.data.data;
 }
+
+// ─────────── Notification events + templates (catalog) ───────────
+
+export type NotificationEvent = {
+  code: string;
+  category: string;
+  default_priority: NotificationPriority;
+  description: string;
+  default_channels: NotificationChannel[];
+  allowed_variables: string[];
+  has_pdf_attachment: boolean;
+  is_active: boolean;
+};
+
+export type NotificationTemplate = {
+  id: string;
+  tenant_id: string;
+  event_code: string;
+  channel: NotificationChannel;
+  subject?: string;
+  body: string;
+  is_active: boolean;
+};
+
+export async function listNotificationEvents(): Promise<NotificationEvent[]> {
+  const r = await api.get('/v1/notification-events');
+  return r.data.data.items ?? [];
+}
+
+export async function listNotificationTemplates(): Promise<NotificationTemplate[]> {
+  const r = await api.get('/v1/notification-templates');
+  return r.data.data.items ?? [];
+}
+
+export async function createNotificationTemplate(input: {
+  event_code: string;
+  channel: NotificationChannel;
+  subject?: string;
+  body: string;
+  is_active: boolean;
+}): Promise<NotificationTemplate> {
+  const r = await api.post('/v1/notification-templates', input);
+  return r.data.data;
+}
+
+export async function getNotificationTemplate(id: string): Promise<NotificationTemplate> {
+  const r = await api.get(`/v1/notification-templates/${id}`);
+  return r.data.data;
+}
+
+export async function updateNotificationTemplate(id: string, input: {
+  event_code: string;
+  channel: NotificationChannel;
+  subject?: string;
+  body: string;
+  is_active: boolean;
+}): Promise<NotificationTemplate> {
+  const r = await api.put(`/v1/notification-templates/${id}`, input);
+  return r.data.data;
+}
+
+export async function deleteNotificationTemplate(id: string): Promise<void> {
+  await api.delete(`/v1/notification-templates/${id}`);
+}
+
+export async function cloneNotificationTemplate(id: string): Promise<NotificationTemplate> {
+  const r = await api.post(`/v1/notification-templates/${id}/clone`);
+  return r.data.data;
+}
+
+export async function previewNotificationTemplate(input: {
+  subject?: string;
+  body: string;
+  payload?: Record<string, unknown>;
+}): Promise<{ subject: string; body: string }> {
+  const r = await api.post('/v1/notification-templates/preview', input);
+  return r.data.data;
+}
+
+// ─────────── Campaigns (Stage 7) ───────────
+
+export type CampaignStatus =
+  | 'draft'
+  | 'awaiting_approval'
+  | 'scheduled'
+  | 'sending'
+  | 'sent'
+  | 'cancelled'
+  | 'failed';
+
+export type AudienceFilter =
+  | { type: 'all_members' }
+  | { type: 'status'; status: 'active' | 'dormant' | 'suspended' }
+  | { type: 'active_loans' }
+  | { type: 'loan_defaulters'; dpd_min?: number }
+  | { type: 'custom_list'; member_ids: string[] };
+
+export type Campaign = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description?: string | null;
+  event_code: string;
+  channels: NotificationChannel[];
+  audience: AudienceFilter;
+  payload: Record<string, unknown>;
+  status: CampaignStatus;
+  scheduled_for?: string | null;
+  estimated_recipients: number;
+  total_recipients: number;
+  dispatched_count: number;
+  failed_count: number;
+  created_at: string;
+  created_by?: string | null;
+  approved_at?: string | null;
+  approved_by?: string | null;
+  sent_at?: string | null;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
+  failure_reason?: string | null;
+  updated_at: string;
+};
+
+export type CampaignPreviewSample = {
+  channel: NotificationChannel;
+  subject?: string;
+  body: string;
+};
+
+export type CampaignPreview = {
+  campaign_id: string;
+  event_code: string;
+  estimated_recipients: number;
+  samples: CampaignPreviewSample[] | null;
+};
+
+export type CampaignSettings = {
+  tenant_id: string;
+  approval_recipient_threshold: number;
+  updated_at: string;
+};
+
+export async function listCampaigns(opts: { status?: string; limit?: number; offset?: number } = {}): Promise<{ items: Campaign[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get('/v1/campaigns' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+
+export async function getCampaign(id: string): Promise<Campaign> {
+  const r = await api.get(`/v1/campaigns/${id}`);
+  return r.data.data;
+}
+
+export async function createCampaign(input: {
+  name: string;
+  description?: string;
+  event_code: string;
+  channels: NotificationChannel[];
+  audience: AudienceFilter;
+  payload?: Record<string, unknown>;
+  scheduled_for?: string;
+}): Promise<Campaign> {
+  const r = await api.post('/v1/campaigns', input);
+  return r.data.data;
+}
+
+export async function previewCampaign(id: string): Promise<CampaignPreview> {
+  const r = await api.post(`/v1/campaigns/${id}/preview`);
+  return r.data.data;
+}
+
+export async function scheduleCampaign(id: string, scheduled_for: string): Promise<void> {
+  await api.post(`/v1/campaigns/${id}/schedule`, { scheduled_for });
+}
+
+export async function sendCampaign(id: string): Promise<void> {
+  await api.post(`/v1/campaigns/${id}/send`);
+}
+
+export async function cancelCampaign(id: string, reason?: string): Promise<void> {
+  await api.post(`/v1/campaigns/${id}/cancel`, reason ? { reason } : {});
+}
+
+export async function getCampaignSettings(): Promise<CampaignSettings> {
+  const r = await api.get('/v1/campaign-settings');
+  return r.data.data;
+}
+
+export async function updateCampaignSettings(approval_recipient_threshold: number): Promise<CampaignSettings> {
+  const r = await api.put('/v1/campaign-settings', { approval_recipient_threshold });
+  return r.data.data;
+}
+
+// ─────────── Scheduled jobs (Stage 7) ───────────
+
+export type ScheduledJob = {
+  id: string;
+  tenant_id: string;
+  job_key: string;
+  description?: string | null;
+  cron_expr: string;
+  is_active: boolean;
+  config: Record<string, unknown>;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  next_computed?: string | null; // server-computed preview
+};
+
+export type JobRun = {
+  id: string;
+  tenant_id: string;
+  scheduled_job_id?: string | null;
+  job_key: string;
+  scheduled_for: string;
+  started_at: string;
+  finished_at?: string | null;
+  records_processed: number;
+  records_failed: number;
+  status: 'running' | 'succeeded' | 'failed';
+  error_message?: string | null;
+};
+
+export async function listScheduledJobs(): Promise<{ items: ScheduledJob[] }> {
+  const r = await api.get('/v1/scheduled-jobs');
+  return r.data.data;
+}
+
+export async function getScheduledJob(id: string): Promise<ScheduledJob> {
+  const r = await api.get(`/v1/scheduled-jobs/${id}`);
+  return r.data.data;
+}
+
+export async function updateScheduledJob(id: string, input: { cron_expr: string; is_active?: boolean }): Promise<ScheduledJob> {
+  const r = await api.put(`/v1/scheduled-jobs/${id}`, input);
+  return r.data.data;
+}
+
+export async function runScheduledJob(id: string): Promise<{ run_id: string; status: string; processed: number; failed: number }> {
+  const r = await api.post(`/v1/scheduled-jobs/${id}/run`);
+  return r.data.data;
+}
+
+export async function listJobRuns(jobId: string, limit = 25): Promise<{ items: JobRun[] }> {
+  const r = await api.get(`/v1/scheduled-jobs/${jobId}/runs?limit=${limit}`);
+  return r.data.data;
+}
+
+export async function previewCron(cron_expr: string): Promise<{ next_firings: string[] }> {
+  const r = await api.post('/v1/scheduled-jobs/preview-cron', { cron_expr });
+  return r.data.data;
+}

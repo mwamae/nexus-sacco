@@ -43,3 +43,21 @@ func (s *TenantStore) BySlug(ctx context.Context, slug string) (*Tenant, error) 
 	}
 	return &t, nil
 }
+
+// TimezoneTx returns the tenant's configured IANA timezone (e.g.
+// "Africa/Nairobi"). Missing tenant_region rows fall back to UTC so
+// existing tenants from before this column was seeded still function.
+func (s *TenantStore) TimezoneTx(ctx context.Context, tx pgx.Tx) (string, error) {
+	var tz string
+	err := tx.QueryRow(ctx, `SELECT timezone FROM tenant_region LIMIT 1`).Scan(&tz)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "UTC", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if tz == "" {
+		return "UTC", nil
+	}
+	return tz, nil
+}

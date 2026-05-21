@@ -159,7 +159,7 @@ func main() {
 	jobRegistry.Register("loan_repayment_reminders", worker.LoanRepaymentReminderHandler(notifs, templates))
 	jobRegistry.Register("dormancy_warnings", worker.DormancyWarningHandler(notifs, templates))
 
-	scheduler := worker.NewScheduler(pool, schedulerStore, notifs, jobRegistry, logger)
+	scheduler := worker.NewScheduler(pool, schedulerStore, notifs, tenants, jobRegistry, logger)
 	campaignWorker := &worker.CampaignWorker{
 		DB:           pool,
 		Notifs:       notifs,
@@ -175,12 +175,20 @@ func main() {
 		Campaigns: campaignStore,
 		Audience:  audienceStore,
 		Templates: templates,
+		Tenants:   tenants,
 		Logger:    logger,
 	}
 	schedulerH := &handler.SchedulerHandler{
 		DB:        pool,
 		Sched:     schedulerStore,
+		Tenants:   tenants,
 		Scheduler: scheduler,
+		Logger:    logger,
+	}
+	templateH := &handler.TemplateHandler{
+		DB:        pool,
+		Templates: templates,
+		Events:    events,
 		Logger:    logger,
 	}
 
@@ -193,6 +201,7 @@ func main() {
 		OTP:         otpH,
 		Campaign:    campaignH,
 		Scheduler:   schedulerH,
+		Template:    templateH,
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,

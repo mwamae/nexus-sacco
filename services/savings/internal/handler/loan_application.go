@@ -238,6 +238,75 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 	if resp.Collateral == nil {
 		resp.Collateral = []domain.LoanCollateralItem{}
 	}
+	// Fire LOAN_APPLICATION_RECEIVED for the applicant, and
+	// GUARANTOR_REQUEST_SENT once per guarantor that was attached.
+	if h.Notifier != nil {
+		var applicant *store.MemberLite
+		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+			var lerr error
+			applicant, lerr = h.Members.GetTx(r.Context(), tx, resp.Application.MemberID)
+			return lerr
+		})
+		if applicant != nil {
+			sourceModule := "savings.loans"
+			recordID := resp.Application.ID
+			deepLink := "/loans/applications/" + resp.Application.ID.String()
+			mid := applicant.ID
+			h.Notifier.Notify(r.Context(), notifier.Request{
+				TenantID:          tid,
+				EventCode:         "LOAN_APPLICATION_RECEIVED",
+				RecipientMemberID: &mid,
+				RecipientName:     applicant.FullName,
+				RecipientPhone:    strNilIfEmpty(applicant.Phone),
+				RecipientEmail:    strNilIfEmpty(applicant.Email),
+				SourceModule:      &sourceModule,
+				SourceRecordID:    &recordID,
+				DeepLink:          &deepLink,
+				InitiatedBy:       nonZeroUUID(userID),
+				Payload: map[string]any{
+					"member_no":         applicant.MemberNo,
+					"full_name":         applicant.FullName,
+					"application_no":    resp.Application.ApplicationNo,
+					"requested_amount":  resp.Application.RequestedAmount.String(),
+					"requested_term":    resp.Application.RequestedTermMonths,
+				},
+			})
+		}
+		// One notification per guarantor invited.
+		for _, g := range resp.Guarantees {
+			var guarantor *store.MemberLite
+			_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+				var lerr error
+				guarantor, lerr = h.Members.GetTx(r.Context(), tx, g.GuarantorMemberID)
+				return lerr
+			})
+			if guarantor == nil {
+				continue
+			}
+			sourceModule := "savings.loans"
+			recordID := g.ID
+			deepLink := "/loans/applications/" + resp.Application.ID.String()
+			gid := guarantor.ID
+			h.Notifier.Notify(r.Context(), notifier.Request{
+				TenantID:          tid,
+				EventCode:         "GUARANTOR_REQUEST_SENT",
+				RecipientMemberID: &gid,
+				RecipientName:     guarantor.FullName,
+				RecipientPhone:    strNilIfEmpty(guarantor.Phone),
+				RecipientEmail:    strNilIfEmpty(guarantor.Email),
+				SourceModule:      &sourceModule,
+				SourceRecordID:    &recordID,
+				DeepLink:          &deepLink,
+				InitiatedBy:       nonZeroUUID(userID),
+				Payload: map[string]any{
+					"member_no":          guarantor.MemberNo,
+					"full_name":          guarantor.FullName,
+					"application_no":     resp.Application.ApplicationNo,
+					"amount_guaranteed":  g.AmountGuaranteed.String(),
+				},
+			})
+		}
+	}
 	httpx.Created(w, resp)
 }
 
@@ -629,6 +698,40 @@ func (h *LoanApplicationHandler) Decline(w http.ResponseWriter, r *http.Request)
 		writeLoanAppErr(w, r, err)
 		return
 	}
+	// Notify the applicant that their loan was declined.
+	if h.Notifier != nil && out != nil {
+		var member *store.MemberLite
+		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+			var lerr error
+			member, lerr = h.Members.GetTx(r.Context(), tx, out.MemberID)
+			return lerr
+		})
+		if member != nil {
+			sourceModule := "savings.loans"
+			recordID := out.ID
+			deepLink := "/loans/applications/" + out.ID.String()
+			mid := member.ID
+			h.Notifier.Notify(r.Context(), notifier.Request{
+				TenantID:          tid,
+				EventCode:         "LOAN_DECLINED",
+				RecipientMemberID: &mid,
+				RecipientName:     member.FullName,
+				RecipientPhone:    strNilIfEmpty(member.Phone),
+				RecipientEmail:    strNilIfEmpty(member.Email),
+				SourceModule:      &sourceModule,
+				SourceRecordID:    &recordID,
+				DeepLink:          &deepLink,
+				InitiatedBy:       nonZeroUUID(userID),
+				Payload: map[string]any{
+					"member_no":        member.MemberNo,
+					"full_name":        member.FullName,
+					"application_no":   out.ApplicationNo,
+					"decline_reason":   in.Reason,
+					"decline_category": in.Category,
+				},
+			})
+		}
+	}
 	httpx.OK(w, out)
 }
 
@@ -660,6 +763,63 @@ func (h *LoanApplicationHandler) GuaranteeRespond(w http.ResponseWriter, r *http
 	if err != nil {
 		writeLoanAppErr(w, r, err)
 		return
+	}
+	// Notify the application creator that the guarantor responded.
+	// We don't have the loan officer's user ID cheaply here; fire a
+	// member-targeted event using the applicant's member ID so the
+	// applicant + their officer's inbox views both pick it up.
+	if h.Notifier != nil && out != nil {
+		var app *domain.LoanApplication
+		var guarantor *store.MemberLite
+		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+			var lerr error
+			app, lerr = h.Applications.GetTx(r.Context(), tx, out.ApplicationID)
+			if lerr != nil {
+				return lerr
+			}
+			guarantor, lerr = h.Members.GetTx(r.Context(), tx, out.GuarantorMemberID)
+			return lerr
+		})
+		if app != nil && guarantor != nil {
+			eventCode := "GUARANTOR_REQUEST_ACCEPTED"
+			if !in.Accept {
+				eventCode = "GUARANTOR_REQUEST_DECLINED"
+			}
+			var applicant *store.MemberLite
+			_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+				var lerr error
+				applicant, lerr = h.Members.GetTx(r.Context(), tx, app.MemberID)
+				return lerr
+			})
+			if applicant != nil {
+				sourceModule := "savings.loans"
+				recordID := out.ID
+				deepLink := "/loans/applications/" + app.ID.String()
+				mid := applicant.ID
+				payload := map[string]any{
+					"member_no":        applicant.MemberNo,
+					"full_name":        applicant.FullName,
+					"application_no":   app.ApplicationNo,
+					"guarantor_name":   guarantor.FullName,
+					"guarantor_member": guarantor.MemberNo,
+				}
+				if !in.Accept && in.DeclineReason != nil {
+					payload["decline_reason"] = *in.DeclineReason
+				}
+				h.Notifier.Notify(r.Context(), notifier.Request{
+					TenantID:          tid,
+					EventCode:         eventCode,
+					RecipientMemberID: &mid,
+					RecipientName:     applicant.FullName,
+					RecipientPhone:    strNilIfEmpty(applicant.Phone),
+					RecipientEmail:    strNilIfEmpty(applicant.Email),
+					SourceModule:      &sourceModule,
+					SourceRecordID:    &recordID,
+					DeepLink:          &deepLink,
+					Payload:           payload,
+				})
+			}
+		}
 	}
 	httpx.OK(w, out)
 }

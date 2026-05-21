@@ -19,6 +19,7 @@ import (
 	"github.com/nexussacco/workflow/internal/config"
 	"github.com/nexussacco/workflow/internal/db"
 	"github.com/nexussacco/workflow/internal/handler"
+	"github.com/nexussacco/workflow/internal/notifier"
 	"github.com/nexussacco/workflow/internal/store"
 )
 
@@ -62,11 +63,14 @@ func main() {
 	actions := store.NewActionStore(pool.Pool)
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
+	notifyClient := notifier.New(cfg.NotificationURL, cfg.NotificationInternalToken, logger)
+
 	defH := &handler.DefinitionHandler{DB: pool, Defs: defs, Logger: logger}
 	instH := &handler.InstanceHandler{
 		DB: pool, Defs: defs, Instances: instances, Actions: actions, Tenants: tenants,
 		HTTP: &http.Client{Timeout: cfg.CallbackTimeout},
 		CallbackTimeout: cfg.CallbackTimeout, Logger: logger,
+		Notifier: notifyClient,
 	}
 
 	router := handler.Routes(handler.Deps{

@@ -23,6 +23,7 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -32,6 +33,7 @@ type ShareHandler struct {
 	Members   *store.MemberStore
 	Shares    *store.ShareStore
 	Approvals *store.ApprovalsStore
+	Notifier  *notifier.Client
 	Logger    *slog.Logger
 }
 
@@ -390,6 +392,7 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
+	h.emitSharePurchase(r, tid, userID, result)
 	httpx.Created(w, result)
 }
 
@@ -487,7 +490,119 @@ func (h *ShareHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
+	h.emitShareTransfer(r, tid, userID, result)
 	httpx.Created(w, result)
+}
+
+// emitSharePurchase fires SHARE_PURCHASE_CONFIRMED for the member who
+// bought, plus SHARE_CERTIFICATE_ISSUED if the post produced a new
+// certificate.
+func (h *ShareHandler) emitSharePurchase(r *http.Request, tenantID, actorID uuid.UUID, result *SharePostResult) {
+	if h.Notifier == nil || result == nil {
+		return
+	}
+	var member *store.MemberLite
+	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		var err error
+		member, err = h.Members.GetTx(r.Context(), tx, result.Account.MemberID)
+		return err
+	})
+	if member == nil {
+		return
+	}
+	sourceModule := "savings.shares"
+	recordID := result.Transaction.ID
+	deepLink := "/shares?member=" + member.ID.String()
+	mid := member.ID
+	h.Notifier.Notify(r.Context(), notifier.Request{
+		TenantID:          tenantID,
+		EventCode:         "SHARE_PURCHASE_CONFIRMED",
+		RecipientMemberID: &mid,
+		RecipientName:     member.FullName,
+		RecipientPhone:    strNilIfEmpty(member.Phone),
+		RecipientEmail:    strNilIfEmpty(member.Email),
+		SourceModule:      &sourceModule,
+		SourceRecordID:    &recordID,
+		DeepLink:          &deepLink,
+		InitiatedBy:       nonZeroUUID(actorID),
+		Payload: map[string]any{
+			"member_no":   member.MemberNo,
+			"full_name":   member.FullName,
+			"shares":      result.Transaction.SharesDelta,
+			"par_value":   result.Transaction.Amount.String(),
+			"total_held":  result.Account.SharesHeld,
+		},
+	})
+	if result.Certificate != nil {
+		certID := result.Certificate.ID
+		h.Notifier.Notify(r.Context(), notifier.Request{
+			TenantID:          tenantID,
+			EventCode:         "SHARE_CERTIFICATE_ISSUED",
+			RecipientMemberID: &mid,
+			RecipientName:     member.FullName,
+			RecipientPhone:    strNilIfEmpty(member.Phone),
+			RecipientEmail:    strNilIfEmpty(member.Email),
+			SourceModule:      &sourceModule,
+			SourceRecordID:    &certID,
+			DeepLink:          &deepLink,
+			InitiatedBy:       nonZeroUUID(actorID),
+			Payload: map[string]any{
+				"member_no":          member.MemberNo,
+				"full_name":          member.FullName,
+				"certificate_no":     result.Certificate.CertificateNo,
+				"shares_certified":   result.Certificate.SharesCovered,
+			},
+		})
+	}
+}
+
+// emitShareTransfer fires SHARE_TRANSFER_COMPLETED twice — once for
+// the sender, once for the receiver. They each see their own balance
+// change.
+func (h *ShareHandler) emitShareTransfer(r *http.Request, tenantID, actorID uuid.UUID, result *ShareTransferResult) {
+	if h.Notifier == nil || result == nil {
+		return
+	}
+	sourceModule := "savings.shares"
+	recordID := result.From.Transaction.ID
+	for _, side := range []struct {
+		role string
+		r    SharePostResult
+	}{
+		{"sender", result.From},
+		{"receiver", result.To},
+	} {
+		var member *store.MemberLite
+		_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+			var err error
+			member, err = h.Members.GetTx(r.Context(), tx, side.r.Account.MemberID)
+			return err
+		})
+		if member == nil {
+			continue
+		}
+		mid := member.ID
+		deepLink := "/shares?member=" + member.ID.String()
+		h.Notifier.Notify(r.Context(), notifier.Request{
+			TenantID:          tenantID,
+			EventCode:         "SHARE_TRANSFER_COMPLETED",
+			RecipientMemberID: &mid,
+			RecipientName:     member.FullName,
+			RecipientPhone:    strNilIfEmpty(member.Phone),
+			RecipientEmail:    strNilIfEmpty(member.Email),
+			SourceModule:      &sourceModule,
+			SourceRecordID:    &recordID,
+			DeepLink:          &deepLink,
+			InitiatedBy:       nonZeroUUID(actorID),
+			Payload: map[string]any{
+				"member_no":  member.MemberNo,
+				"full_name":  member.FullName,
+				"role":       side.role,
+				"shares":     side.r.Transaction.SharesDelta,
+				"total_held": side.r.Account.SharesHeld,
+			},
+		})
+	}
 }
 
 // ─────────── Redemption ───────────

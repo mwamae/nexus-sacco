@@ -88,12 +88,14 @@ func main() {
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
+	notifyClient := notifier.New(cfg.NotificationURL, cfg.NotificationInternalToken, logger)
 	shareH := &handler.ShareHandler{
 		DB:        pool,
 		Tenants:   tenants,
 		Members:   members,
 		Shares:    shareStore,
 		Approvals: approvalsStore,
+		Notifier:  notifyClient,
 		Logger:    logger,
 	}
 	productH := &handler.ProductHandler{
@@ -108,6 +110,7 @@ func main() {
 		Products:  productStore,
 		Deposits:  depositStore,
 		Approvals: approvalsStore,
+		Notifier:  notifyClient,
 		Logger:    logger,
 	}
 	interestH := &handler.InterestHandler{
@@ -118,6 +121,7 @@ func main() {
 		Deposits:            depositStore,
 		Shares:              shareStore,
 		Interest:            interestStore,
+		Notifier:            notifyClient,
 		Logger:              logger,
 		WorkflowURL:         cfg.WorkflowURL,
 		SavingsSelfURL:      cfg.SavingsURL,
@@ -129,7 +133,6 @@ func main() {
 		Products: loanProductStore,
 		Logger:   logger,
 	}
-	notifyClient := notifier.New(cfg.NotificationURL, cfg.NotificationInternalToken, logger)
 	loanAppH := &handler.LoanApplicationHandler{
 		DB:           pool,
 		Tenants:      tenants,
@@ -150,6 +153,7 @@ func main() {
 		Loans:        loanStore,
 		Deposits:     depositStore,
 		Approvals:    approvalsStore,
+		Notifier:     notifyClient,
 		Logger:       logger,
 	}
 	loanRepayH := &handler.LoanRepaymentHandler{
@@ -159,6 +163,7 @@ func main() {
 		Deposits:  depositStore,
 		Loans:     loanStore,
 		Approvals: approvalsStore,
+		Notifier:  notifyClient,
 		Logger:    logger,
 	}
 	loanCollectH := &handler.LoanCollectionsHandler{
@@ -169,6 +174,7 @@ func main() {
 		Collections: loanCollectionsStore,
 		Restructure: loanRestructureStore,
 		Approvals:   approvalsStore,
+		Notifier:    notifyClient,
 		Logger:      logger,
 	}
 	loanReportsH := &handler.LoanReportsHandler{
@@ -196,6 +202,7 @@ func main() {
 		Deposits:            depositStore,
 		Shares:              shareStore,
 		Dividends:           dividendStore,
+		Notifier:            notifyClient,
 		Logger:              logger,
 		WorkflowURL:         cfg.WorkflowURL,
 		SavingsSelfURL:      cfg.SavingsURL,

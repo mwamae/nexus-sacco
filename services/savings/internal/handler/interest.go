@@ -40,6 +40,7 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -51,6 +52,7 @@ type InterestHandler struct {
 	Deposits *store.DepositStore
 	Shares   *store.ShareStore
 	Interest *store.InterestStore
+	Notifier *notifier.Client
 	Logger   *slog.Logger
 
 	// Workflow integration

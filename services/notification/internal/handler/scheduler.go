@@ -30,8 +30,31 @@ import (
 type SchedulerHandler struct {
 	DB        *db.Pool
 	Sched     *store.SchedulerStore
+	Tenants   *store.TenantStore
 	Scheduler *worker.Scheduler // for NextFiring + handler lookup on manual runs
 	Logger    *slog.Logger
+}
+
+// tenantLocation resolves the IANA location for the current request's
+// tenant. Falls back to UTC on any lookup or parse failure.
+func (h *SchedulerHandler) tenantLocation(r *http.Request, tenantID uuid.UUID) *time.Location {
+	if h.Tenants == nil {
+		return time.UTC
+	}
+	var tz string
+	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		var err error
+		tz, err = h.Tenants.TimezoneTx(r.Context(), tx)
+		return err
+	})
+	if tz == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
 
 func (h *SchedulerHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -47,16 +70,18 @@ func (h *SchedulerHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Annotate each row with the next firing the cron expression would
-	// produce — useful when the user has just changed the schedule.
+	// produce in the tenant's local timezone — useful when the user has
+	// just changed the schedule.
 	type jobOut struct {
 		domain.ScheduledJob
 		NextComputed *time.Time `json:"next_computed,omitempty"`
 	}
+	loc := h.tenantLocation(r, tid)
 	out := make([]jobOut, 0, len(items))
 	now := time.Now()
 	for _, j := range items {
 		row := jobOut{ScheduledJob: j}
-		if n, err := h.Scheduler.NextFiring(j.CronExpr, now); err == nil {
+		if n, err := h.Scheduler.NextFiringIn(j.CronExpr, now, loc); err == nil {
 			row.NextComputed = &n
 		}
 		out = append(out, row)
@@ -104,12 +129,13 @@ func (h *SchedulerHandler) Update(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("cron_expr is required"))
 		return
 	}
-	next, perr := h.Scheduler.NextFiring(in.CronExpr, time.Now())
+	tid, _ := middleware.TenantIDFrom(r)
+	loc := h.tenantLocation(r, tid)
+	next, perr := h.Scheduler.NextFiringIn(in.CronExpr, time.Now(), loc)
 	if perr != nil {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid cron expression: "+perr.Error()))
 		return
 	}
-	tid, _ := middleware.TenantIDFrom(r)
 	var out *domain.ScheduledJob
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		cur, err := h.Sched.GetTx(r.Context(), tx, id)
@@ -225,11 +251,13 @@ func (h *SchedulerHandler) PreviewCron(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("cron_expr is required"))
 		return
 	}
+	tid, _ := middleware.TenantIDFrom(r)
+	loc := h.tenantLocation(r, tid)
 	now := time.Now()
 	firings := make([]time.Time, 0, 5)
 	cursor := now
 	for i := 0; i < 5; i++ {
-		n, err := h.Scheduler.NextFiring(in.CronExpr, cursor)
+		n, err := h.Scheduler.NextFiringIn(in.CronExpr, cursor, loc)
 		if err != nil {
 			httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid cron expression: "+err.Error()))
 			return

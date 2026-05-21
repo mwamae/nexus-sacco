@@ -35,6 +35,7 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -45,6 +46,7 @@ type DividendHandler struct {
 	Deposits  *store.DepositStore
 	Shares    *store.ShareStore
 	Dividends *store.DividendStore
+	Notifier  *notifier.Client
 	Logger    *slog.Logger
 
 	WorkflowURL         string

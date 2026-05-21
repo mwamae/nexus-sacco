@@ -36,6 +36,10 @@ type Config struct {
 	MemberSelfURL       string
 	WorkflowProcessKind string
 	DefaultDormancyDays int
+
+	// Notification integration (Stage 8) — central notification service.
+	NotificationURL           string
+	NotificationInternalToken string
 }
 
 func Load() (*Config, error) {
@@ -75,6 +79,9 @@ func Load() (*Config, error) {
 	if cfg.DefaultDormancyDays <= 0 {
 		cfg.DefaultDormancyDays = 365
 	}
+
+	cfg.NotificationURL = getEnv("NOTIFICATION_SERVICE_URL", "http://localhost:8085")
+	cfg.NotificationInternalToken = getEnv("NOTIFICATION_INTERNAL_TOKEN", "")
 	return cfg, nil
 }
 

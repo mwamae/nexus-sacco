@@ -24,6 +24,7 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -37,6 +38,7 @@ type LoanHandler struct {
 	Loans        *store.LoanStore
 	Deposits     *store.DepositStore
 	Approvals    *store.ApprovalsStore
+	Notifier     *notifier.Client
 	Logger       *slog.Logger
 }
 
@@ -284,6 +286,41 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 	if pending != nil {
 		writePendingResponse(w, r, pending)
 		return
+	}
+	// Notify borrower that the loan was disbursed.
+	if h.Notifier != nil && result != nil {
+		var member *store.MemberLite
+		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+			var lerr error
+			member, lerr = h.Members.GetTx(r.Context(), tx, result.Loan.MemberID)
+			return lerr
+		})
+		if member != nil {
+			sourceModule := "savings.loans"
+			recordID := result.Disbursement.ID
+			deepLink := "/loans/" + result.Loan.ID.String()
+			mid := member.ID
+			h.Notifier.Notify(r.Context(), notifier.Request{
+				TenantID:          tid,
+				EventCode:         "LOAN_DISBURSED",
+				RecipientMemberID: &mid,
+				RecipientName:     member.FullName,
+				RecipientPhone:    strNilIfEmpty(member.Phone),
+				RecipientEmail:    strNilIfEmpty(member.Email),
+				SourceModule:      &sourceModule,
+				SourceRecordID:    &recordID,
+				DeepLink:          &deepLink,
+				InitiatedBy:       nonZeroUUID(userID),
+				Payload: map[string]any{
+					"member_no":     member.MemberNo,
+					"full_name":     member.FullName,
+					"loan_no":       result.Loan.LoanNo,
+					"principal":     result.Loan.Principal.String(),
+					"net_disbursed": result.NetDisbursed.String(),
+					"channel":       in.Channel,
+				},
+			})
+		}
 	}
 	httpx.Created(w, result)
 }

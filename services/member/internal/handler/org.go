@@ -23,6 +23,7 @@ import (
 	"github.com/nexussacco/member/internal/domain"
 	"github.com/nexussacco/member/internal/httpx"
 	"github.com/nexussacco/member/internal/middleware"
+	"github.com/nexussacco/member/internal/notifier"
 	"github.com/nexussacco/member/internal/storage"
 	"github.com/nexussacco/member/internal/store"
 )
@@ -39,6 +40,7 @@ type OrgHandler struct {
 	Storage     storage.Storage
 	MaxUpload   int64
 	Logger      *slog.Logger
+	Notifier    *notifier.Client
 }
 
 func (h *OrgHandler) audit(r *http.Request, tenantID, orgID uuid.UUID, action string, meta map[string]any) {
@@ -556,6 +558,42 @@ func (h *OrgHandler) SetKYCStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, tenantID, id, "org.kyc_status_changed", map[string]any{"to": string(next)})
+
+	// KYC_APPROVED / KYC_REJECTED fire when an org reaches a terminal
+	// KYC state. We notify the primary contact (if known) so the org
+	// can begin / re-attempt onboarding.
+	if h.Notifier != nil && (next == domain.KYCVerified || next == domain.KYCRejected) {
+		eventCode := "KYC_APPROVED"
+		if next == domain.KYCRejected {
+			eventCode = "KYC_REJECTED"
+		}
+		var org *domain.Org
+		_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+			var err error
+			org, err = h.Orgs.ByIDTx(r.Context(), tx, id)
+			return err
+		})
+		if org != nil {
+			actorID, _ := middleware.UserIDFrom(r)
+			sourceModule := "member.org_kyc"
+			recordID := org.ID
+			deepLink := "/orgs/" + org.ID.String()
+			h.Notifier.Notify(r.Context(), notifier.Request{
+				TenantID:       tenantID,
+				EventCode:      eventCode,
+				RecipientName:  org.RegisteredName,
+				SourceModule:   &sourceModule,
+				SourceRecordID: &recordID,
+				DeepLink:       &deepLink,
+				InitiatedBy:    nonZero(actorID),
+				Payload: map[string]any{
+					"org_no":          org.OrgNo,
+					"registered_name": org.RegisteredName,
+					"kyc_status":      string(next),
+				},
+			})
+		}
+	}
 	httpx.NoContent(w)
 }
 

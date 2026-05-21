@@ -29,6 +29,7 @@ import (
 	"github.com/nexussacco/member/internal/domain"
 	"github.com/nexussacco/member/internal/httpx"
 	"github.com/nexussacco/member/internal/middleware"
+	"github.com/nexussacco/member/internal/notifier"
 	"github.com/nexussacco/member/internal/storage"
 	"github.com/nexussacco/member/internal/store"
 )
@@ -46,6 +47,7 @@ type StatusHandler struct {
 	HTTP           *http.Client
 	DefaultDormancyDays int
 	WorkflowProcessKind string // e.g. "member_status_change"
+	Notifier       *notifier.Client
 }
 
 // ─────────── GET /v1/members/{id}/status-actions ───────────

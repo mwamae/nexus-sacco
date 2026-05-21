@@ -59,6 +59,15 @@ export default function AppShell({ children }: { children: ReactNode }) {
       ],
     },
     {
+      section: 'Engagement',
+      items: [
+        { href: '/notifications', label: 'Notifications', icon: 'bell', show: !onPlatform },
+        { href: '/campaigns', label: 'Campaigns', icon: 'bell', show: !onPlatform && hasPermission('tenant:settings:view') },
+        { href: '/notification-templates', label: 'Templates', icon: 'settings', show: !onPlatform && hasPermission('tenant:settings:view') },
+        { href: '/scheduled-jobs', label: 'Scheduled jobs', icon: 'refresh', show: !onPlatform && hasPermission('tenant:settings:view') },
+      ],
+    },
+    {
       section: 'Administration',
       items: [
         { href: '/users', label: 'Staff', icon: 'users', show: hasPermission('users:view') },

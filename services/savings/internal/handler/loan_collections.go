@@ -34,6 +34,7 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -45,6 +46,7 @@ type LoanCollectionsHandler struct {
 	Collections    *store.LoanCollectionsStore
 	Restructure    *store.LoanRestructureStore
 	Approvals      *store.ApprovalsStore
+	Notifier       *notifier.Client
 	Logger         *slog.Logger
 }
 

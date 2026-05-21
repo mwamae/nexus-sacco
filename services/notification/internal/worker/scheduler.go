@@ -48,17 +48,41 @@ type Scheduler struct {
 	DB           *db.Pool
 	Sched        *store.SchedulerStore
 	Notifs       *store.NotificationStore
+	Tenants      *store.TenantStore // for per-tenant timezone lookup
 	Registry     *JobRegistry
 	TickInterval time.Duration
 	Logger       *slog.Logger
 	cronParser   cron.Parser
 }
 
-func NewScheduler(d *db.Pool, sched *store.SchedulerStore, notifs *store.NotificationStore, reg *JobRegistry, l *slog.Logger) *Scheduler {
+func NewScheduler(d *db.Pool, sched *store.SchedulerStore, notifs *store.NotificationStore, tenants *store.TenantStore, reg *JobRegistry, l *slog.Logger) *Scheduler {
 	return &Scheduler{
-		DB: d, Sched: sched, Notifs: notifs, Registry: reg, Logger: l,
+		DB: d, Sched: sched, Notifs: notifs, Tenants: tenants, Registry: reg, Logger: l,
 		cronParser: cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
 	}
+}
+
+// tenantLocation returns the IANA location for the given tenant. Falls
+// back to UTC on any lookup or parse failure so the scheduler never
+// crashes on a misconfigured tenant.
+func (s *Scheduler) tenantLocation(ctx context.Context, tenantID uuid.UUID) *time.Location {
+	if s.Tenants == nil || tenantID == uuid.Nil {
+		return time.UTC
+	}
+	var tz string
+	_ = s.DB.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		var err error
+		tz, err = s.Tenants.TimezoneTx(ctx, tx)
+		return err
+	})
+	if tz == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
@@ -143,7 +167,8 @@ func (s *Scheduler) runOne(ctx context.Context, job domain.ScheduledJob) {
 }
 
 func (s *Scheduler) bumpSchedule(ctx context.Context, job domain.ScheduledJob) {
-	next, err := s.NextFiring(job.CronExpr, time.Now())
+	loc := s.tenantLocation(ctx, job.TenantID)
+	next, err := s.NextFiringIn(job.CronExpr, time.Now(), loc)
 	if err != nil {
 		s.Logger.Warn("scheduler: parse cron failed", "expr", job.CronExpr, "err", err)
 		// Push next_run_at out an hour so we don't tight-loop on a bad cron.
@@ -155,14 +180,29 @@ func (s *Scheduler) bumpSchedule(ctx context.Context, job domain.ScheduledJob) {
 }
 
 // NextFiring computes the next time a 5-field cron expression fires
-// strictly after `after`. Exposed for the admin UI to preview the next
-// run when editing a job's cron expression.
+// strictly after `after`. Uses the SERVER's local timezone — kept for
+// callers that aren't tenant-scoped; HTTP handlers should prefer
+// NextFiringIn so admins see tenant-local firing times.
 func (s *Scheduler) NextFiring(expr string, after time.Time) (time.Time, error) {
+	return s.NextFiringIn(expr, after, time.Local)
+}
+
+// NextFiringIn is the timezone-aware variant. `loc` controls which
+// wall-clock the cron expression is interpreted against — e.g.
+// "0 8 * * *" with loc=Africa/Nairobi fires at 08:00 Nairobi time
+// (=05:00 UTC), regardless of where the server is running.
+func (s *Scheduler) NextFiringIn(expr string, after time.Time, loc *time.Location) (time.Time, error) {
 	sched, err := s.cronParser.Parse(expr)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("parse cron %q: %w", expr, err)
 	}
-	return sched.Next(after), nil
+	if loc == nil {
+		loc = time.UTC
+	}
+	// robfig/cron's Schedule.Next anchors against the location of the
+	// `after` arg — converting `after` into the tenant's location makes
+	// the firing computation wall-clock-correct for that tenant.
+	return sched.Next(after.In(loc)), nil
 }
 
 var ErrUnknownJob = errors.New("scheduler: unknown job_key")

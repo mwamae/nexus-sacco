@@ -24,6 +24,7 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -34,6 +35,7 @@ type LoanRepaymentHandler struct {
 	Deposits  *store.DepositStore
 	Loans     *store.LoanStore
 	Approvals *store.ApprovalsStore
+	Notifier  *notifier.Client
 	Logger    *slog.Logger
 }
 
@@ -141,7 +143,72 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
+	h.emitRepayment(r, tid, userID, result)
 	httpx.Created(w, result)
+}
+
+// emitRepayment fires LOAN_REPAYMENT_RECEIVED post-commit. We also
+// fire LOAN_SETTLED if the repayment took the outstanding balance
+// to zero — a single repayment can close the loan, so both events
+// can land in a single dispatch.
+func (h *LoanRepaymentHandler) emitRepayment(
+	r *http.Request, tenantID, actorID uuid.UUID, result *LoanRepayResult,
+) {
+	if h.Notifier == nil || result == nil {
+		return
+	}
+	var member *store.MemberLite
+	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		var err error
+		member, err = h.Members.GetTx(r.Context(), tx, result.Loan.MemberID)
+		return err
+	})
+	if member == nil {
+		return
+	}
+	sourceModule := "savings.loans"
+	recordID := result.Transaction.ID
+	deepLink := "/loans/" + result.Loan.ID.String()
+	mid := member.ID
+	basePayload := map[string]any{
+		"member_no":           member.MemberNo,
+		"full_name":           member.FullName,
+		"loan_no":             result.Loan.LoanNo,
+		"amount":              result.Transaction.Amount.String(),
+		"principal_balance":   result.Loan.PrincipalBalance.String(),
+		"interest_balance":    result.Loan.InterestBalance.String(),
+		"fees_balance":        result.Loan.FeesBalance.String(),
+		"penalty_balance":     result.Loan.PenaltyBalance.String(),
+		"days_past_due":       result.Loan.DaysPastDue,
+	}
+	h.Notifier.Notify(r.Context(), notifier.Request{
+		TenantID:          tenantID,
+		EventCode:         "LOAN_REPAYMENT_RECEIVED",
+		RecipientMemberID: &mid,
+		RecipientName:     member.FullName,
+		RecipientPhone:    strNilIfEmpty(member.Phone),
+		RecipientEmail:    strNilIfEmpty(member.Email),
+		SourceModule:      &sourceModule,
+		SourceRecordID:    &recordID,
+		DeepLink:          &deepLink,
+		InitiatedBy:       nonZeroUUID(actorID),
+		Payload:           basePayload,
+	})
+	if result.Loan.Status == domain.LoanSettled {
+		h.Notifier.Notify(r.Context(), notifier.Request{
+			TenantID:          tenantID,
+			EventCode:         "LOAN_SETTLED",
+			RecipientMemberID: &mid,
+			RecipientName:     member.FullName,
+			RecipientPhone:    strNilIfEmpty(member.Phone),
+			RecipientEmail:    strNilIfEmpty(member.Email),
+			SourceModule:      &sourceModule,
+			SourceRecordID:    &recordID,
+			DeepLink:          &deepLink,
+			InitiatedBy:       nonZeroUUID(actorID),
+			Payload:           basePayload,
+		})
+	}
 }
 
 // ─────────── Payoff figure ───────────

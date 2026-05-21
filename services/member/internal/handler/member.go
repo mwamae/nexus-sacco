@@ -19,6 +19,7 @@ import (
 	"github.com/nexussacco/member/internal/domain"
 	"github.com/nexussacco/member/internal/httpx"
 	"github.com/nexussacco/member/internal/middleware"
+	"github.com/nexussacco/member/internal/notifier"
 	"github.com/nexussacco/member/internal/storage"
 	"github.com/nexussacco/member/internal/store"
 )
@@ -32,6 +33,7 @@ type MemberHandler struct {
 	Storage    storage.Storage
 	MaxUpload  int64
 	Logger     *slog.Logger
+	Notifier   *notifier.Client
 }
 
 func (h *MemberHandler) audit(r *http.Request, tenantID uuid.UUID, memberID uuid.UUID, action string, meta map[string]any) {
@@ -216,6 +218,40 @@ func (h *MemberHandler) Create(w http.ResponseWriter, r *http.Request) {
 	h.audit(r, tenantID, created.ID, "member.created", map[string]any{
 		"member_no": created.MemberNo, "id_doc_number": created.IDDocNumber,
 	})
+
+	// Notify the new member — welcomes them and confirms their member_no.
+	// Non-blocking; success is what counts even if notification fails.
+	if h.Notifier != nil {
+		memberID := created.ID
+		sourceModule := "member.onboarding"
+		recordID := created.ID
+		deepLink := "/members/" + created.ID.String()
+		var phone, email *string
+		if created.Phone != "" {
+			p := created.Phone
+			phone = &p
+		}
+		if created.Email != "" {
+			e := created.Email
+			email = &e
+		}
+		h.Notifier.Notify(r.Context(), notifier.Request{
+			TenantID:          tenantID,
+			EventCode:         "MEMBER_REGISTERED",
+			RecipientMemberID: &memberID,
+			RecipientName:     created.FullName,
+			RecipientPhone:    phone,
+			RecipientEmail:    email,
+			SourceModule:      &sourceModule,
+			SourceRecordID:    &recordID,
+			DeepLink:          &deepLink,
+			InitiatedBy:       nonZero(actorID),
+			Payload: map[string]any{
+				"member_no": created.MemberNo,
+				"full_name": created.FullName,
+			},
+		})
+	}
 	httpx.Created(w, created)
 }
 
@@ -365,8 +401,59 @@ func (h *MemberHandler) SetStatus(w http.ResponseWriter, r *http.Request) {
 		h.audit(r, tenantID, id, "member.status_changed", map[string]any{
 			"from": string(fromStatus), "to": string(next),
 		})
+		h.fireStatusChanged(r, tenantID, id, fromStatus, next)
 	}
 	httpx.NoContent(w)
+}
+
+// fireStatusChanged emits MEMBER_STATUS_CHANGED. Re-fetches the member
+// row to pick up contact info — the SetStatus path doesn't otherwise
+// keep the full row in scope.
+func (h *MemberHandler) fireStatusChanged(r *http.Request, tenantID, memberID uuid.UUID, from, to domain.MemberStatus) {
+	if h.Notifier == nil {
+		return
+	}
+	var m *domain.Member
+	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		var err error
+		m, err = h.Members.ByIDTx(r.Context(), tx, memberID)
+		return err
+	})
+	if m == nil {
+		return
+	}
+	actorID, _ := middleware.UserIDFrom(r)
+	sourceModule := "member.lifecycle"
+	recordID := m.ID
+	mid := m.ID
+	deepLink := "/members/" + m.ID.String()
+	var phone, email *string
+	if m.Phone != "" {
+		p := m.Phone
+		phone = &p
+	}
+	if m.Email != "" {
+		e := m.Email
+		email = &e
+	}
+	h.Notifier.Notify(r.Context(), notifier.Request{
+		TenantID:          tenantID,
+		EventCode:         "MEMBER_STATUS_CHANGED",
+		RecipientMemberID: &mid,
+		RecipientName:     m.FullName,
+		RecipientPhone:    phone,
+		RecipientEmail:    email,
+		SourceModule:      &sourceModule,
+		SourceRecordID:    &recordID,
+		DeepLink:          &deepLink,
+		InitiatedBy:       nonZero(actorID),
+		Payload: map[string]any{
+			"member_no":   m.MemberNo,
+			"full_name":   m.FullName,
+			"from_status": string(from),
+			"to_status":   string(to),
+		},
+	})
 }
 
 // ─────────── POST /v1/members/{id}/approve ───────────
@@ -391,6 +478,7 @@ func (h *MemberHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, tenantID, id, "member.approved", nil)
+	h.fireStatusChanged(r, tenantID, id, domain.StatusPending, domain.StatusActive)
 	httpx.NoContent(w)
 }
 
