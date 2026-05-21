@@ -4969,3 +4969,52 @@ export async function sasraReturn(asOf?: string): Promise<SASRAReturn> {
   const r = await api.get('/v1/reports/sasra-return' + q);
   return r.data.data;
 }
+
+// ─────────── Management KPI Dashboard ───────────
+
+export type DashboardKPIs = {
+  total_assets: string;
+  total_liabilities: string;
+  total_equity: string;
+  total_deposits: string;
+  gross_loans: string;
+  net_loans: string;
+  provisions: string;
+  cash_position: string;
+  net_surplus_ytd: string;
+  total_income_ytd: string;
+  total_expense_ytd: string;
+  core_capital: string;
+  liquidity_ratio_pct: string;
+  loan_to_deposit_ratio_pct: string;
+  core_capital_ratio_pct: string;
+  cost_to_income_ratio_pct: string;
+  provision_coverage_pct: string;
+};
+
+export type MonthPoint = {
+  month: string;
+  total_assets: string;
+  total_deposits: string;
+  gross_loans: string;
+  income: string;
+  expense: string;
+  net_surplus: string;
+};
+
+export type TopAccount = { code: string; name: string; amount: string };
+
+export type Dashboard = {
+  as_of: string;
+  fiscal_year: number;
+  kpis: DashboardKPIs;
+  monthly_trend: MonthPoint[];
+  top_income_ytd: TopAccount[];
+  top_expense_ytd: TopAccount[];
+};
+
+export async function getFinanceDashboard(asOf?: string): Promise<Dashboard> {
+  const q = asOf ? `?as_of=${asOf}` : '';
+  const r = await api.get('/v1/reports/dashboard' + q);
+  return r.data.data;
+}

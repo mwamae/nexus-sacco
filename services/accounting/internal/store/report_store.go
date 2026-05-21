@@ -6,6 +6,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -1078,4 +1079,343 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 		Ratios:        ratios,
 		AllCompliant:  allCompliant,
 	}, nil
+}
+
+// ─────────── Management KPI Dashboard ───────────
+
+// DashboardKPIs — the headline numbers, all computed at as-of date
+// from the posted GL.
+type DashboardKPIs struct {
+	TotalAssets       decimal.Decimal `json:"total_assets"`
+	TotalLiabilities  decimal.Decimal `json:"total_liabilities"`
+	TotalEquity       decimal.Decimal `json:"total_equity"`
+	TotalDeposits     decimal.Decimal `json:"total_deposits"`
+	GrossLoans        decimal.Decimal `json:"gross_loans"`
+	NetLoans          decimal.Decimal `json:"net_loans"`
+	Provisions        decimal.Decimal `json:"provisions"`
+	CashPosition      decimal.Decimal `json:"cash_position"`
+	NetSurplusYTD     decimal.Decimal `json:"net_surplus_ytd"`
+	TotalIncomeYTD    decimal.Decimal `json:"total_income_ytd"`
+	TotalExpenseYTD   decimal.Decimal `json:"total_expense_ytd"`
+	CoreCapital       decimal.Decimal `json:"core_capital"`
+	// Ratios as percentages.
+	LiquidityRatioPct      decimal.Decimal `json:"liquidity_ratio_pct"`
+	LoanToDepositRatioPct  decimal.Decimal `json:"loan_to_deposit_ratio_pct"`
+	CoreCapitalRatioPct    decimal.Decimal `json:"core_capital_ratio_pct"`
+	CostToIncomeRatioPct   decimal.Decimal `json:"cost_to_income_ratio_pct"`
+	ProvisionCoveragePct   decimal.Decimal `json:"provision_coverage_pct"`
+}
+
+// MonthPoint — one month's snapshot for the trend charts.
+type MonthPoint struct {
+	Month          string          `json:"month"`           // "2026-05"
+	TotalAssets    decimal.Decimal `json:"total_assets"`
+	TotalDeposits  decimal.Decimal `json:"total_deposits"`
+	GrossLoans     decimal.Decimal `json:"gross_loans"`
+	Income         decimal.Decimal `json:"income"`
+	Expense        decimal.Decimal `json:"expense"`
+	NetSurplus     decimal.Decimal `json:"net_surplus"`
+}
+
+// TopAccount — one row in the top-N income/expense breakdowns.
+type TopAccount struct {
+	Code   string          `json:"code"`
+	Name   string          `json:"name"`
+	Amount decimal.Decimal `json:"amount"`
+}
+
+type Dashboard struct {
+	AsOf            time.Time      `json:"as_of"`
+	FiscalYear      int            `json:"fiscal_year"`
+	KPIs            DashboardKPIs  `json:"kpis"`
+	MonthlyTrend    []MonthPoint   `json:"monthly_trend"` // last 12 months
+	TopIncomeYTD    []TopAccount   `json:"top_income_ytd"`
+	TopExpenseYTD   []TopAccount   `json:"top_expense_ytd"`
+}
+
+// DashboardTx — gathers the KPI snapshot + a 12-month trend + the
+// top income/expense accounts year-to-date. Built on top of the
+// existing account-balance projections so the numbers tie out exactly
+// to BS / IS / SASRA reports for the same as-of date.
+func (s *ReportStore) DashboardTx(ctx context.Context, tx pgx.Tx, asOf time.Time) (*Dashboard, error) {
+	// ─── Single account-balance scan ───
+	bals, err := s.accountBalancesAsOfTx(ctx, tx, asOf)
+	if err != nil {
+		return nil, err
+	}
+	natural := func(code string) decimal.Decimal {
+		b, ok := bals[code]
+		if !ok {
+			return decimal.Zero
+		}
+		if b.nb == "credit" {
+			return b.net.Neg()
+		}
+		return b.net
+	}
+
+	// Class totals (with contra subtraction).
+	var totalAssets, totalLiab, totalEquity decimal.Decimal
+	for _, b := range bals {
+		amt := natural(b.code)
+		if isContra(b.class, b.nb) {
+			amt = amt.Neg()
+		}
+		switch b.class {
+		case "asset":
+			totalAssets = totalAssets.Add(amt)
+		case "liability":
+			totalLiab = totalLiab.Add(amt)
+		case "equity":
+			totalEquity = totalEquity.Add(amt)
+		}
+	}
+
+	// ─── YTD income statement ───
+	fyStart := time.Date(asOf.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+	var totalIncome, totalExpense decimal.Decimal
+	if err := tx.QueryRow(ctx, `
+		SELECT
+		  COALESCE(SUM(CASE WHEN a.class = 'income'  THEN l.credit - l.debit ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN a.class = 'expense' THEN l.debit  - l.credit ELSE 0 END), 0)
+		FROM journal_entries je
+		JOIN journal_lines l   ON l.entry_id = je.id
+		JOIN chart_of_accounts a ON a.id = l.account_id
+		WHERE je.status = 'posted'
+		  AND je.entry_date BETWEEN $1 AND $2
+	`, fyStart, asOf).Scan(&totalIncome, &totalExpense); err != nil {
+		return nil, err
+	}
+	netSurplus := totalIncome.Sub(totalExpense)
+	// Add unclosed surplus to equity for ratio math.
+	totalEquity = totalEquity.Add(netSurplus)
+
+	// ─── Buckets used by KPIs ───
+	var memberSavings, fixedDeposits decimal.Decimal
+	for _, b := range bals {
+		if b.class != "liability" {
+			continue
+		}
+		v := natural(b.code)
+		switch b.typ {
+		case "member_savings":
+			memberSavings = memberSavings.Add(v)
+		case "member_deposits":
+			fixedDeposits = fixedDeposits.Add(v)
+		}
+	}
+	totalDeposits := memberSavings.Add(fixedDeposits)
+
+	grossLoans := natural("1100")
+	provisions := natural("1120")
+	netLoans := grossLoans.Sub(provisions)
+
+	// Cash position: 1000, 1010, 1020, 1030, 1040
+	cashPosition := decimal.Zero
+	for _, c := range []string{"1000", "1010", "1020", "1030", "1040"} {
+		cashPosition = cashPosition.Add(natural(c))
+	}
+
+	// Core capital.
+	coreCapital := natural("3000").
+		Add(natural("3010")).Add(netSurplus).
+		Add(natural("3020")).
+		Add(natural("3030")).
+		Sub(natural("1600"))
+
+	// Short-term liabilities for liquidity ratio.
+	shortTermLiab := decimal.Zero
+	for _, c := range []string{"2000", "2010", "2020", "2030", "2040", "2200", "2210", "2220", "2230", "2240"} {
+		shortTermLiab = shortTermLiab.Add(natural(c))
+	}
+
+	// Ratio helpers.
+	pct := func(num, den decimal.Decimal) decimal.Decimal {
+		if den.IsZero() {
+			return decimal.Zero
+		}
+		return num.Div(den).Mul(decimal.NewFromInt(100)).Round(2)
+	}
+
+	kpis := DashboardKPIs{
+		TotalAssets:           totalAssets,
+		TotalLiabilities:      totalLiab,
+		TotalEquity:           totalEquity,
+		TotalDeposits:         totalDeposits,
+		GrossLoans:            grossLoans,
+		NetLoans:              netLoans,
+		Provisions:            provisions,
+		CashPosition:          cashPosition,
+		NetSurplusYTD:         netSurplus,
+		TotalIncomeYTD:        totalIncome,
+		TotalExpenseYTD:       totalExpense,
+		CoreCapital:           coreCapital,
+		LiquidityRatioPct:     pct(cashPosition, shortTermLiab),
+		LoanToDepositRatioPct: pct(grossLoans, totalDeposits),
+		CoreCapitalRatioPct:   pct(coreCapital, totalAssets),
+		CostToIncomeRatioPct:  pct(totalExpense, totalIncome),
+		ProvisionCoveragePct:  pct(provisions, grossLoans),
+	}
+
+	// ─── 12-month trend ───
+	// Snapshot each month-end from (asOf − 11 months) through asOf.
+	// Anchor to the first-of-month before stepping, otherwise
+	// AddDate(0,-i,0) on May 31 normalises through invalid Feb-31 etc.
+	// and produces duplicate/skipped months.
+	asOfMonth := time.Date(asOf.Year(), asOf.Month(), 1, 0, 0, 0, 0, time.UTC)
+	trend := make([]MonthPoint, 0, 12)
+	for i := 11; i >= 0; i-- {
+		monthAnchor := asOfMonth.AddDate(0, -i, 0)
+		monthEnd := endOfMonth(monthAnchor)
+		mb, err := s.accountBalancesAsOfTx(ctx, tx, monthEnd)
+		if err != nil {
+			return nil, fmt.Errorf("month %s: %w", monthEnd.Format("2006-01"), err)
+		}
+		pt := MonthPoint{Month: monthEnd.Format("2006-01")}
+		// Assets total + member-funding total + gross loans + monthly P&L
+		var assetsAmt, depAmt decimal.Decimal
+		for _, b := range mb {
+			n := b.net
+			if b.nb == "credit" {
+				n = n.Neg()
+			}
+			if isContra(b.class, b.nb) {
+				n = n.Neg()
+			}
+			if b.class == "asset" {
+				assetsAmt = assetsAmt.Add(n)
+			}
+			if b.class == "liability" && (b.typ == "member_savings" || b.typ == "member_deposits") {
+				// these are natural-credit, isContra=false, so n is already
+				// signed correctly for natural side (positive).
+				depAmt = depAmt.Add(n)
+			}
+		}
+		pt.TotalAssets = assetsAmt
+		pt.TotalDeposits = depAmt
+		// Gross loans from this snapshot.
+		if v, ok := mb["1100"]; ok {
+			x := v.net
+			if v.nb == "credit" {
+				x = x.Neg()
+			}
+			pt.GrossLoans = x
+		}
+		// Monthly P&L: this month's income + expense activity, excluding
+		// year-end closing journals (which zero P&L into retained
+		// earnings — counting them makes December look like an income
+		// reversal in the trend chart).
+		monthStart := time.Date(monthEnd.Year(), monthEnd.Month(), 1, 0, 0, 0, 0, time.UTC)
+		var mIncome, mExpense decimal.Decimal
+		if err := tx.QueryRow(ctx, `
+			SELECT
+			  COALESCE(SUM(CASE WHEN a.class = 'income'  THEN l.credit - l.debit ELSE 0 END), 0),
+			  COALESCE(SUM(CASE WHEN a.class = 'expense' THEN l.debit  - l.credit ELSE 0 END), 0)
+			FROM journal_entries je
+			JOIN journal_lines l   ON l.entry_id = je.id
+			JOIN chart_of_accounts a ON a.id = l.account_id
+			WHERE je.status = 'posted'
+			  AND je.entry_date BETWEEN $1 AND $2
+			  AND COALESCE(je.source_module, '') <> 'accounting.fiscal-year-close'
+		`, monthStart, monthEnd).Scan(&mIncome, &mExpense); err != nil {
+			return nil, err
+		}
+		pt.Income = mIncome
+		pt.Expense = mExpense
+		pt.NetSurplus = mIncome.Sub(mExpense)
+		trend = append(trend, pt)
+	}
+
+	// ─── Top 5 income / expense accounts YTD ───
+	topIncome, err := s.topAccountsByActivityTx(ctx, tx, "income", fyStart, asOf, 5)
+	if err != nil {
+		return nil, err
+	}
+	topExpense, err := s.topAccountsByActivityTx(ctx, tx, "expense", fyStart, asOf, 5)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Dashboard{
+		AsOf:          asOf,
+		FiscalYear:    asOf.Year(),
+		KPIs:          kpis,
+		MonthlyTrend:  trend,
+		TopIncomeYTD:  topIncome,
+		TopExpenseYTD: topExpense,
+	}, nil
+}
+
+type acctBalance struct {
+	code, class, typ, nb string
+	net                  decimal.Decimal
+}
+
+// accountBalancesAsOfTx reads every active account's projected net
+// (debit − credit) balance through `asOf`. Reused for the KPI
+// snapshot and each month-end point in the trend.
+func (s *ReportStore) accountBalancesAsOfTx(ctx context.Context, tx pgx.Tx, asOf time.Time) (map[string]acctBalance, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT a.code, a.class, a.type, a.normal_balance,
+		       COALESCE(SUM(CASE WHEN je.id IS NOT NULL THEN l.debit - l.credit ELSE 0 END), 0) AS net
+		  FROM chart_of_accounts a
+		  LEFT JOIN journal_lines l   ON l.account_id = a.id
+		  LEFT JOIN journal_entries je ON je.id = l.entry_id
+		                              AND je.status = 'posted'
+		                              AND je.entry_date <= $1
+		 WHERE a.is_active = true
+		 GROUP BY a.code, a.class, a.type, a.normal_balance
+	`, asOf)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]acctBalance{}
+	for rows.Next() {
+		var b acctBalance
+		if err := rows.Scan(&b.code, &b.class, &b.typ, &b.nb, &b.net); err != nil {
+			return nil, err
+		}
+		out[b.code] = b
+	}
+	return out, rows.Err()
+}
+
+func (s *ReportStore) topAccountsByActivityTx(ctx context.Context, tx pgx.Tx, class string, from, to time.Time, limit int) ([]TopAccount, error) {
+	signExpr := "l.credit - l.debit"
+	if class == "expense" {
+		signExpr = "l.debit - l.credit"
+	}
+	rows, err := tx.Query(ctx, fmt.Sprintf(`
+		SELECT a.code, a.name, COALESCE(SUM(%s), 0) AS amount
+		  FROM chart_of_accounts a
+		  JOIN journal_lines l    ON l.account_id = a.id
+		  JOIN journal_entries je ON je.id = l.entry_id
+		 WHERE a.class = $1
+		   AND je.status = 'posted'
+		   AND je.entry_date BETWEEN $2 AND $3
+		 GROUP BY a.code, a.name
+		 HAVING COALESCE(SUM(%s), 0) > 0
+		 ORDER BY amount DESC
+		 LIMIT $4
+	`, signExpr, signExpr), class, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []TopAccount{}
+	for rows.Next() {
+		var t TopAccount
+		if err := rows.Scan(&t.Code, &t.Name, &t.Amount); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// endOfMonth returns the last second of the month containing t (UTC).
+func endOfMonth(t time.Time) time.Time {
+	firstOfNext := time.Date(t.Year(), t.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+	return firstOfNext.Add(-time.Second)
 }

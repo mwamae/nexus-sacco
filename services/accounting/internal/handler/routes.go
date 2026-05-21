@@ -88,6 +88,7 @@ func Routes(d Deps) http.Handler {
 			r.Get("/reports/changes-in-equity", d.Reports.ChangesInEquity)
 			r.Get("/reports/cash-flow", d.Reports.CashFlow)
 			r.Get("/reports/sasra-return", d.Reports.SASRAReturn)
+			r.Get("/reports/dashboard", d.Reports.Dashboard)
 			r.Get("/reports/gl-detail/{account_id}", d.Reports.GLDetail)
 
 			// Fiscal year close

@@ -63,6 +63,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     {
       section: 'Finance',
       items: [
+        { href: '/accounting/dashboard',         label: 'Dashboard',         icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/chart-of-accounts', label: 'Chart of Accounts', icon: 'bank',  show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/journal-entries',   label: 'Journal Entries',   icon: 'bank',  show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/trial-balance',     label: 'Trial Balance',     icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
