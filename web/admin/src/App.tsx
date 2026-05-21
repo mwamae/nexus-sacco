@@ -34,6 +34,9 @@ import ScheduledJobsPage from './pages/ScheduledJobs';
 import NotificationTemplatesPage from './pages/NotificationTemplates';
 import CreditsPage from './pages/Credits';
 import PlatformCreditsPage from './pages/PlatformCredits';
+import ChartOfAccountsPage from './pages/Accounting/ChartOfAccounts';
+import JournalEntriesPage from './pages/Accounting/JournalEntries';
+import TrialBalancePage from './pages/Accounting/TrialBalance';
 
 function Gate() {
   const { status } = useAuth();
@@ -82,6 +85,9 @@ function Gate() {
   else if (path === '/notification-templates' || path.startsWith('/notification-templates/')) page = <NotificationTemplatesPage />;
   else if (path === '/credits' || path.startsWith('/credits/')) page = <CreditsPage />;
   else if (path === '/platform/credits' || path.startsWith('/platform/credits/')) page = <PlatformCreditsPage />;
+  else if (path === '/accounting/chart-of-accounts') page = <ChartOfAccountsPage />;
+  else if (path === '/accounting/journal-entries' || path.startsWith('/accounting/journal-entries/')) page = <JournalEntriesPage />;
+  else if (path === '/accounting/trial-balance') page = <TrialBalancePage />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;

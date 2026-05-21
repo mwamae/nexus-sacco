@@ -4004,3 +4004,179 @@ export async function previewCron(cron_expr: string): Promise<{ next_firings: st
   const r = await api.post('/v1/scheduled-jobs/preview-cron', { cron_expr });
   return r.data.data;
 }
+
+// ─────────── Accounting & Finance (Stage 11) ───────────
+
+export type AccountClass = 'asset' | 'liability' | 'equity' | 'income' | 'expense';
+export type NormalBalance = 'debit' | 'credit';
+
+export type CoAAccount = {
+  id: string;
+  tenant_id: string;
+  code: string;
+  name: string;
+  class: AccountClass;
+  type: string;
+  parent_id?: string | null;
+  normal_balance: NormalBalance;
+  currency_code: string;
+  is_active: boolean;
+  is_system_locked: boolean;
+  description?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listCoA(activeOnly = false): Promise<{ items: CoAAccount[]; total: number }> {
+  const q = activeOnly ? '?active=1' : '';
+  const r = await api.get('/v1/coa' + q);
+  return r.data.data;
+}
+export async function createCoAAccount(input: {
+  code: string;
+  name: string;
+  class: AccountClass;
+  type: string;
+  parent_code?: string;
+  normal_balance: NormalBalance;
+  currency_code?: string;
+  is_active: boolean;
+  description?: string;
+}): Promise<CoAAccount> {
+  const r = await api.post('/v1/coa', input);
+  return r.data.data;
+}
+export async function updateCoAAccount(id: string, input: {
+  name: string;
+  type: string;
+  parent_code?: string;
+  is_active: boolean;
+  description?: string;
+}): Promise<CoAAccount> {
+  const r = await api.patch(`/v1/coa/${id}`, input);
+  return r.data.data;
+}
+
+export type JournalEntryStatus = 'draft' | 'pending_approval' | 'posted' | 'rejected';
+export type JournalEntryType = 'auto' | 'manual' | 'adjustment' | 'reversal' | 'opening_balance';
+
+export type JournalLine = {
+  id: string;
+  entry_id: string;
+  line_no: number;
+  account_id: string;
+  account_code?: string;
+  account_name?: string;
+  debit: string;
+  credit: string;
+  narration?: string | null;
+};
+
+export type JournalEntry = {
+  id: string;
+  tenant_id: string;
+  entry_no?: string | null;
+  entry_date: string;
+  value_date: string;
+  period_year: number;
+  period_month: number;
+  entry_type: JournalEntryType;
+  source_module?: string | null;
+  source_ref?: string | null;
+  narration: string;
+  status: JournalEntryStatus;
+  total_debits: string;
+  total_credits: string;
+  reversal_of?: string | null;
+  created_by?: string | null;
+  created_at: string;
+  posted_by?: string | null;
+  posted_at?: string | null;
+  rejected_by?: string | null;
+  rejected_at?: string | null;
+  rejection_reason?: string | null;
+  lines?: JournalLine[];
+};
+
+export async function listJournalEntries(opts: { status?: string; entry_type?: string; from?: string; to?: string; limit?: number } = {}): Promise<{ items: JournalEntry[]; total: number }> {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(opts)) if (v != null && v !== '') p.set(k, String(v));
+  const r = await api.get('/v1/journal-entries' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+export async function getJournalEntry(id: string): Promise<JournalEntry> {
+  const r = await api.get(`/v1/journal-entries/${id}`);
+  return r.data.data;
+}
+export async function createJournalEntry(input: {
+  entry_date: string;
+  value_date?: string;
+  entry_type?: 'manual' | 'adjustment';
+  narration: string;
+  lines: Array<{ account_code: string; debit?: string; credit?: string; narration?: string }>;
+}): Promise<JournalEntry> {
+  const r = await api.post('/v1/journal-entries', input);
+  return r.data.data;
+}
+export async function approveJournalEntry(id: string): Promise<JournalEntry> {
+  const r = await api.post(`/v1/journal-entries/${id}/approve`);
+  return r.data.data;
+}
+export async function rejectJournalEntry(id: string, reason?: string): Promise<void> {
+  await api.post(`/v1/journal-entries/${id}/reject`, { reason });
+}
+
+export type AccountingPeriod = {
+  id: string;
+  year: number;
+  month: number;
+  status: 'open' | 'closed';
+  opened_at?: string | null;
+  closed_at?: string | null;
+  notes?: string | null;
+};
+export async function listAccountingPeriods(): Promise<{ items: AccountingPeriod[] }> {
+  const r = await api.get('/v1/periods');
+  return r.data.data;
+}
+export async function closeAccountingPeriod(id: string, notes?: string): Promise<void> {
+  await api.post(`/v1/periods/${id}/close`, { notes });
+}
+export async function reopenAccountingPeriod(id: string, reason: string): Promise<void> {
+  await api.post(`/v1/periods/${id}/reopen`, { reason });
+}
+
+export type TrialBalanceRow = {
+  account_id: string;
+  account_code: string;
+  account_name: string;
+  class: AccountClass;
+  normal_balance: NormalBalance;
+  opening_debit: string;
+  opening_credit: string;
+  period_debits: string;
+  period_credits: string;
+  closing_debit: string;
+  closing_credit: string;
+};
+export async function trialBalance(from: string, to: string): Promise<{ from: string; to: string; items: TrialBalanceRow[]; total_debits: string; total_credits: string; balanced: boolean }> {
+  const r = await api.get(`/v1/reports/trial-balance?from=${from}&to=${to}`);
+  return r.data.data;
+}
+
+export type GLDetailRow = {
+  entry_id: string;
+  entry_no?: string | null;
+  entry_date: string;
+  narration: string;
+  line_narration?: string | null;
+  debit: string;
+  credit: string;
+  running_balance: string;
+  source_module?: string | null;
+  source_ref?: string | null;
+};
+export async function glDetail(accountId: string, from: string, to: string): Promise<{ account_id: string; from: string; to: string; items: GLDetailRow[] }> {
+  const r = await api.get(`/v1/reports/gl-detail/${accountId}?from=${from}&to=${to}`);
+  return r.data.data;
+}

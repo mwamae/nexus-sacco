@@ -15,6 +15,7 @@ export default defineConfig(({ mode }) => {
   const workflowTarget = env.VITE_WORKFLOW_TARGET || 'http://localhost:8083';
   const savingsTarget = env.VITE_SAVINGS_TARGET || 'http://localhost:8084';
   const notificationTarget = env.VITE_NOTIFICATION_TARGET || 'http://localhost:8085';
+  const accountingTarget = env.VITE_ACCOUNTING_TARGET || 'http://localhost:8086';
 
   // More specific keys must come before the catch-all so vite-proxy
   // routes /api/v1/members* to the member service, not identity.
@@ -194,6 +195,27 @@ export default defineConfig(({ mode }) => {
         },
         '/api/v1/platform/notification-config': {
           target: notificationTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        // Accounting service — Stage 11.
+        '/api/v1/coa': {
+          target: accountingTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/journal-entries': {
+          target: accountingTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/periods': {
+          target: accountingTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/reports': {
+          target: accountingTarget,
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
