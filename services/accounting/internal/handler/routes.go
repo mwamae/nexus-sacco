@@ -30,6 +30,7 @@ type Deps struct {
 	Journals     *JournalHandler
 	Reports      *ReportHandler
 	FiscalYear   *FiscalYearHandler
+	Bank         *BankHandler
 	InternalPost *InternalPostHandler
 	TenantStore  *store.TenantStore
 	Issuer       *auth.TokenIssuer
@@ -88,6 +89,22 @@ func Routes(d Deps) http.Handler {
 			// Fiscal year close
 			r.Get("/fiscal-years", d.FiscalYear.List)
 			r.Post("/fiscal-years/{year}/close", d.FiscalYear.Close)
+
+			// Bank reconciliation
+			r.Get("/bank-accounts", d.Bank.ListAccounts)
+			r.Post("/bank-accounts", d.Bank.CreateAccount)
+			r.Get("/bank-accounts/{id}", d.Bank.GetAccount)
+			r.Patch("/bank-accounts/{id}", d.Bank.UpdateAccount)
+			r.Get("/bank-accounts/{id}/statements", d.Bank.ListStatements)
+			r.Post("/bank-accounts/{id}/statements", d.Bank.UploadStatement)
+			r.Get("/bank-accounts/{id}/reconciliation", d.Bank.Reconciliation)
+
+			r.Get("/bank-statements/{id}", d.Bank.GetStatement)
+			r.Get("/bank-statement-lines/{id}/suggest-matches", d.Bank.SuggestMatches)
+			r.Post("/bank-statement-lines/{id}/match", d.Bank.Match)
+			r.Post("/bank-statement-lines/{id}/unmatch", d.Bank.Unmatch)
+			r.Post("/bank-statement-lines/{id}/exclude", d.Bank.Exclude)
+			r.Post("/bank-statement-lines/{id}/post-adjustment", d.Bank.PostAdjustment)
 		})
 	})
 

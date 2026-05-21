@@ -136,6 +136,21 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        '/api/v1/bank-accounts': {
+          target: accountingTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/bank-statements': {
+          target: accountingTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/bank-statement-lines': {
+          target: accountingTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/notifications/stream': {
           // SSE — http-proxy pipes chunked responses by default which
           // is what we want; keep this entry above the catch-all

@@ -4370,3 +4370,178 @@ export async function closeFiscalYear(year: number, notes?: string): Promise<Fis
   const r = await api.post(`/v1/fiscal-years/${year}/close`, notes ? { notes } : {});
   return r.data.data;
 }
+
+// ─────────── Bank reconciliation ───────────
+
+export type BankAccount = {
+  id: string;
+  tenant_id: string;
+  gl_account_code: string;
+  bank_name: string;
+  account_number: string;
+  branch?: string | null;
+  currency_code: string;
+  is_active: boolean;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BankStatement = {
+  id: string;
+  bank_account_id: string;
+  statement_date: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  opening_balance?: string | null;
+  closing_balance?: string | null;
+  total_debits: string;
+  total_credits: string;
+  line_count: number;
+  source_format: string;
+  source_filename?: string | null;
+  uploaded_at: string;
+  uploaded_by?: string | null;
+};
+
+export type BankStatementLine = {
+  id: string;
+  statement_id: string;
+  bank_account_id: string;
+  line_no: number;
+  txn_date: string;
+  value_date?: string | null;
+  description?: string | null;
+  reference?: string | null;
+  debit: string;
+  credit: string;
+  running_balance?: string | null;
+  match_status: 'unmatched' | 'matched' | 'manual_match' | 'excluded' | 'adjusted';
+  matched_journal_line_id?: string | null;
+  matched_at?: string | null;
+  match_notes?: string | null;
+};
+
+export type MatchCandidate = {
+  journal_line_id: string;
+  entry_id: string;
+  entry_no: string;
+  entry_date: string;
+  debit: string;
+  credit: string;
+  narration: string;
+  source_module?: string | null;
+  source_ref?: string | null;
+};
+
+export type ReconciliationReport = {
+  bank_account_id: string;
+  as_of: string;
+  gl_account_code: string;
+  gl_balance: string;
+  statement_balance?: string | null;
+  statement_date?: string | null;
+  outstanding_bank_lines: BankStatementLine[];
+  outstanding_gl_lines: {
+    journal_line_id: string;
+    entry_no: string;
+    entry_date: string;
+    debit: string;
+    credit: string;
+    narration: string;
+  }[];
+  outstanding_bank_credit: string;
+  outstanding_bank_debit: string;
+  outstanding_gl_debit: string;
+  outstanding_gl_credit: string;
+  adjusted_gl_balance: string;
+  variance: string;
+  reconciled: boolean;
+};
+
+export async function listBankAccounts(): Promise<{ items: BankAccount[]; total: number }> {
+  const r = await api.get('/v1/bank-accounts');
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function createBankAccount(input: {
+  gl_account_code: string;
+  bank_name: string;
+  account_number: string;
+  branch?: string;
+  currency_code?: string;
+  notes?: string;
+}): Promise<BankAccount> {
+  const r = await api.post('/v1/bank-accounts', input);
+  return r.data.data;
+}
+
+export async function getBankAccount(id: string): Promise<BankAccount> {
+  const r = await api.get(`/v1/bank-accounts/${id}`);
+  return r.data.data;
+}
+
+export async function updateBankAccount(id: string, input: Partial<{
+  bank_name: string; account_number: string; branch: string; currency_code: string; is_active: boolean; notes: string;
+}>): Promise<BankAccount> {
+  const r = await api.patch(`/v1/bank-accounts/${id}`, input);
+  return r.data.data;
+}
+
+export async function listBankStatements(bankAccountID: string): Promise<{ items: BankStatement[]; total: number }> {
+  const r = await api.get(`/v1/bank-accounts/${bankAccountID}/statements`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function uploadBankStatement(bankAccountID: string, csv: File): Promise<BankStatement> {
+  const fd = new FormData();
+  fd.append('file', csv);
+  const r = await api.post(`/v1/bank-accounts/${bankAccountID}/statements`, fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return r.data.data;
+}
+
+export async function getBankStatement(id: string): Promise<{ statement: BankStatement; lines: BankStatementLine[] }> {
+  const r = await api.get(`/v1/bank-statements/${id}`);
+  return r.data.data;
+}
+
+export async function suggestMatchesForLine(lineID: string, toleranceDays = 5): Promise<{ items: MatchCandidate[]; total: number }> {
+  const r = await api.get(`/v1/bank-statement-lines/${lineID}/suggest-matches?tolerance=${toleranceDays}`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function matchBankLine(lineID: string, journalLineID: string, opts?: { manual?: boolean; notes?: string }): Promise<BankStatementLine> {
+  const r = await api.post(`/v1/bank-statement-lines/${lineID}/match`, {
+    journal_line_id: journalLineID,
+    manual: opts?.manual ?? false,
+    notes: opts?.notes,
+  });
+  return r.data.data;
+}
+
+export async function unmatchBankLine(lineID: string): Promise<BankStatementLine> {
+  const r = await api.post(`/v1/bank-statement-lines/${lineID}/unmatch`);
+  return r.data.data;
+}
+
+export async function excludeBankLine(lineID: string, reason: string): Promise<BankStatementLine> {
+  const r = await api.post(`/v1/bank-statement-lines/${lineID}/exclude`, { reason });
+  return r.data.data;
+}
+
+export async function postBankAdjustment(lineID: string, input: {
+  offset_account_code: string;
+  narration?: string;
+  notes?: string;
+}): Promise<BankStatementLine> {
+  const r = await api.post(`/v1/bank-statement-lines/${lineID}/post-adjustment`, input);
+  return r.data.data;
+}
+
+export async function bankReconciliation(bankAccountID: string, asOf?: string): Promise<ReconciliationReport> {
+  const q = asOf ? `?as_of=${asOf}` : '';
+  const r = await api.get(`/v1/bank-accounts/${bankAccountID}/reconciliation${q}`);
+  return r.data.data;
+}
