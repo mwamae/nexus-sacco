@@ -27,13 +27,21 @@ type LoanProductHandler struct {
 	Logger   *slog.Logger
 }
 
-// feeIn is the request-side shape for a single product fee. id is
-// optional on create + update — the store regenerates rows each save.
+// feeIn is the request-side shape for a single product fee. id and
+// display_order are accepted but not used — the store regenerates rows
+// on each save and derives order from the slice position. Accepting
+// them prevents the strict JSON decoder from rejecting payloads that
+// round-trip a GET-response back into a PUT.
 type feeIn struct {
-	Name   string               `json:"name"`
-	Amount decimal.Decimal      `json:"amount"`
-	IsPct  bool                 `json:"is_pct"`
-	Timing domain.LoanFeeTiming `json:"timing"`
+	ID           string               `json:"id,omitempty"`
+	ProductID    string               `json:"product_id,omitempty"`
+	Name         string               `json:"name"`
+	Amount       decimal.Decimal      `json:"amount"`
+	IsPct        bool                 `json:"is_pct"`
+	Timing       domain.LoanFeeTiming `json:"timing"`
+	DisplayOrder int                  `json:"display_order,omitempty"`
+	CreatedAt    string               `json:"created_at,omitempty"`
+	UpdatedAt    string               `json:"updated_at,omitempty"`
 }
 
 func feesFromReq(in []feeIn) ([]domain.LoanProductFee, error) {
