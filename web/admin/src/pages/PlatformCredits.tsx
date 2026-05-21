@@ -8,13 +8,18 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   getPlatformTenantDetail,
   listPlatformTenantBalances,
+  platformApproveAdjustment,
   platformFulfillTopupRequest,
   platformLedger,
+  platformListAdjustments,
   platformListTopupRequests,
+  platformRejectAdjustment,
   platformRejectTopupRequest,
+  platformRequestAdjustment,
   platformTopup,
   platformUpdatePricing,
   platformUsageSummary,
+  type CreditAdjustment,
   type CreditBalance,
   type CreditChannel,
   type CreditLedgerEntry,
@@ -27,7 +32,7 @@ import { useAuth } from '../auth/AuthContext';
 const CHANNELS: CreditChannel[] = ['sms', 'email'];
 const CHANNEL_LABEL: Record<CreditChannel, string> = { sms: 'SMS', email: 'Email' };
 
-type Tab = 'tenants' | 'requests' | 'analytics';
+type Tab = 'tenants' | 'requests' | 'adjustments' | 'analytics';
 
 export default function PlatformCreditsPage() {
   const { user } = useAuth();
@@ -72,6 +77,7 @@ export default function PlatformCreditsPage() {
           {[
             { id: 'tenants' as const, label: 'Tenants' },
             { id: 'requests' as const, label: 'Top-up requests' },
+            { id: 'adjustments' as const, label: 'Adjustments' },
             { id: 'analytics' as const, label: 'Analytics' },
           ].map((t) => (
             <div key={t.id} className="tab" data-active={tab === t.id || undefined} onClick={() => setTab(t.id)}>
@@ -89,6 +95,7 @@ export default function PlatformCreditsPage() {
             />
           )}
           {tab === 'requests' && <RequestsTable onChanged={loadTenants} />}
+          {tab === 'adjustments' && <AdjustmentsTable currentUserID={user?.id ?? ''} onChanged={loadTenants} />}
           {tab === 'analytics' && <AnalyticsPanel />}
         </div>
       </div>
@@ -177,7 +184,7 @@ function TenantDetailModal({
 }) {
   const [detail, setDetail] = useState<{ balances: CreditBalance[]; pricing: CreditPricing[] } | null>(null);
   const [ledger, setLedger] = useState<CreditLedgerEntry[]>([]);
-  const [view, setView] = useState<'top-up' | 'ledger' | 'pricing'>('top-up');
+  const [view, setView] = useState<'top-up' | 'adjust' | 'ledger' | 'pricing'>('top-up');
   const [err, setErr] = useState<string | null>(null);
 
   async function load() {
@@ -224,6 +231,7 @@ function TenantDetailModal({
           <div className="tabs" style={{ padding: 0, marginBottom: 10 }}>
             {[
               { id: 'top-up' as const, label: 'Top up' },
+              { id: 'adjust' as const, label: 'Adjust (maker)' },
               { id: 'ledger' as const, label: 'Ledger' },
               { id: 'pricing' as const, label: 'Pricing' },
             ].map((v) => (
@@ -235,6 +243,9 @@ function TenantDetailModal({
 
           {view === 'top-up' && (
             <TopupForm tenantID={tenantID} onCompleted={() => { void load(); onChanged(); }} />
+          )}
+          {view === 'adjust' && (
+            <AdjustmentForm tenantID={tenantID} onCompleted={() => { void load(); onChanged(); }} />
           )}
           {view === 'ledger' && <LedgerTable entries={ledger} />}
           {view === 'pricing' && detail && (
@@ -483,6 +494,181 @@ function RequestsTable({ onChanged }: { onChanged: () => void }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+// ─────────── Adjustments (maker/checker) ───────────
+
+// Per-tenant maker form. Posts a request which then needs a different
+// platform admin to approve via the Adjustments tab.
+function AdjustmentForm({ tenantID, onCompleted }: { tenantID: string; onCompleted: () => void }) {
+  const [channel, setChannel] = useState<CreditChannel>('sms');
+  const [credits, setCredits] = useState(0);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    setErr(null); setResult(null);
+    if (credits === 0) { setErr('Credits must be non-zero (positive to add, negative to deduct).'); return; }
+    if (!reason.trim()) { setErr('Reason is required.'); return; }
+    setBusy(true);
+    try {
+      const adj = await platformRequestAdjustment(tenantID, { channel, credits, reason });
+      setResult(`Adjustment request created (${adj.id.slice(0, 8)}…). A second platform admin must approve it before credits move.`);
+      setCredits(0); setReason('');
+      onCompleted();
+    } catch (e) { setErr(extractErr(e)); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="form-grid">
+      <div className="alert alert-warn" style={{ marginBottom: 10 }}>
+        Adjustments require maker/checker — a second platform admin must approve before credits move.
+        Use this for corrections only; routine top-ups should go through the <strong>Top up</strong> tab.
+      </div>
+      <Field label="Channel">
+        <select value={channel} onChange={(e) => setChannel(e.target.value as CreditChannel)}>
+          <option value="sms">SMS</option>
+          <option value="email">Email</option>
+        </select>
+      </Field>
+      <Field label="Credits (positive to add, negative to deduct)">
+        <input
+          type="number"
+          value={credits}
+          onChange={(e) => setCredits(parseInt(e.target.value, 10) || 0)}
+        />
+      </Field>
+      <Field label="Reason (mandatory)" hint="Explain WHY this correction is needed; reviewed by the approver.">
+        <textarea rows={3} value={reason} onChange={(e) => setReason(e.target.value)} style={{ width: '100%' }} />
+      </Field>
+      {err && <div className="alert alert-error">{err}</div>}
+      {result && <div className="alert alert-info">{result}</div>}
+      <button className="btn btn-primary" disabled={busy} onClick={() => void submit()}>
+        {busy ? 'Submitting…' : 'Submit for approval'}
+      </button>
+    </div>
+  );
+}
+
+// Platform-wide pending adjustments queue. Each row shows Approve /
+// Reject — but Approve is hidden for the requester themselves so a
+// single admin can't bypass the checker rule from the UI.
+function AdjustmentsTable({ currentUserID, onChanged }: { currentUserID: string; onChanged: () => void }) {
+  const [items, setItems] = useState<Array<CreditAdjustment & { tenant_slug?: string; tenant_name?: string }>>([]);
+  const [status, setStatus] = useState<'pending_approval' | 'approved' | 'rejected'>('pending_approval');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    setErr(null);
+    try {
+      const r = await platformListAdjustments({ status });
+      setItems(r.items ?? []);
+    } catch (e) {
+      setErr(extractErr(e));
+    }
+  }
+  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [status]);
+
+  async function approve(id: string) {
+    if (!confirm('Approve this adjustment? Credits will move immediately.')) return;
+    setBusy(id);
+    try {
+      await platformApproveAdjustment(id);
+      await load();
+      onChanged();
+    } catch (e) { setErr(extractErr(e)); }
+    finally { setBusy(null); }
+  }
+  async function reject(id: string) {
+    const reason = prompt('Rejection reason:') ?? '';
+    if (!reason) return;
+    setBusy(id);
+    try {
+      await platformRejectAdjustment(id, reason);
+      await load();
+    } catch (e) { setErr(extractErr(e)); }
+    finally { setBusy(null); }
+  }
+
+  return (
+    <div>
+      <div className="row" style={{ gap: 8, marginBottom: 10, alignItems: 'center' }}>
+        <label className="muted tiny">Status</label>
+        <select value={status} onChange={(e) => setStatus(e.target.value as 'pending_approval' | 'approved' | 'rejected')}>
+          <option value="pending_approval">Pending approval</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <button className="btn btn-sm btn-ghost" onClick={() => void load()}>Refresh</button>
+      </div>
+      {err && <div className="alert alert-error">{err}</div>}
+      {items.length === 0 && <div className="empty">No {status.replace('_', ' ')} adjustments.</div>}
+      {items.length > 0 && (
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>Requested</th>
+              <th>Tenant</th>
+              <th>Channel</th>
+              <th className="num">Credits</th>
+              <th>Reason</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((a) => {
+              const isOwn = a.requested_by === currentUserID;
+              return (
+                <tr key={a.id}>
+                  <td className="tiny">{new Date(a.requested_at).toLocaleString()}</td>
+                  <td><strong>{a.tenant_name ?? '—'}</strong> <span className="muted tiny">{a.tenant_slug}</span></td>
+                  <td className="tiny">{a.channel.toUpperCase()}</td>
+                  <td className="num" style={{ color: a.credits < 0 ? 'var(--neg)' : 'var(--pos)' }}>
+                    {a.credits > 0 ? `+${a.credits}` : a.credits}
+                  </td>
+                  <td className="tiny" style={{ maxWidth: 300, whiteSpace: 'pre-wrap' }}>{a.reason}</td>
+                  <td>
+                    <span style={{
+                      color: a.status === 'approved' ? 'var(--pos)' :
+                             a.status === 'rejected' ? 'var(--neg)' :
+                             'var(--warn)',
+                      fontWeight: 600,
+                    }}>{a.status.replace('_', ' ')}</span>
+                    {a.status === 'rejected' && a.rejection_reason && (
+                      <div className="muted tiny" style={{ marginTop: 2 }}>{a.rejection_reason}</div>
+                    )}
+                  </td>
+                  <td>
+                    {a.status === 'pending_approval' && (
+                      <>
+                        {!isOwn ? (
+                          <button className="btn btn-sm btn-primary" disabled={busy === a.id} onClick={() => void approve(a.id)}>
+                            {busy === a.id ? '…' : 'Approve'}
+                          </button>
+                        ) : (
+                          <span className="muted tiny" title="Maker/checker: the requester cannot approve their own adjustment.">
+                            Awaiting other admin
+                          </span>
+                        )}
+                        <button className="btn btn-sm btn-ghost" disabled={busy === a.id} onClick={() => void reject(a.id)}>
+                          Reject
+                        </button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 

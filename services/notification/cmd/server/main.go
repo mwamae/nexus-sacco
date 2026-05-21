@@ -279,6 +279,16 @@ func main() {
 	go campaignWorker.Run(ctx)
 	go scheduler.Run(ctx)
 
+	creditAlerts := &worker.CreditAlertWorker{
+		DB:           pool,
+		Tenants:      tenants,
+		Credits:      creditStore,
+		Notifs:       notifs,
+		TickInterval: 60 * time.Second,
+		Logger:       logger,
+	}
+	go creditAlerts.Run(ctx)
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           router,

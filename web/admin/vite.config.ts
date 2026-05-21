@@ -183,7 +183,16 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
-        '/api/v1/platform': {
+        // Platform-side notification endpoints — must be the SPECIFIC
+        // subpaths the notification service owns, NOT a catch-all on
+        // /api/v1/platform (the identity service owns the rest, e.g.
+        // /v1/platform/tenants).
+        '/api/v1/platform/credits': {
+          target: notificationTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/platform/notification-config': {
           target: notificationTarget,
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),

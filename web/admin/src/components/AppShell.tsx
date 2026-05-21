@@ -9,6 +9,7 @@ import { fetchTenantLogo, getTenantSettings } from '../api/client';
 import { Avatar } from './Avatar';
 import { Icon, type IconName } from './Icon';
 import { NotificationBell } from './NotificationBell';
+import { CreditBanner } from './CreditBanner';
 
 type NavItem = {
   href: string;
@@ -179,7 +180,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <main className="main">{children}</main>
+      <main className="main">
+        <CreditBanner enabled={!onPlatform && hasPermission('tenant:settings:view')} />
+        {children}
+      </main>
     </div>
   );
 }

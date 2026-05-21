@@ -6,6 +6,8 @@
 package handler
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -262,73 +264,45 @@ func (h *PlatformCreditsHandler) UpdatePricing(w http.ResponseWriter, r *http.Re
 // ─────────── Top-up request fulfillment ───────────
 
 func (h *PlatformCreditsHandler) ListTopupRequests(w http.ResponseWriter, r *http.Request) {
-	// Platform-side: optional ?tenant_id filter. Without it returns
-	// pending requests across all tenants.
 	q := r.URL.Query()
 	tenantFilter := q.Get("tenant_id")
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	offset, _ := strconv.Atoi(q.Get("offset"))
 	status := q.Get("status")
 	if status == "" {
 		status = "pending"
 	}
-
 	type itemOut struct {
 		domain.TopupRequest
 		TenantSlug string `json:"tenant_slug,omitempty"`
 		TenantName string `json:"tenant_name,omitempty"`
 	}
-	var rows []itemOut
-	err := h.DB.WithTenantTx(r.Context(), uuid.Nil, func(tx pgx.Tx) error {
-		where := "WHERE status = $1"
-		args := []any{status}
-		idx := 2
-		if tenantFilter != "" {
-			where += " AND tenant_id = $" + strconv.Itoa(idx)
-			args = append(args, tenantFilter)
-			idx++
-		}
-		lim := limit
-		if lim <= 0 || lim > 200 {
-			lim = 50
-		}
-		args = append(args, lim, offset)
-		results, err := tx.Query(r.Context(),
-			`SELECT r.id, r.tenant_id, r.channel, r.credits_requested, r.status,
-			        r.requested_by, r.requested_at, r.fulfilled_by, r.fulfilled_at,
-			        r.fulfillment_ledger_id, r.notes, r.rejection_reason,
-			        t.slug, t.name
-			 FROM notification_credit_topup_requests r
-			 JOIN tenants t ON t.id = r.tenant_id
-			 `+where+`
-			 ORDER BY r.requested_at DESC
-			 LIMIT $`+strconv.Itoa(idx)+` OFFSET $`+strconv.Itoa(idx+1),
-			args...,
-		)
-		if err != nil {
-			return err
-		}
-		defer results.Close()
-		for results.Next() {
-			var item itemOut
-			var channel, st string
-			if err := results.Scan(
-				&item.ID, &item.TenantID, &channel, &item.CreditsRequested, &st,
-				&item.RequestedBy, &item.RequestedAt, &item.FulfilledBy, &item.FulfilledAt,
-				&item.FulfillmentLedgerID, &item.Notes, &item.RejectionReason,
-				&item.TenantSlug, &item.TenantName,
-			); err != nil {
-				return err
-			}
-			item.Channel = domain.Channel(channel)
-			item.Status = domain.TopupStatus(st)
-			rows = append(rows, item)
-		}
-		return nil
-	})
+	rows := []itemOut{}
+	heads, err := h.listTenantHeadsCtx(r.Context())
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
+	}
+	for _, th := range heads {
+		if tenantFilter != "" && th.ID.String() != tenantFilter {
+			continue
+		}
+		err := h.DB.WithTenantTx(r.Context(), th.ID, func(tx pgx.Tx) error {
+			items, _, err := h.Topups.ListTx(r.Context(), tx, store.TopupListFilter{Status: status, Limit: 200})
+			if err != nil {
+				return err
+			}
+			for _, t := range items {
+				rows = append(rows, itemOut{
+					TopupRequest: t,
+					TenantSlug:   th.Slug,
+					TenantName:   th.Name,
+				})
+			}
+			return nil
+		})
+		if err != nil {
+			httpx.WriteErr(w, r, err)
+			return
+		}
 	}
 	httpx.OK(w, map[string]any{"items": rows})
 }
@@ -351,25 +325,19 @@ func (h *PlatformCreditsHandler) FulfillTopupRequest(w http.ResponseWriter, r *h
 			return
 		}
 	}
-	// First, read the request row to find tenant + channel + credits.
-	var topup *domain.TopupRequest
-	err = h.DB.WithTenantTx(r.Context(), uuid.Nil, func(tx pgx.Tx) error {
-		var err error
-		topup, err = h.Topups.GetTx(r.Context(), tx, id)
-		return err
-	})
+	tenantID, topup, err := h.findTopupRequestTenant(r.Context(), id)
 	if err != nil {
-		httpx.WriteErr(w, r, err)
+		writeCreditAdminErr(w, r, err, "topup request")
 		return
 	}
 	if topup.Status != domain.TopupStatusPending {
-		httpx.WriteErr(w, r, httpx.ErrConflict("topup request is not pending"))
+		httpx.WriteErr(w, r, httpx.ErrConflict("topup request is "+string(topup.Status)))
 		return
 	}
 	actor, _ := middleware.UserIDFrom(r)
 	var newBalance int
 	var ledgerID uuid.UUID
-	err = h.DB.WithTenantTx(r.Context(), topup.TenantID, func(tx pgx.Tx) error {
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
 		newBalance, ledgerID, err = h.Credits.TopupTx(r.Context(), tx, store.TopupInput{
 			Channel: topup.Channel, Credits: topup.CreditsRequested,
@@ -404,18 +372,13 @@ func (h *PlatformCreditsHandler) RejectTopupRequest(w http.ResponseWriter, r *ht
 	if r.ContentLength > 0 {
 		_ = httpx.DecodeJSON(r, &in)
 	}
-	var topup *domain.TopupRequest
-	err = h.DB.WithTenantTx(r.Context(), uuid.Nil, func(tx pgx.Tx) error {
-		var err error
-		topup, err = h.Topups.GetTx(r.Context(), tx, id)
-		return err
-	})
+	tenantID, _, err := h.findTopupRequestTenant(r.Context(), id)
 	if err != nil {
-		httpx.WriteErr(w, r, err)
+		writeCreditAdminErr(w, r, err, "topup request")
 		return
 	}
 	actor, _ := middleware.UserIDFrom(r)
-	err = h.DB.WithTenantTx(r.Context(), topup.TenantID, func(tx pgx.Tx) error {
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		return h.Topups.RejectTx(r.Context(), tx, id, actor, in.Reason)
 	})
 	if err != nil {
@@ -479,67 +442,119 @@ func (h *PlatformCreditsHandler) ListAdjustments(w http.ResponseWriter, r *http.
 	if status == "" {
 		status = "pending_approval"
 	}
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	offset, _ := strconv.Atoi(q.Get("offset"))
-
 	type itemOut struct {
 		domain.CreditAdjustment
 		TenantSlug string `json:"tenant_slug,omitempty"`
 		TenantName string `json:"tenant_name,omitempty"`
 	}
-	var rows []itemOut
-	err := h.DB.WithTenantTx(r.Context(), uuid.Nil, func(tx pgx.Tx) error {
-		where := "WHERE status = $1"
-		args := []any{status}
-		idx := 2
-		if tenantFilter != "" {
-			where += " AND tenant_id = $" + strconv.Itoa(idx)
-			args = append(args, tenantFilter)
-			idx++
-		}
-		lim := limit
-		if lim <= 0 || lim > 200 {
-			lim = 50
-		}
-		args = append(args, lim, offset)
-		results, err := tx.Query(r.Context(),
-			`SELECT a.id, a.tenant_id, a.channel, a.credits, a.reason, a.status,
-			        a.requested_by, a.requested_at, a.approved_by, a.approved_at,
-			        a.rejected_by, a.rejected_at, a.rejection_reason, a.applied_ledger_id,
-			        t.slug, t.name
-			 FROM notification_credit_adjustments a
-			 JOIN tenants t ON t.id = a.tenant_id
-			 `+where+`
-			 ORDER BY a.requested_at DESC
-			 LIMIT $`+strconv.Itoa(idx)+` OFFSET $`+strconv.Itoa(idx+1),
-			args...,
-		)
-		if err != nil {
-			return err
-		}
-		defer results.Close()
-		for results.Next() {
-			var it itemOut
-			var channel, st string
-			if err := results.Scan(
-				&it.ID, &it.TenantID, &channel, &it.Credits, &it.Reason, &st,
-				&it.RequestedBy, &it.RequestedAt, &it.ApprovedBy, &it.ApprovedAt,
-				&it.RejectedBy, &it.RejectedAt, &it.RejectionReason, &it.AppliedLedgerID,
-				&it.TenantSlug, &it.TenantName,
-			); err != nil {
-				return err
-			}
-			it.Channel = domain.Channel(channel)
-			it.Status = domain.AdjustmentStatus(st)
-			rows = append(rows, it)
-		}
-		return nil
-	})
+	rows := []itemOut{}
+	// Iterate per tenant — the nexus_app role enforces RLS so an
+	// unscoped SELECT returns no rows.
+	heads, err := h.listTenantHeadsCtx(r.Context())
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
 	}
+	for _, th := range heads {
+		if tenantFilter != "" && th.ID.String() != tenantFilter {
+			continue
+		}
+		err := h.DB.WithTenantTx(r.Context(), th.ID, func(tx pgx.Tx) error {
+			items, _, err := h.Adjustments.ListTx(r.Context(), tx, store.AdjustmentListFilter{Status: status, Limit: 200})
+			if err != nil {
+				return err
+			}
+			for _, a := range items {
+				rows = append(rows, itemOut{
+					CreditAdjustment: a,
+					TenantSlug:       th.Slug,
+					TenantName:       th.Name,
+				})
+			}
+			return nil
+		})
+		if err != nil {
+			httpx.WriteErr(w, r, err)
+			return
+		}
+	}
 	httpx.OK(w, map[string]any{"items": rows})
+}
+
+// tenantHead is a lightweight (id, slug, name) tuple for iterating
+// tenants from platform-admin handlers. The tenants table has no RLS.
+type tenantHead struct {
+	ID   uuid.UUID
+	Slug string
+	Name string
+}
+
+func (h *PlatformCreditsHandler) listTenantHeadsCtx(ctx context.Context) ([]tenantHead, error) {
+	var heads []tenantHead
+	err := h.DB.WithTenantTx(ctx, uuid.Nil, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT id, slug, name FROM tenants ORDER BY slug`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var th tenantHead
+			if err := rows.Scan(&th.ID, &th.Slug, &th.Name); err != nil {
+				return err
+			}
+			heads = append(heads, th)
+		}
+		return nil
+	})
+	return heads, err
+}
+
+// findAdjustmentTenant walks every tenant's RLS-scoped adjustments
+// looking for the given row, returning the owning tenant ID + the
+// adjustment itself. Needed because platform-admin endpoints
+// (approve/reject) receive only the adjustment ID — they don't know
+// which tenant context to set on the DB connection.
+func (h *PlatformCreditsHandler) findAdjustmentTenant(ctx context.Context, id uuid.UUID) (uuid.UUID, *domain.CreditAdjustment, error) {
+	heads, err := h.listTenantHeadsCtx(ctx)
+	if err != nil {
+		return uuid.Nil, nil, err
+	}
+	for _, th := range heads {
+		var found *domain.CreditAdjustment
+		_ = h.DB.WithTenantTx(ctx, th.ID, func(tx pgx.Tx) error {
+			a, gerr := h.Adjustments.GetTx(ctx, tx, id)
+			if gerr == nil {
+				found = a
+			}
+			return gerr
+		})
+		if found != nil {
+			return th.ID, found, nil
+		}
+	}
+	return uuid.Nil, nil, store.ErrNotFound
+}
+
+// findTopupRequestTenant is the topup-request equivalent.
+func (h *PlatformCreditsHandler) findTopupRequestTenant(ctx context.Context, id uuid.UUID) (uuid.UUID, *domain.TopupRequest, error) {
+	heads, err := h.listTenantHeadsCtx(ctx)
+	if err != nil {
+		return uuid.Nil, nil, err
+	}
+	for _, th := range heads {
+		var found *domain.TopupRequest
+		_ = h.DB.WithTenantTx(ctx, th.ID, func(tx pgx.Tx) error {
+			t, gerr := h.Topups.GetTx(ctx, tx, id)
+			if gerr == nil {
+				found = t
+			}
+			return gerr
+		})
+		if found != nil {
+			return th.ID, found, nil
+		}
+	}
+	return uuid.Nil, nil, store.ErrNotFound
 }
 
 func (h *PlatformCreditsHandler) ApproveAdjustment(w http.ResponseWriter, r *http.Request) {
@@ -548,14 +563,9 @@ func (h *PlatformCreditsHandler) ApproveAdjustment(w http.ResponseWriter, r *htt
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid id"))
 		return
 	}
-	var adj *domain.CreditAdjustment
-	err = h.DB.WithTenantTx(r.Context(), uuid.Nil, func(tx pgx.Tx) error {
-		var err error
-		adj, err = h.Adjustments.GetTx(r.Context(), tx, id)
-		return err
-	})
+	tenantID, adj, err := h.findAdjustmentTenant(r.Context(), id)
 	if err != nil {
-		httpx.WriteErr(w, r, err)
+		writeCreditAdminErr(w, r, err, "adjustment")
 		return
 	}
 	if adj.Status != domain.AdjustmentPending {
@@ -568,7 +578,7 @@ func (h *PlatformCreditsHandler) ApproveAdjustment(w http.ResponseWriter, r *htt
 		return
 	}
 	var ledgerID uuid.UUID
-	err = h.DB.WithTenantTx(r.Context(), adj.TenantID, func(tx pgx.Tx) error {
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		_, lid, err := h.Credits.ApplyAdjustmentTx(r.Context(), tx, store.ApplyAdjustmentInput{
 			Channel: adj.Channel, Credits: adj.Credits, Reason: adj.Reason, ActionedBy: actor,
 		})
@@ -595,18 +605,13 @@ func (h *PlatformCreditsHandler) RejectAdjustment(w http.ResponseWriter, r *http
 	if r.ContentLength > 0 {
 		_ = httpx.DecodeJSON(r, &in)
 	}
-	var adj *domain.CreditAdjustment
-	err = h.DB.WithTenantTx(r.Context(), uuid.Nil, func(tx pgx.Tx) error {
-		var err error
-		adj, err = h.Adjustments.GetTx(r.Context(), tx, id)
-		return err
-	})
+	tenantID, _, err := h.findAdjustmentTenant(r.Context(), id)
 	if err != nil {
-		httpx.WriteErr(w, r, err)
+		writeCreditAdminErr(w, r, err, "adjustment")
 		return
 	}
 	actor, _ := middleware.UserIDFrom(r)
-	err = h.DB.WithTenantTx(r.Context(), adj.TenantID, func(tx pgx.Tx) error {
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		return h.Adjustments.MarkRejectedTx(r.Context(), tx, id, actor, in.Reason)
 	})
 	if err != nil {
@@ -614,6 +619,17 @@ func (h *PlatformCreditsHandler) RejectAdjustment(w http.ResponseWriter, r *http
 		return
 	}
 	httpx.NoContent(w)
+}
+
+// writeCreditAdminErr maps the lookup errors from the per-tenant
+// scan helpers into clean HTTP statuses. ErrNotFound → 404; anything
+// else → 500.
+func writeCreditAdminErr(w http.ResponseWriter, r *http.Request, err error, what string) {
+	if errors.Is(err, store.ErrNotFound) {
+		httpx.WriteErr(w, r, httpx.ErrNotFound(what+" not found"))
+		return
+	}
+	httpx.WriteErr(w, r, err)
 }
 
 // ─────────── Usage summary ───────────

@@ -3564,6 +3564,50 @@ export async function platformUsageSummary(): Promise<{
   return r.data.data;
 }
 
+// ─────────── Credit adjustments (maker/checker) ───────────
+
+export type AdjustmentStatus = 'pending_approval' | 'approved' | 'rejected';
+export type CreditAdjustment = {
+  id: string;
+  tenant_id: string;
+  channel: CreditChannel;
+  credits: number;            // positive or negative
+  reason: string;
+  status: AdjustmentStatus;
+  requested_by: string;
+  requested_at: string;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  rejected_by?: string | null;
+  rejected_at?: string | null;
+  rejection_reason?: string | null;
+  applied_ledger_id?: string | null;
+};
+
+export async function platformRequestAdjustment(
+  tenantId: string,
+  input: { channel: CreditChannel; credits: number; reason: string },
+): Promise<CreditAdjustment> {
+  const r = await api.post(`/v1/platform/credits/tenants/${tenantId}/adjustments`, input);
+  return r.data.data;
+}
+export async function platformListAdjustments(
+  opts: { status?: AdjustmentStatus; tenant_id?: string } = {},
+): Promise<{ items: Array<CreditAdjustment & { tenant_slug?: string; tenant_name?: string }> }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.tenant_id) p.set('tenant_id', opts.tenant_id);
+  const r = await api.get('/v1/platform/credits/adjustments' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+export async function platformApproveAdjustment(id: string): Promise<{ ledger_id: string }> {
+  const r = await api.post(`/v1/platform/credits/adjustments/${id}/approve`);
+  return r.data.data;
+}
+export async function platformRejectAdjustment(id: string, reason?: string): Promise<void> {
+  await api.post(`/v1/platform/credits/adjustments/${id}/reject`, { reason });
+}
+
 // ─────────── OTP (Stage 6) ───────────
 
 export type OTPSettings = {
