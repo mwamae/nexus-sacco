@@ -32,7 +32,8 @@ import (
 type EmailWorker struct {
 	DB           *db.Pool
 	Notifs       *store.NotificationStore
-	SMTPStore    *store.SMTPConfigStore
+	PlatformSMTP *store.PlatformSMTPStore
+	Credits      *store.CreditStore
 	PDFStorage   *pdf.Storage // for reading attachments off disk
 	TickInterval time.Duration
 	BatchSize    int
@@ -77,9 +78,20 @@ func (w *EmailWorker) Run(ctx context.Context) {
 }
 
 func (w *EmailWorker) processOnce(ctx context.Context) {
-	// Step 1 — find tenants worth scanning. Cheap query, no tenant ctx.
+	// Load the shared platform SMTP config once per tick. No tenant
+	// context required — the table is a singleton (id=1).
+	platformCfg, err := w.PlatformSMTP.Get(ctx)
+	if err != nil {
+		w.Logger.Warn("email worker: load platform SMTP failed", "err", err)
+		return
+	}
+	if platformCfg == nil || !platformCfg.IsEnabled {
+		return
+	}
+	cfg := platformSMTPToTenantShape(platformCfg)
+
 	var tenantIDs []uuid.UUID
-	err := w.DB.WithTenantTx(ctx, uuid.Nil, func(tx pgx.Tx) error {
+	err = w.DB.WithTenantTx(ctx, uuid.Nil, func(tx pgx.Tx) error {
 		var err error
 		tenantIDs, err = w.Notifs.AllActiveTenantsTx(ctx, tx)
 		return err
@@ -89,35 +101,21 @@ func (w *EmailWorker) processOnce(ctx context.Context) {
 		return
 	}
 	for _, tid := range tenantIDs {
-		w.processTenant(ctx, tid)
+		w.processTenant(ctx, tid, cfg)
 	}
 }
 
-func (w *EmailWorker) processTenant(ctx context.Context, tenantID uuid.UUID) {
-	// Step 2 — claim a batch within the tenant context (so RLS applies
-	// + the next_retry_at index is hit). The claim already moves rows
-	// out of 'queued' to 'sent' optimistically; we'll roll back to
-	// 'queued' (with next_retry_at) or 'failed' once we know.
+func (w *EmailWorker) processTenant(ctx context.Context, tenantID uuid.UUID, cfg *domain.SMTPConfig) {
+	// Claim a batch within the tenant context (so RLS applies + the
+	// next_retry_at index is hit). The claim already flips rows to
+	// 'sent' optimistically; we'll roll forward to confirmed sent,
+	// back to retryable failure, or to blocked if credits are out.
 	var batch []store.DueEmailDelivery
-	var cfg *domain.SMTPConfig
 	err := w.DB.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		c, err := w.SMTPStore.GetByTenantTx(ctx, tx, tenantID)
-		if err != nil {
-			return err
-		}
-		cfg = c
-		// If no SMTP config — leave the queue alone; admin needs to
-		// configure SMTP. Don't claim or fail; just wait.
-		if cfg == nil || !cfg.IsActive {
-			return errNoSMTPConfig
-		}
-		var err2 error
-		batch, err2 = w.Notifs.ClaimDueEmailsForTenantTx(ctx, tx, w.BatchSize)
-		return err2
+		var err error
+		batch, err = w.Notifs.ClaimDueEmailsForTenantTx(ctx, tx, w.BatchSize)
+		return err
 	})
-	if err == errNoSMTPConfig {
-		return
-	}
 	if err != nil {
 		w.Logger.Warn("email worker: claim failed", "tenant", tenantID, "err", err)
 		return
@@ -131,7 +129,20 @@ func (w *EmailWorker) processTenant(ctx context.Context, tenantID uuid.UUID) {
 	}
 }
 
-var errNoSMTPConfig = errors.New("no active smtp config")
+// platformSMTPToTenantShape adapts the singleton platform config into
+// the per-tenant struct shape that smtp.Send already understands.
+func platformSMTPToTenantShape(p *domain.PlatformSMTPConfig) *domain.SMTPConfig {
+	return &domain.SMTPConfig{
+		Host:        p.Host,
+		Port:        p.Port,
+		Username:    p.Username,
+		Password:    p.Password,
+		Encryption:  domain.SMTPEncryption(p.Encryption),
+		FromAddress: p.FromAddress,
+		FromName:    p.FromName,
+		IsActive:    p.IsEnabled,
+	}
+}
 
 func (w *EmailWorker) deliver(ctx context.Context, tenantID uuid.UUID, cfg *domain.SMTPConfig, d store.DueEmailDelivery) {
 	if d.RecipientEmail == "" {
@@ -140,6 +151,18 @@ func (w *EmailWorker) deliver(ctx context.Context, tenantID uuid.UUID, cfg *doma
 			fmt.Sprintf("recipient_email missing on notification %s", d.NotificationID))
 		return
 	}
+	// Credit pre-check. See sms worker for the race-window discussion.
+	balance, balErr := w.readBalance(ctx, tenantID)
+	if balErr != nil {
+		w.Logger.Warn("email worker: balance read failed", "tenant", tenantID, "err", balErr)
+		w.handleFailure(ctx, tenantID, d, balErr)
+		return
+	}
+	if balance < 1 {
+		w.markBlocked(ctx, tenantID, d.DeliveryID, "insufficient_credits")
+		return
+	}
+
 	from := cfg.FromAddress
 	if cfg.FromName != "" {
 		from = cfg.FromName + " <" + cfg.FromAddress + ">"
@@ -157,10 +180,68 @@ func (w *EmailWorker) deliver(ctx context.Context, tenantID uuid.UUID, cfg *doma
 		Attachments: atts,
 	})
 	if err == nil {
-		w.markSent(ctx, tenantID, d.DeliveryID, msgID)
+		w.commitDeductAndMarkSent(ctx, tenantID, d, msgID)
 		return
 	}
 	w.handleFailure(ctx, tenantID, d, err)
+}
+
+func (w *EmailWorker) readBalance(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	var balance int
+	err := w.DB.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		b, err := w.Credits.BalanceTx(ctx, tx, domain.ChannelEmail)
+		if err != nil {
+			return err
+		}
+		balance = b.Balance
+		return nil
+	})
+	return balance, err
+}
+
+func (w *EmailWorker) markBlocked(ctx context.Context, tenantID, deliveryID uuid.UUID, reason string) {
+	err := w.DB.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return w.Notifs.MarkBlockedTx(ctx, tx, deliveryID, reason)
+	})
+	if err != nil {
+		w.Logger.Warn("email worker: mark blocked failed", "delivery", deliveryID, "err", err)
+		return
+	}
+	w.Logger.Info("email blocked", "delivery", deliveryID, "reason", reason)
+}
+
+// commitDeductAndMarkSent — atomic post-send finalisation. Debit
+// happens in the same tx that flips status to 'sent', so a DB error
+// during either step rolls both back. See SMS worker for the same
+// rationale.
+func (w *EmailWorker) commitDeductAndMarkSent(ctx context.Context, tenantID uuid.UUID, d store.DueEmailDelivery, providerMsgID string) {
+	pmid := &providerMsgID
+	if providerMsgID == "" {
+		pmid = nil
+	}
+	err := w.DB.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		notifID := d.NotificationID
+		delivID := d.DeliveryID
+		if _, derr := w.Credits.DeductTx(ctx, tx, store.DeductInput{
+			Channel:        domain.ChannelEmail,
+			Amount:         1,
+			NotificationID: &notifID,
+			DeliveryID:     &delivID,
+		}); derr != nil {
+			if errors.Is(derr, store.ErrInsufficientCredits) {
+				w.Logger.Warn("email worker: balance drained between pre-check and post-send debit — sending without debit",
+					"tenant", tenantID, "delivery", d.DeliveryID)
+			} else {
+				return derr
+			}
+		}
+		return w.Notifs.MarkSentTx(ctx, tx, d.DeliveryID, pmid)
+	})
+	if err != nil {
+		w.Logger.Warn("email worker: mark sent failed", "delivery", d.DeliveryID, "err", err)
+		return
+	}
+	w.Logger.Info("email sent", "delivery", d.DeliveryID, "provider_msg_id", providerMsgID)
 }
 
 func (w *EmailWorker) loadAttachments(paths []string) []smtp.Attachment {

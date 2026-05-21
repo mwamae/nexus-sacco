@@ -32,6 +32,8 @@ import NotificationsPage from './pages/Notifications';
 import CampaignsPage from './pages/Campaigns';
 import ScheduledJobsPage from './pages/ScheduledJobs';
 import NotificationTemplatesPage from './pages/NotificationTemplates';
+import CreditsPage from './pages/Credits';
+import PlatformCreditsPage from './pages/PlatformCredits';
 
 function Gate() {
   const { status } = useAuth();
@@ -78,6 +80,8 @@ function Gate() {
   else if (path === '/campaigns' || path.startsWith('/campaigns/')) page = <CampaignsPage />;
   else if (path === '/scheduled-jobs' || path.startsWith('/scheduled-jobs/')) page = <ScheduledJobsPage />;
   else if (path === '/notification-templates' || path.startsWith('/notification-templates/')) page = <NotificationTemplatesPage />;
+  else if (path === '/credits' || path.startsWith('/credits/')) page = <CreditsPage />;
+  else if (path === '/platform/credits' || path.startsWith('/platform/credits/')) page = <PlatformCreditsPage />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;

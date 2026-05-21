@@ -53,6 +53,7 @@ const (
 	StatusDelivered Status = "delivered"
 	StatusRead      Status = "read"
 	StatusFailed    Status = "failed"
+	StatusBlocked   Status = "blocked"
 )
 
 // ─────────── Entities ───────────
@@ -355,4 +356,130 @@ type SMSConfig struct {
 	WebhookSecret  string      `json:"-"` // decrypted, never marshalled
 	IsActive       bool        `json:"is_active"`
 	UpdatedAt      time.Time   `json:"updated_at"`
+}
+
+// ─────────── Stage 9 — Credit refactor ───────────
+
+type CreditMovementType string
+
+const (
+	CreditMovementTopup       CreditMovementType = "topup"
+	CreditMovementConsumption CreditMovementType = "consumption"
+	CreditMovementAdjustment  CreditMovementType = "adjustment"
+	CreditMovementExpiry      CreditMovementType = "expiry"
+	CreditMovementRefund      CreditMovementType = "refund"
+)
+
+type TopupStatus string
+
+const (
+	TopupStatusPending   TopupStatus = "pending"
+	TopupStatusFulfilled TopupStatus = "fulfilled"
+	TopupStatusRejected  TopupStatus = "rejected"
+	TopupStatusCancelled TopupStatus = "cancelled"
+)
+
+type AdjustmentStatus string
+
+const (
+	AdjustmentPending  AdjustmentStatus = "pending_approval"
+	AdjustmentApproved AdjustmentStatus = "approved"
+	AdjustmentRejected AdjustmentStatus = "rejected"
+)
+
+// CreditBalance — the per-(tenant, channel) running balance plus the
+// alert thresholds and "have we already alerted at this level" flags.
+type CreditBalance struct {
+	TenantID             uuid.UUID  `json:"tenant_id"`
+	Channel              Channel    `json:"channel"`
+	Balance              int        `json:"balance"`
+	LowBalanceThreshold  int        `json:"low_balance_threshold"`
+	LowBalanceAlertedAt  *time.Time `json:"low_balance_alerted_at,omitempty"`
+	ZeroBalanceAlertedAt *time.Time `json:"zero_balance_alerted_at,omitempty"`
+	LastTopupAt          *time.Time `json:"last_topup_at,omitempty"`
+	LastTopupCredits     *int       `json:"last_topup_credits,omitempty"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+}
+
+type CreditLedgerEntry struct {
+	ID             uuid.UUID          `json:"id"`
+	TenantID       uuid.UUID          `json:"tenant_id"`
+	Channel        Channel            `json:"channel"`
+	MovementType   CreditMovementType `json:"movement_type"`
+	Credits        int                `json:"credits"`
+	BalanceAfter   int                `json:"balance_after"`
+	NotificationID *uuid.UUID         `json:"notification_id,omitempty"`
+	DeliveryID     *uuid.UUID         `json:"delivery_id,omitempty"`
+	Reference      *string            `json:"reference,omitempty"`
+	ActionedBy     *uuid.UUID         `json:"actioned_by,omitempty"`
+	Notes          *string            `json:"notes,omitempty"`
+	CreatedAt      time.Time          `json:"created_at"`
+}
+
+type TopupRequest struct {
+	ID                  uuid.UUID   `json:"id"`
+	TenantID            uuid.UUID   `json:"tenant_id"`
+	Channel             Channel     `json:"channel"`
+	CreditsRequested    int         `json:"credits_requested"`
+	Status              TopupStatus `json:"status"`
+	RequestedBy         *uuid.UUID  `json:"requested_by,omitempty"`
+	RequestedAt         time.Time   `json:"requested_at"`
+	FulfilledBy         *uuid.UUID  `json:"fulfilled_by,omitempty"`
+	FulfilledAt         *time.Time  `json:"fulfilled_at,omitempty"`
+	FulfillmentLedgerID *uuid.UUID  `json:"fulfillment_ledger_id,omitempty"`
+	Notes               *string     `json:"notes,omitempty"`
+	RejectionReason     *string     `json:"rejection_reason,omitempty"`
+}
+
+type CreditPricing struct {
+	TenantID       uuid.UUID `json:"tenant_id"`
+	Channel        Channel   `json:"channel"`
+	PricePerCredit string    `json:"price_per_credit"` // decimal as string for precision
+	CurrencyCode   string    `json:"currency_code"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	UpdatedBy      *uuid.UUID `json:"updated_by,omitempty"`
+}
+
+type CreditAdjustment struct {
+	ID               uuid.UUID        `json:"id"`
+	TenantID         uuid.UUID        `json:"tenant_id"`
+	Channel          Channel          `json:"channel"`
+	Credits          int              `json:"credits"`
+	Reason           string           `json:"reason"`
+	Status           AdjustmentStatus `json:"status"`
+	RequestedBy      uuid.UUID        `json:"requested_by"`
+	RequestedAt      time.Time        `json:"requested_at"`
+	ApprovedBy       *uuid.UUID       `json:"approved_by,omitempty"`
+	ApprovedAt       *time.Time       `json:"approved_at,omitempty"`
+	RejectedBy       *uuid.UUID       `json:"rejected_by,omitempty"`
+	RejectedAt       *time.Time       `json:"rejected_at,omitempty"`
+	RejectionReason  *string          `json:"rejection_reason,omitempty"`
+	AppliedLedgerID  *uuid.UUID       `json:"applied_ledger_id,omitempty"`
+}
+
+// ─────────── Platform-level shared driver configs ───────────
+
+type PlatformSMTPConfig struct {
+	Host         string     `json:"host"`
+	Port         int        `json:"port"`
+	Encryption   string     `json:"encryption"`
+	Username     string     `json:"username"`
+	Password     string     `json:"-"` // decrypted only at send-time
+	FromAddress  string     `json:"from_address"`
+	FromName     string     `json:"from_name"`
+	IsEnabled    bool       `json:"is_enabled"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	UpdatedBy    *uuid.UUID `json:"updated_by,omitempty"`
+}
+
+type PlatformSMSConfig struct {
+	Provider          SMSProvider `json:"provider"`
+	Username          string      `json:"username"`
+	APIKey            string      `json:"-"` // decrypted only at send-time
+	SenderID          string      `json:"sender_id"`
+	RatePerMinute     int         `json:"rate_per_minute"`
+	WebhookSecret     string      `json:"-"`
+	IsEnabled         bool        `json:"is_enabled"`
+	UpdatedAt         time.Time   `json:"updated_at"`
+	UpdatedBy         *uuid.UUID  `json:"updated_by,omitempty"`
 }

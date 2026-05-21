@@ -64,6 +64,24 @@ func RequirePermission(perm string) func(http.Handler) http.Handler {
 	}
 }
 
+// RequirePlatformAdmin gates routes that should only be reachable by
+// the platform-level super admin (not any tenant user). Returns 403
+// for everyone else. Must run AFTER Authenticated().
+func RequirePlatformAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := ClaimsFrom(r)
+		if c == nil {
+			httpx.WriteErr(w, r, httpx.ErrUnauthorized(""))
+			return
+		}
+		if !c.IsPlatformAdmin {
+			httpx.WriteErr(w, r, httpx.ErrForbidden("platform admin only"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func bearerToken(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if h != "" {

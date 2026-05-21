@@ -81,14 +81,18 @@ func main() {
 	events := store.NewEventStore(pool.Pool)
 	templates := store.NewTemplateStore(pool.Pool)
 	notifs := store.NewNotificationStore(pool.Pool)
-	smtpStore := store.NewSMTPConfigStore(pool.Pool, cfg.JWTSecret)
-	smsStore := store.NewSMSConfigStore(pool.Pool, cfg.JWTSecret)
 	pdfStore := store.NewPDFStore(pool.Pool)
 	otpStore := store.NewOTPStore(pool.Pool)
 	otpSettingsStore := store.NewOTPSettingsStore(pool.Pool)
 	campaignStore := store.NewCampaignStore(pool.Pool)
 	schedulerStore := store.NewSchedulerStore(pool.Pool)
 	audienceStore := store.NewAudienceStore(pool.Pool)
+	platformSMTPStore := store.NewPlatformSMTPStore(pool.Pool, cfg.JWTSecret)
+	platformSMSStore := store.NewPlatformSMSStore(pool.Pool, cfg.JWTSecret)
+	creditStore := store.NewCreditStore(pool.Pool)
+	topupStore := store.NewTopupRequestStore(pool.Pool)
+	pricingStore := store.NewPricingStore(pool.Pool)
+	adjustmentStore := store.NewAdjustmentStore(pool.Pool)
 
 	pdfStorage, err := pdf.NewStorage(cfg.PDFStorageDir)
 	if err != nil {
@@ -138,16 +142,38 @@ func main() {
 		Bus:    realtime,
 		Logger: logger,
 	}
-	smtpH := &handler.SMTPHandler{
-		DB:     pool,
-		SMTP:   smtpStore,
-		Logger: logger,
+	platformDriversH := &handler.PlatformDriversHandler{
+		DB:           pool,
+		PlatformSMTP: platformSMTPStore,
+		PlatformSMS:  platformSMSStore,
+		Logger:       logger,
 	}
-	smsH := &handler.SMSHandler{
-		DB:     pool,
-		SMS:    smsStore,
-		Notifs: notifs,
-		Logger: logger,
+	creditsH := &handler.CreditsHandler{
+		DB:       pool,
+		Credits:  creditStore,
+		Topups:   topupStore,
+		Pricing:  pricingStore,
+		Notifs:   notifs,
+		Tenants:  tenants,
+		Logger:   logger,
+	}
+	platformCreditsH := &handler.PlatformCreditsHandler{
+		DB:          pool,
+		Credits:     creditStore,
+		Topups:      topupStore,
+		Pricing:     pricingStore,
+		Adjustments: adjustmentStore,
+		Tenants:     tenants,
+		Logger:      logger,
+	}
+	// Africa's Talking still posts delivery reports to our webhook;
+	// keep the handler around but it now reads the secret from the
+	// platform-level SMS config instead of a per-tenant row.
+	smsWebhookH := &handler.SMSWebhookHandler{
+		DB:          pool,
+		Notifs:      notifs,
+		PlatformSMS: platformSMSStore,
+		Logger:      logger,
 	}
 	otpService := &otp.Service{
 		DB:            pool,
@@ -208,26 +234,31 @@ func main() {
 	}
 
 	router := handler.Routes(handler.Deps{
-		Notify:      notifyH,
-		SMTP:        smtpH,
-		SMS:         smsH,
-		SSE:         sseH,
-		PDF:         pdfH,
-		OTP:         otpH,
-		Campaign:    campaignH,
-		Scheduler:   schedulerH,
-		Template:    templateH,
-		TenantStore: tenants,
-		Issuer:      issuer,
-		AppDomain:   cfg.AppDomain,
-		Logger:      logger,
+		Notify:           notifyH,
+		PlatformDrivers:  platformDriversH,
+		Credits:          creditsH,
+		PlatformCredits:  platformCreditsH,
+		SMSWebhook:       smsWebhookH,
+		SSE:              sseH,
+		PDF:              pdfH,
+		OTP:              otpH,
+		Campaign:         campaignH,
+		Scheduler:        schedulerH,
+		Template:         templateH,
+		TenantStore:      tenants,
+		Issuer:           issuer,
+		AppDomain:        cfg.AppDomain,
+		Logger:           logger,
 	})
 
-	// Workers — both drain their channel-specific queues continuously.
+	// Workers — both drain their channel-specific queues continuously,
+	// using the shared platform driver config and enforcing per-tenant
+	// prepaid credit balances.
 	emailWorker := &worker.EmailWorker{
 		DB:           pool,
 		Notifs:       notifs,
-		SMTPStore:    smtpStore,
+		PlatformSMTP: platformSMTPStore,
+		Credits:      creditStore,
 		PDFStorage:   pdfStorage,
 		TickInterval: 10 * time.Second,
 		BatchSize:    25,
@@ -238,7 +269,8 @@ func main() {
 	smsWorker := &worker.SMSWorker{
 		DB:           pool,
 		Notifs:       notifs,
-		SMSStore:     smsStore,
+		PlatformSMS:  platformSMSStore,
+		Credits:      creditStore,
 		TickInterval: 10 * time.Second,
 		Logger:       logger,
 	}

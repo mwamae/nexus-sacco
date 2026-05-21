@@ -3333,87 +3333,234 @@ export async function getNotificationLog(limit = 50, offset = 0): Promise<{ item
   return r.data.data;
 }
 
-// ─────────── SMTP config (Stage 2) ───────────
+// ─────────── Shared driver (platform-owned) — Stage 9 ───────────
+//
+// Tenants no longer configure their own SMTP/SMS provider; the platform
+// owns the credentials and tenants consume prepaid credits per send.
+// These types are kept so legacy callers compile, but the public
+// configuration endpoints are gone — only the platform-admin variants
+// at /v1/platform/notification-config/* exist.
 
 export type SMTPEncryption = 'none' | 'starttls' | 'tls';
-
-export type SMTPConfig = {
-  tenant_id: string;
-  host: string;
-  port: number;
-  username: string;
-  encryption: SMTPEncryption;
-  from_address: string;
-  from_name: string;
-  reply_to?: string;
-  is_active: boolean;
-  updated_at: string;
-  password_set: boolean;
-};
-
-export async function getSMTPConfig(): Promise<SMTPConfig | null> {
-  const r = await api.get('/v1/notification-config/smtp');
-  return r.data.data ?? null;
-}
-
-export async function updateSMTPConfig(input: {
-  host: string;
-  port: number;
-  username?: string;
-  password?: string; // empty string = keep existing
-  encryption: SMTPEncryption;
-  from_address: string;
-  from_name?: string;
-  reply_to?: string;
-  is_active: boolean;
-}): Promise<SMTPConfig> {
-  const r = await api.put('/v1/notification-config/smtp', input);
-  return r.data.data;
-}
-
-export async function testSMTPConfig(to_address: string, subject?: string, body?: string): Promise<{ ok: boolean; provider_message_id?: string; error?: string; to?: string }> {
-  const r = await api.post('/v1/notification-config/smtp/test', { to_address, subject, body });
-  return r.data.data;
-}
-
-// ─────────── SMS config (Stage 3) ───────────
-
 export type SMSProvider = 'mock' | 'sandbox' | 'production';
 
-export type SMSConfig = {
-  tenant_id: string;
-  provider: SMSProvider;
+export type PlatformSMTPConfig = {
+  host: string;
+  port: number;
+  encryption: SMTPEncryption;
   username: string;
-  sender_id: string;
-  rate_per_minute: number;
-  is_active: boolean;
+  has_password: boolean;
+  from_address: string;
+  from_name: string;
+  is_enabled: boolean;
   updated_at: string;
-  api_key_set: boolean;
-  webhook_secret_set: boolean;
+  updated_by?: string | null;
 };
 
-export async function getSMSConfig(): Promise<SMSConfig | null> {
-  const r = await api.get('/v1/notification-config/sms');
-  return r.data.data ?? null;
-}
-
-export async function updateSMSConfig(input: {
+export type PlatformSMSConfig = {
   provider: SMSProvider;
-  username?: string;
-  api_key?: string; // empty = keep existing
+  username: string;
+  has_api_key: boolean;
   sender_id: string;
   rate_per_minute: number;
-  webhook_secret?: string; // empty = keep existing
-  is_active: boolean;
-}): Promise<SMSConfig> {
-  const r = await api.put('/v1/notification-config/sms', input);
+  has_webhook_secret: boolean;
+  is_enabled: boolean;
+  updated_at: string;
+  updated_by?: string | null;
+};
+
+export async function getPlatformSMTP(): Promise<PlatformSMTPConfig> {
+  const r = await api.get('/v1/platform/notification-config/smtp');
+  return r.data.data;
+}
+export async function updatePlatformSMTP(input: {
+  host: string;
+  port: number;
+  encryption: SMTPEncryption;
+  username?: string;
+  password?: string; // omit to keep existing
+  from_address: string;
+  from_name?: string;
+  is_enabled: boolean;
+}): Promise<PlatformSMTPConfig> {
+  const r = await api.put('/v1/platform/notification-config/smtp', input);
+  return r.data.data;
+}
+export async function testPlatformSMTP(to: string, subject?: string, body?: string): Promise<{ ok: boolean; to?: string; provider_message_id?: string; error?: string }> {
+  const r = await api.post('/v1/platform/notification-config/smtp/test', { to, subject, body });
+  return r.data.data;
+}
+export async function getPlatformSMS(): Promise<PlatformSMSConfig> {
+  const r = await api.get('/v1/platform/notification-config/sms');
+  return r.data.data;
+}
+export async function updatePlatformSMS(input: {
+  provider: SMSProvider;
+  username?: string;
+  api_key?: string;
+  sender_id?: string;
+  rate_per_minute?: number;
+  webhook_secret?: string;
+  is_enabled: boolean;
+}): Promise<PlatformSMSConfig> {
+  const r = await api.put('/v1/platform/notification-config/sms', input);
+  return r.data.data;
+}
+export async function testPlatformSMS(to: string, body?: string): Promise<{ ok: boolean; to?: string; provider_message_id?: string; error?: string }> {
+  const r = await api.post('/v1/platform/notification-config/sms/test', { to, body });
   return r.data.data;
 }
 
-export async function testSMSConfig(to: string, body?: string): Promise<{
-  ok: boolean; provider?: SMSProvider; provider_message_id?: string; cost?: string; to?: string; error?: string;
+// ─────────── Credits — Stage 9 ───────────
+
+export type CreditChannel = 'sms' | 'email';
+
+export type CreditBalance = {
+  tenant_id: string;
+  channel: CreditChannel;
+  balance: number;
+  low_balance_threshold: number;
+  low_balance_alerted_at?: string | null;
+  zero_balance_alerted_at?: string | null;
+  last_topup_at?: string | null;
+  last_topup_credits?: number | null;
+  updated_at: string;
+};
+
+export type CreditPricing = {
+  tenant_id: string;
+  channel: CreditChannel;
+  price_per_credit: string;
+  currency_code: string;
+  updated_at: string;
+};
+
+export type CreditMovementType = 'topup' | 'consumption' | 'adjustment' | 'expiry' | 'refund';
+
+export type CreditLedgerEntry = {
+  id: string;
+  tenant_id: string;
+  channel: CreditChannel;
+  movement_type: CreditMovementType;
+  credits: number;
+  balance_after: number;
+  notification_id?: string | null;
+  delivery_id?: string | null;
+  reference?: string | null;
+  actioned_by?: string | null;
+  notes?: string | null;
+  created_at: string;
+};
+
+export type TopupStatus = 'pending' | 'fulfilled' | 'rejected' | 'cancelled';
+export type TopupRequest = {
+  id: string;
+  tenant_id: string;
+  channel: CreditChannel;
+  credits_requested: number;
+  status: TopupStatus;
+  requested_by?: string | null;
+  requested_at: string;
+  fulfilled_by?: string | null;
+  fulfilled_at?: string | null;
+  fulfillment_ledger_id?: string | null;
+  notes?: string | null;
+  rejection_reason?: string | null;
+};
+
+export type CreditsOverview = {
+  balances: CreditBalance[];
+  pricing: CreditPricing[];
+  pending_topups: TopupRequest[];
+};
+
+export async function getCreditsOverview(): Promise<CreditsOverview> {
+  const r = await api.get('/v1/credits');
+  return r.data.data;
+}
+export async function getCreditsLedger(opts: { channel?: CreditChannel; movement_type?: CreditMovementType; limit?: number; offset?: number } = {}): Promise<{ items: CreditLedgerEntry[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.channel) p.set('channel', opts.channel);
+  if (opts.movement_type) p.set('movement_type', opts.movement_type);
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get('/v1/credits/ledger' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+export async function setLowBalanceThreshold(channel: CreditChannel, threshold: number): Promise<void> {
+  await api.put(`/v1/credits/threshold/${channel}`, { threshold });
+}
+export async function createTopupRequest(channel: CreditChannel, credits: number, notes?: string): Promise<TopupRequest> {
+  const r = await api.post('/v1/credits/topup-requests', { channel, credits, notes });
+  return r.data.data;
+}
+export async function listTopupRequests(opts: { status?: TopupStatus; channel?: CreditChannel } = {}): Promise<{ items: TopupRequest[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.channel) p.set('channel', opts.channel);
+  const r = await api.get('/v1/credits/topup-requests' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+export async function cancelTopupRequest(id: string): Promise<void> {
+  await api.post(`/v1/credits/topup-requests/${id}/cancel`);
+}
+export async function listBlockedDeliveries(channel: CreditChannel): Promise<{ items: string[] }> {
+  const r = await api.get(`/v1/credits/blocked?channel=${channel}`);
+  return r.data.data;
+}
+export async function retryBlockedDelivery(id: string): Promise<void> {
+  await api.post(`/v1/credits/blocked/${id}/retry`);
+}
+
+// Platform-admin tenant credit management
+export type PlatformTenantBalance = {
+  tenant_id: string;
+  slug: string;
+  name: string;
+  balances: CreditBalance[];
+};
+export async function listPlatformTenantBalances(): Promise<{ items: PlatformTenantBalance[] }> {
+  const r = await api.get('/v1/platform/credits/tenants');
+  return r.data.data;
+}
+export async function getPlatformTenantDetail(tenantId: string): Promise<{ balances: CreditBalance[]; pricing: CreditPricing[] }> {
+  const r = await api.get(`/v1/platform/credits/tenants/${tenantId}`);
+  return r.data.data;
+}
+export async function platformTopup(tenantId: string, input: { channel: CreditChannel; credits: number; reference?: string; notes?: string }): Promise<{ new_balance: number; ledger_id: string }> {
+  const r = await api.post(`/v1/platform/credits/tenants/${tenantId}/topup`, input);
+  return r.data.data;
+}
+export async function platformLedger(tenantId: string, opts: { channel?: CreditChannel; movement_type?: CreditMovementType; limit?: number } = {}): Promise<{ items: CreditLedgerEntry[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.channel) p.set('channel', opts.channel);
+  if (opts.movement_type) p.set('movement_type', opts.movement_type);
+  if (opts.limit) p.set('limit', String(opts.limit));
+  const r = await api.get(`/v1/platform/credits/tenants/${tenantId}/ledger` + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+export async function platformUpdatePricing(tenantId: string, input: { channel: CreditChannel; price_per_credit: string; currency_code?: string }): Promise<void> {
+  await api.put(`/v1/platform/credits/tenants/${tenantId}/pricing`, input);
+}
+export async function platformListTopupRequests(opts: { status?: TopupStatus; tenant_id?: string } = {}): Promise<{ items: Array<TopupRequest & { tenant_slug?: string; tenant_name?: string }> }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.tenant_id) p.set('tenant_id', opts.tenant_id);
+  const r = await api.get('/v1/platform/credits/topup-requests' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
+export async function platformFulfillTopupRequest(id: string, input: { reference?: string; notes?: string } = {}): Promise<{ new_balance: number; ledger_id: string }> {
+  const r = await api.post(`/v1/platform/credits/topup-requests/${id}/fulfill`, input);
+  return r.data.data;
+}
+export async function platformRejectTopupRequest(id: string, reason?: string): Promise<void> {
+  await api.post(`/v1/platform/credits/topup-requests/${id}/reject`, { reason });
+}
+export async function platformUsageSummary(): Promise<{
+  totals: Array<{ channel: string; total_sold: number; total_consumed: number }>;
+  zero_balance_tenants: Array<{ tenant_id: string; slug: string; channel: string; balance: number }>;
 }> {
-  const r = await api.post('/v1/notification-config/sms/test', { to, body });
+  const r = await api.get('/v1/platform/credits/usage-summary');
   return r.data.data;
 }
 

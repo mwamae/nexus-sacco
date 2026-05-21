@@ -463,6 +463,83 @@ func (s *NotificationStore) MarkFailedFinalTx(
 	return err
 }
 
+// MarkBlockedTx flags a delivery as blocked because the tenant's
+// prepaid credit balance for that channel is exhausted. Distinct from
+// `failed` so the BLOCKED-replay flow can find these rows after the
+// balance is topped up.
+func (s *NotificationStore) MarkBlockedTx(
+	ctx context.Context, tx pgx.Tx,
+	deliveryID uuid.UUID, reason string,
+) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE notification_deliveries
+		SET status = 'blocked',
+		    blocked_reason = $2,
+		    next_retry_at = NULL,
+		    updated_at = now()
+		WHERE id = $1
+	`, deliveryID, reason)
+	return err
+}
+
+// ListBlockedSinceTx — used by the credit-restore replay endpoint
+// after an admin tops up. Returns deliveries that were blocked due to
+// insufficient credits within the given window, in oldest-first order
+// so they're re-queued chronologically.
+func (s *NotificationStore) ListBlockedSinceTx(
+	ctx context.Context, tx pgx.Tx,
+	channel string, since time.Time,
+) ([]uuid.UUID, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id FROM notification_deliveries
+		WHERE status = 'blocked' AND channel = $1::notification_channel
+		  AND blocked_reason = 'insufficient_credits'
+		  AND updated_at >= $2
+		ORDER BY created_at
+	`, channel, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// RequeueBlockedTx flips a blocked delivery back to queued so the
+// channel worker picks it up on the next tick. Resets attempt
+// counters, clears the next_retry_at hint, and stamps queued_at to
+// match a fresh enqueue.
+func (s *NotificationStore) RequeueBlockedTx(
+	ctx context.Context, tx pgx.Tx, deliveryID uuid.UUID,
+) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE notification_deliveries
+		SET status = 'queued',
+		    blocked_reason = NULL,
+		    failure_reason = NULL,
+		    failed_at = NULL,
+		    next_retry_at = NULL,
+		    attempt_count = 0,
+		    queued_at = now(),
+		    updated_at = now()
+		WHERE id = $1 AND status = 'blocked'
+	`, deliveryID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DueSMSDelivery — SMS-side analogue of DueEmailDelivery.
 type DueSMSDelivery struct {
 	DeliveryID     uuid.UUID

@@ -62,6 +62,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       section: 'Engagement',
       items: [
         { href: '/notifications', label: 'Notifications', icon: 'bell', show: !onPlatform },
+        { href: '/credits', label: 'Credits', icon: 'bank', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/campaigns', label: 'Campaigns', icon: 'bell', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/notification-templates', label: 'Templates', icon: 'settings', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/scheduled-jobs', label: 'Scheduled jobs', icon: 'refresh', show: !onPlatform && hasPermission('tenant:settings:view') },
@@ -84,6 +85,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       section: 'Platform',
       items: [
         { href: '/', label: 'Tenants', icon: 'building', show: true },
+        { href: '/platform/credits', label: 'Tenant credits', icon: 'bank', show: true },
       ],
     });
   }

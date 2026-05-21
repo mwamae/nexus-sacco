@@ -1,3 +1,14 @@
+// HTTP routes. Two scopes:
+//
+//   /v1/...                  — tenant-scoped (subdomain → tenant_id),
+//                              JWT required, RLS applies.
+//   /v1/platform/...         — platform-admin only (no tenant). Enforced
+//                              by middleware.RequirePlatformAdmin.
+//   /internal/v1/...         — internal service-to-service, no JWT,
+//                              X-Internal-Token gate.
+//   /webhooks/...            — provider callbacks, no JWT.
+//   /d/{token}               — public time-limited PDF downloads.
+
 package handler
 
 import (
@@ -12,19 +23,21 @@ import (
 )
 
 type Deps struct {
-	Notify      *Handler
-	SMTP        *SMTPHandler
-	SMS         *SMSHandler
-	SSE         *SSEHandler
-	PDF         *PDFHandler
-	OTP         *OTPHandler
-	Campaign    *CampaignHandler
-	Scheduler   *SchedulerHandler
-	Template    *TemplateHandler
-	TenantStore *store.TenantStore
-	Issuer      *auth.TokenIssuer
-	AppDomain   string
-	Logger      *slog.Logger
+	Notify          *Handler
+	PlatformDrivers *PlatformDriversHandler
+	Credits         *CreditsHandler
+	PlatformCredits *PlatformCreditsHandler
+	SMSWebhook      *SMSWebhookHandler
+	SSE             *SSEHandler
+	PDF             *PDFHandler
+	OTP             *OTPHandler
+	Campaign        *CampaignHandler
+	Scheduler       *SchedulerHandler
+	Template        *TemplateHandler
+	TenantStore     *store.TenantStore
+	Issuer          *auth.TokenIssuer
+	AppDomain       string
+	Logger          *slog.Logger
 }
 
 func Routes(d Deps) http.Handler {
@@ -45,14 +58,51 @@ func Routes(d Deps) http.Handler {
 	r.Post("/internal/v1/otp/request", d.OTP.RequestInternal)
 	r.Post("/internal/v1/otp/verify", d.OTP.VerifyInternal)
 
-	// Webhooks — tenant in URL path so RLS still applies. No JWT.
-	r.Post("/webhooks/at/delivery/{tenant_id}", d.SMS.ATDeliveryReport)
+	// Webhook — tenant in URL path so we can look up the right delivery row.
+	// Auth is the AT-supplied secret verified against platform SMS config.
+	r.Post("/webhooks/at/delivery/{tenant_id}", d.SMSWebhook.ATDeliveryReport)
 
 	// Public time-limited PDF download by token. No JWT (the token is the auth).
 	r.Get("/d/{token}", d.PDF.PublicDownload)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
+
+		// Platform-admin scope. Subdomain is the platform host, so no
+		// tenant context is set — we authenticate the user and check
+		// for the platform-admin claim instead of RequireTenant.
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Authenticated(d.Issuer))
+			r.Use(middleware.RequirePlatformAdmin)
+
+			r.Route("/platform", func(r chi.Router) {
+				// Shared driver config (SMTP + SMS) — only platform admins.
+				r.Get("/notification-config/smtp", d.PlatformDrivers.GetSMTP)
+				r.Put("/notification-config/smtp", d.PlatformDrivers.UpdateSMTP)
+				r.Post("/notification-config/smtp/test", d.PlatformDrivers.TestSMTP)
+				r.Get("/notification-config/sms", d.PlatformDrivers.GetSMS)
+				r.Put("/notification-config/sms", d.PlatformDrivers.UpdateSMS)
+				r.Post("/notification-config/sms/test", d.PlatformDrivers.TestSMS)
+
+				// Tenant credit management.
+				r.Get("/credits/tenants", d.PlatformCredits.ListTenants)
+				r.Get("/credits/tenants/{tenant_id}", d.PlatformCredits.TenantDetail)
+				r.Post("/credits/tenants/{tenant_id}/topup", d.PlatformCredits.Topup)
+				r.Get("/credits/tenants/{tenant_id}/ledger", d.PlatformCredits.Ledger)
+				r.Get("/credits/tenants/{tenant_id}/pricing", d.PlatformCredits.GetPricing)
+				r.Put("/credits/tenants/{tenant_id}/pricing", d.PlatformCredits.UpdatePricing)
+				r.Get("/credits/topup-requests", d.PlatformCredits.ListTopupRequests)
+				r.Post("/credits/topup-requests/{id}/fulfill", d.PlatformCredits.FulfillTopupRequest)
+				r.Post("/credits/topup-requests/{id}/reject", d.PlatformCredits.RejectTopupRequest)
+				r.Post("/credits/tenants/{tenant_id}/adjustments", d.PlatformCredits.RequestAdjustment)
+				r.Get("/credits/adjustments", d.PlatformCredits.ListAdjustments)
+				r.Post("/credits/adjustments/{id}/approve", d.PlatformCredits.ApproveAdjustment)
+				r.Post("/credits/adjustments/{id}/reject", d.PlatformCredits.RejectAdjustment)
+				r.Get("/credits/usage-summary", d.PlatformCredits.UsageSummary)
+			})
+		})
+
+		// Tenant scope.
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Authenticated(d.Issuer))
 			r.Use(middleware.RequireTenant)
@@ -72,13 +122,17 @@ func Routes(d Deps) http.Handler {
 			r.Delete("/notification-templates/{id}", d.Template.Delete)
 			r.Post("/notification-templates/{id}/clone", d.Template.Clone)
 
-			r.Get("/notification-config/smtp", d.SMTP.Get)
-			r.Put("/notification-config/smtp", d.SMTP.Update)
-			r.Post("/notification-config/smtp/test", d.SMTP.Test)
-
-			r.Get("/notification-config/sms", d.SMS.Get)
-			r.Put("/notification-config/sms", d.SMS.Update)
-			r.Post("/notification-config/sms/test", d.SMS.Test)
+			// Credit visibility — tenant-side. The provider configuration
+			// endpoints from prior stages are gone; tenants only see their
+			// balance and usage now.
+			r.Get("/credits", d.Credits.Overview)
+			r.Get("/credits/ledger", d.Credits.Ledger)
+			r.Put("/credits/threshold/{channel}", d.Credits.SetLowBalanceThreshold)
+			r.Get("/credits/topup-requests", d.Credits.ListTopupRequests)
+			r.Post("/credits/topup-requests", d.Credits.CreateTopupRequest)
+			r.Post("/credits/topup-requests/{id}/cancel", d.Credits.CancelTopupRequest)
+			r.Get("/credits/blocked", d.Credits.ListBlocked)
+			r.Post("/credits/blocked/{id}/retry", d.Credits.RetryBlocked)
 
 			r.Get("/pdf-documents", d.PDF.List)
 			r.Get("/pdf-documents/{id}", d.PDF.Get)
