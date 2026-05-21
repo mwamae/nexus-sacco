@@ -39,6 +39,7 @@ import JournalEntriesPage from './pages/Accounting/JournalEntries';
 import TrialBalancePage from './pages/Accounting/TrialBalance';
 import BalanceSheetPage from './pages/Accounting/BalanceSheet';
 import IncomeStatementPage from './pages/Accounting/IncomeStatement';
+import ProvisioningPage from './pages/Loans/Provisioning';
 
 function Gate() {
   const { status } = useAuth();
@@ -92,6 +93,7 @@ function Gate() {
   else if (path === '/accounting/trial-balance') page = <TrialBalancePage />;
   else if (path === '/accounting/balance-sheet') page = <BalanceSheetPage />;
   else if (path === '/accounting/income-statement') page = <IncomeStatementPage />;
+  else if (path === '/provisioning' || path.startsWith('/provisioning/')) page = <ProvisioningPage />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;

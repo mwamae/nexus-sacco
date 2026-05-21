@@ -23,6 +23,7 @@ type Deps struct {
 	LoanRepay   *LoanRepaymentHandler
 	LoanCollect *LoanCollectionsHandler
 	LoanReports *LoanReportsHandler
+	Provisioning *ProvisioningHandler
 	Approvals   *PendingApprovalsHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
@@ -197,6 +198,13 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/crb-submission", d.LoanReports.CRB)
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/by-member/{member_id}", d.LoanReports.MemberHistory)
 			r.With(middleware.RequirePermission("loans:writeoff")).Post("/loans/{loan_id}/writeoff", d.LoanReports.WriteOff)
+
+			// ─────────── Loan loss provisioning (Phase 11/3) ───────────
+			r.With(middleware.RequirePermission("loans:view")).Get("/provisioning/runs", d.Provisioning.List)
+			r.With(middleware.RequirePermission("loans:view")).Get("/provisioning/runs/{run_id}", d.Provisioning.Get)
+			r.With(middleware.RequirePermission("interest:run")).Post("/provisioning/runs", d.Provisioning.Create)
+			r.With(middleware.RequirePermission("interest:post")).Post("/provisioning/runs/{run_id}/post", d.Provisioning.Post)
+			r.With(middleware.RequirePermission("interest:post")).Post("/provisioning/runs/{run_id}/supersede", d.Provisioning.Supersede)
 
 			// ─────────── Maker-checker (Phase 7b) ───────────
 			r.With(middleware.RequirePermission("approvals:view")).Get("/pending-approvals", d.Approvals.List)

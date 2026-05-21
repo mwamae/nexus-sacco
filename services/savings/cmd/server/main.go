@@ -190,6 +190,12 @@ func main() {
 		Approvals: approvalsStore,
 		Logger:    logger,
 	}
+	provisioningStore := store.NewProvisioningStore(pool)
+	provisioningH := &handler.ProvisioningHandler{
+		Store:   provisioningStore,
+		Posting: postingClient,
+		Logger:  logger,
+	}
 	approvalsH := &handler.PendingApprovalsHandler{
 		DB:          pool,
 		Approvals:   approvalsStore,
@@ -279,9 +285,10 @@ func main() {
 		Loan:        loanH,
 		LoanRepay:   loanRepayH,
 		LoanCollect: loanCollectH,
-		LoanReports: loanReportsH,
-		Approvals:   approvalsH,
-		TenantStore: tenants,
+		LoanReports:  loanReportsH,
+		Provisioning: provisioningH,
+		Approvals:    approvalsH,
+		TenantStore:  tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,
 		Logger:      logger,

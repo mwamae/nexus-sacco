@@ -74,24 +74,50 @@ func (h *ReportHandler) BalanceSheet(w http.ResponseWriter, r *http.Request) {
 	}
 	tid, _ := middleware.TenantIDFrom(r)
 	var rows []store.BalanceSheetRow
+	var netSurplus decimal.Decimal
 	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		var err error
 		rows, err = h.Reports.BalanceSheetTx(r.Context(), tx, asOf)
+		if err != nil {
+			return err
+		}
+		netSurplus, err = h.Reports.NetSurplusTx(r.Context(), tx, asOf)
 		return err
 	})
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
 	}
+	// Surface unclosed P&L as a derived equity line so the equation
+	// balances before period close. Suppressed when zero.
+	if !netSurplus.IsZero() {
+		surplus := netSurplus
+		isContra := surplus.IsNegative()
+		if isContra {
+			surplus = surplus.Neg()
+		}
+		rows = append(rows, store.BalanceSheetRow{
+			AccountCode: "3999",
+			AccountName: "Current period earnings (unclosed)",
+			Class:       domain.ClassEquity,
+			Amount:      surplus,
+			IsContra:    isContra,
+		})
+	}
+
 	var totalAssets, totalLiab, totalEquity decimal.Decimal
 	for _, r := range rows {
+		amt := r.Amount
+		if r.IsContra {
+			amt = amt.Neg()
+		}
 		switch r.Class {
 		case domain.ClassAsset:
-			totalAssets = totalAssets.Add(r.Amount)
+			totalAssets = totalAssets.Add(amt)
 		case domain.ClassLiability:
-			totalLiab = totalLiab.Add(r.Amount)
+			totalLiab = totalLiab.Add(amt)
 		case domain.ClassEquity:
-			totalEquity = totalEquity.Add(r.Amount)
+			totalEquity = totalEquity.Add(amt)
 		}
 	}
 	httpx.OK(w, map[string]any{

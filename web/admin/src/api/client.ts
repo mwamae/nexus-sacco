@@ -4223,3 +4223,66 @@ export async function incomeStatement(from: string, to: string): Promise<{
   const r = await api.get(`/v1/reports/income-statement?from=${from}&to=${to}`);
   return r.data.data;
 }
+
+// ─────────── Loan loss provisioning ───────────
+
+export type ProvisionRunStatus = 'pending' | 'computed' | 'posted' | 'failed' | 'superseded';
+
+export type ProvisionRun = {
+  id: string;
+  tenant_id: string;
+  as_of_date: string;
+  status: ProvisionRunStatus;
+  loans_classified: number;
+  total_outstanding: string;
+  total_provision: string;
+  previous_provision: string;
+  movement: string;
+  journal_entry_ref?: string | null;
+  notes?: string | null;
+  computed_at?: string | null;
+  posted_at?: string | null;
+  posted_by?: string | null;
+  created_at: string;
+  created_by?: string | null;
+  updated_at: string;
+};
+
+export type ProvisionRunLine = {
+  id: string;
+  run_id: string;
+  loan_id: string;
+  member_id: string;
+  loan_no: string;
+  days_past_due: number;
+  classification: 'performing' | 'watch' | 'substandard' | 'doubtful' | 'loss';
+  outstanding: string;
+  provision_rate: string;
+  provision_amount: string;
+  previous_classification?: string | null;
+  previous_provision: string;
+};
+
+export async function listProvisionRuns(): Promise<{ items: ProvisionRun[]; total: number }> {
+  const r = await api.get('/v1/provisioning/runs');
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function getProvisionRun(id: string): Promise<{ run: ProvisionRun; lines: ProvisionRunLine[] }> {
+  const r = await api.get(`/v1/provisioning/runs/${id}`);
+  return r.data.data;
+}
+
+export async function createProvisionRun(input: { as_of_date: string; notes?: string }): Promise<ProvisionRun> {
+  const r = await api.post('/v1/provisioning/runs', input);
+  return r.data.data;
+}
+
+export async function postProvisionRun(id: string): Promise<ProvisionRun> {
+  const r = await api.post(`/v1/provisioning/runs/${id}/post`);
+  return r.data.data;
+}
+
+export async function supersedeProvisionRun(id: string): Promise<void> {
+  await api.post(`/v1/provisioning/runs/${id}/supersede`);
+}

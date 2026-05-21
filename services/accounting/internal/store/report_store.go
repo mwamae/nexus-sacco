@@ -124,12 +124,18 @@ type GLDetailRow struct {
 
 // BalanceSheetRow — one balance sheet line. Detail rows have an
 // AccountID; the handler interleaves section subtotals on top.
+//
+// IsContra is true for accounts whose normal balance is the opposite
+// of their class's natural side (contra-asset, contra-liability, etc.).
+// The handler subtracts contra rows from their class total even though
+// the displayed Amount stays positive.
 type BalanceSheetRow struct {
 	AccountID   *uuid.UUID          `json:"account_id,omitempty"`
 	AccountCode string              `json:"account_code,omitempty"`
 	AccountName string              `json:"account_name"`
 	Class       domain.AccountClass `json:"class"`
 	Amount      decimal.Decimal     `json:"amount"`
+	IsContra    bool                `json:"is_contra,omitempty"`
 }
 
 // BalanceSheetTx — assets / liabilities / equity at `asOf`, computed
@@ -180,9 +186,57 @@ func (s *ReportStore) BalanceSheetTx(ctx context.Context, tx pgx.Tx, asOf time.T
 			AccountName: nm,
 			Class:       domain.AccountClass(cls),
 			Amount:      amount,
+			IsContra:    isContra(cls, nb),
 		})
 	}
 	return out, rows.Err()
+}
+
+// isContra — true when an account sits in a class whose natural side
+// is the opposite of the account's normal balance. Example: 1120
+// Loan Loss Provision is class=asset but normal=credit, so it's a
+// contra-asset and should be subtracted from the assets total.
+func isContra(class, normalBalance string) bool {
+	natural := map[string]string{
+		"asset":     "debit",
+		"liability": "credit",
+		"equity":    "credit",
+		"income":    "credit",
+		"expense":   "debit",
+	}
+	if n, ok := natural[class]; ok {
+		return n != normalBalance
+	}
+	return false
+}
+
+// NetSurplusTx — the unclosed P&L total (income − expense) from the
+// start of the period containing `asOf` through `asOf`. Until the
+// period is closed and the surplus is rolled into retained earnings,
+// the Balance Sheet equity section needs to surface this number as a
+// derived line so the accounting equation holds.
+//
+// Computes against the *full* posted ledger of income/expense accounts
+// (no period filter) because the closing journal is what zeros them —
+// any amount sitting on those accounts at as-of is by definition
+// unclosed.
+func (s *ReportStore) NetSurplusTx(ctx context.Context, tx pgx.Tx, asOf time.Time) (decimal.Decimal, error) {
+	var income, expense decimal.Decimal
+	err := tx.QueryRow(ctx, `
+		SELECT
+		  COALESCE(SUM(CASE WHEN a.class = 'income'  THEN l.credit - l.debit ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN a.class = 'expense' THEN l.debit  - l.credit ELSE 0 END), 0)
+		FROM journal_entries je
+		JOIN journal_lines l   ON l.entry_id = je.id
+		JOIN chart_of_accounts a ON a.id = l.account_id
+		WHERE je.status = 'posted'
+		  AND je.entry_date <= $1
+		  AND a.class IN ('income', 'expense')
+	`, asOf).Scan(&income, &expense)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return income.Sub(expense), nil
 }
 
 // IncomeStatementRow — same shape as balance sheet rows but for
