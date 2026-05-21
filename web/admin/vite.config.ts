@@ -153,6 +153,16 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        '/api/v1/otp-settings': {
+          target: notificationTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/otp-requests': {
+          target: notificationTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/pending-approvals': {
           target: savingsTarget,
           changeOrigin: false,

@@ -22,6 +22,7 @@ import (
 	"github.com/nexussacco/notification/internal/config"
 	"github.com/nexussacco/notification/internal/db"
 	"github.com/nexussacco/notification/internal/handler"
+	"github.com/nexussacco/notification/internal/otp"
 	"github.com/nexussacco/notification/internal/pdf"
 	"github.com/nexussacco/notification/internal/store"
 	"github.com/nexussacco/notification/internal/worker"
@@ -68,6 +69,8 @@ func main() {
 	smtpStore := store.NewSMTPConfigStore(pool.Pool, cfg.JWTSecret)
 	smsStore := store.NewSMSConfigStore(pool.Pool, cfg.JWTSecret)
 	pdfStore := store.NewPDFStore(pool.Pool)
+	otpStore := store.NewOTPStore(pool.Pool)
+	otpSettingsStore := store.NewOTPSettingsStore(pool.Pool)
 
 	pdfStorage, err := pdf.NewStorage(cfg.PDFStorageDir)
 	if err != nil {
@@ -128,6 +131,22 @@ func main() {
 		Notifs: notifs,
 		Logger: logger,
 	}
+	otpService := &otp.Service{
+		DB:            pool,
+		OTPs:          otpStore,
+		Settings:      otpSettingsStore,
+		Notifications: notifs,
+		Templates:     templates,
+		HashKey:       cfg.JWTSecret,
+	}
+	otpH := &handler.OTPHandler{
+		DB:            pool,
+		OTP:           otpService,
+		OTPs:          otpStore,
+		Settings:      otpSettingsStore,
+		InternalToken: cfg.InternalToken,
+		Logger:        logger,
+	}
 
 	router := handler.Routes(handler.Deps{
 		Notify:      notifyH,
@@ -135,6 +154,7 @@ func main() {
 		SMS:         smsH,
 		SSE:         sseH,
 		PDF:         pdfH,
+		OTP:         otpH,
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,

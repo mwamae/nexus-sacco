@@ -17,6 +17,7 @@ type Deps struct {
 	SMS         *SMSHandler
 	SSE         *SSEHandler
 	PDF         *PDFHandler
+	OTP         *OTPHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -38,6 +39,8 @@ func Routes(d Deps) http.Handler {
 	// Internal endpoint — no tenant subdomain, no JWT, X-Internal-Token gate.
 	r.Post("/internal/v1/notify", d.Notify.Notify)
 	r.Post("/internal/v1/pdf/generate", d.PDF.GenerateInternal)
+	r.Post("/internal/v1/otp/request", d.OTP.RequestInternal)
+	r.Post("/internal/v1/otp/verify", d.OTP.VerifyInternal)
 
 	// Webhooks — tenant in URL path so RLS still applies. No JWT.
 	r.Post("/webhooks/at/delivery/{tenant_id}", d.SMS.ATDeliveryReport)
@@ -71,6 +74,10 @@ func Routes(d Deps) http.Handler {
 			r.Get("/pdf-documents", d.PDF.List)
 			r.Get("/pdf-documents/{id}", d.PDF.Get)
 			r.Get("/pdf-documents/{id}/download", d.PDF.Download)
+
+			r.Get("/otp-settings", d.OTP.GetSettings)
+			r.Put("/otp-settings", d.OTP.UpdateSettings)
+			r.Get("/otp-requests", d.OTP.ListRequests)
 		})
 	})
 

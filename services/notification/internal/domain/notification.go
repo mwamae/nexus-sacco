@@ -201,6 +201,72 @@ type PDFDocument struct {
 	GeneratedBy       *uuid.UUID `json:"generated_by,omitempty"`
 }
 
+// ─────────── OTP (Stage 6) ───────────
+
+type OTPPurpose string
+
+const (
+	OTPLoginMFA          OTPPurpose = "login_mfa"
+	OTPPasswordReset     OTPPurpose = "password_reset"
+	OTPTransactionVerify OTPPurpose = "transaction_verify"
+	OTPMemberSelfService OTPPurpose = "member_self_service"
+	OTPPhoneVerify       OTPPurpose = "phone_verify"
+	OTPEmailVerify       OTPPurpose = "email_verify"
+	OTPOther             OTPPurpose = "other"
+)
+
+func (p OTPPurpose) Valid() bool {
+	switch p {
+	case OTPLoginMFA, OTPPasswordReset, OTPTransactionVerify,
+		OTPMemberSelfService, OTPPhoneVerify, OTPEmailVerify, OTPOther:
+		return true
+	}
+	return false
+}
+
+type OTPStatus string
+
+const (
+	OTPStatusPending   OTPStatus = "pending"
+	OTPStatusVerified  OTPStatus = "verified"
+	OTPStatusExpired   OTPStatus = "expired"
+	OTPStatusExhausted OTPStatus = "exhausted"
+	OTPStatusCancelled OTPStatus = "cancelled"
+)
+
+type OTPRequest struct {
+	ID                uuid.UUID  `json:"id"`
+	TenantID          uuid.UUID  `json:"tenant_id"`
+	Purpose           OTPPurpose `json:"purpose"`
+	SubjectUserID     *uuid.UUID `json:"subject_user_id,omitempty"`
+	SubjectMemberID   *uuid.UUID `json:"subject_member_id,omitempty"`
+	SubjectIdentifier *string    `json:"subject_identifier,omitempty"`
+	Channel           Channel    `json:"channel"`
+	Destination       string     `json:"destination"`
+	CodeHash          string     `json:"-"` // never marshalled
+	CodeLength        int        `json:"code_length"`
+	Status            OTPStatus  `json:"status"`
+	AttemptsUsed      int        `json:"attempts_used"`
+	MaxAttempts       int        `json:"max_attempts"`
+	GeneratedAt       time.Time  `json:"generated_at"`
+	ExpiresAt         time.Time  `json:"expires_at"`
+	VerifiedAt        *time.Time `json:"verified_at,omitempty"`
+	IPAddress         *string    `json:"ip_address,omitempty"`
+	DeviceFingerprint *string    `json:"device_fingerprint,omitempty"`
+	NotificationID    *uuid.UUID `json:"notification_id,omitempty"`
+	CreatedBy         *uuid.UUID `json:"created_by,omitempty"`
+}
+
+type OTPSettings struct {
+	TenantID              uuid.UUID `json:"tenant_id"`
+	CodeLength            int       `json:"code_length"`
+	ExpiryMinutes         int       `json:"expiry_minutes"`
+	MaxAttempts           int       `json:"max_attempts"`
+	ResendCooldownSeconds int       `json:"resend_cooldown_seconds"`
+	DefaultChannel        Channel   `json:"default_channel"`
+	UpdatedAt             time.Time `json:"updated_at"`
+}
+
 // SMSConfig is the per-tenant Africa's Talking configuration. ApiKey
 // and WebhookSecret are stored encrypted at rest; this struct may hold
 // the decrypted plaintext at worker / send time.

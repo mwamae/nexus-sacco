@@ -15,16 +15,20 @@ import {
   getApprovalSettings,
   getSMTPConfig,
   getSMSConfig,
+  getOTPSettings,
   testSMTPConfig,
   testSMSConfig,
   updateApprovalSettings,
   updateSMTPConfig,
   updateSMSConfig,
+  updateOTPSettings,
   type ApprovalToggles,
   type SMTPConfig,
   type SMTPEncryption,
   type SMSConfig,
   type SMSProvider,
+  type OTPSettings,
+  type NotificationChannel,
   type DividendFrequency,
   type InterestMethod,
   type TenantBranding,
@@ -871,6 +875,8 @@ function NotificationsConfigTab({ canEdit }: { canEdit: boolean }) {
 
       <div style={{ height: 24 }} />
       <SMSConfigSection canEdit={canEdit} />
+      <div style={{ height: 24 }} />
+      <OTPConfigSection canEdit={canEdit} />
     </>
   );
 }
@@ -1023,5 +1029,102 @@ function SMSConfigSection({ canEdit }: { canEdit: boolean }) {
         </div>
       </div>
     </>
+  );
+}
+
+// ─────────── OTP config (Stage 6) ───────────
+
+function OTPConfigSection({ canEdit }: { canEdit: boolean }) {
+  const [cfg, setCfg] = useState<OTPSettings | null | undefined>(undefined);
+  const [codeLength, setCodeLength] = useState(6);
+  const [expiry, setExpiry] = useState(5);
+  const [maxAttempts, setMaxAttempts] = useState(3);
+  const [cooldown, setCooldown] = useState(60);
+  const [channel, setChannel] = useState<NotificationChannel>('sms');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const c = await getOTPSettings();
+        setCfg(c);
+        setCodeLength(c.code_length);
+        setExpiry(c.expiry_minutes);
+        setMaxAttempts(c.max_attempts);
+        setCooldown(c.resend_cooldown_seconds);
+        setChannel(c.default_channel);
+      } catch (e) { setErr(e instanceof Error ? e.message : 'failed to load'); }
+    })();
+  }, []);
+
+  async function save() {
+    setBusy(true); setErr(null); setSavedAt(null);
+    try {
+      const c = await updateOTPSettings({
+        code_length: codeLength,
+        expiry_minutes: expiry,
+        max_attempts: maxAttempts,
+        resend_cooldown_seconds: cooldown,
+        default_channel: channel,
+      });
+      setCfg(c);
+      setSavedAt(new Date().toISOString());
+    } catch (e) { setErr(e instanceof Error ? e.message : 'save failed'); }
+    finally { setBusy(false); }
+  }
+
+  if (cfg === undefined) return <div className="empty">Loading OTP settings…</div>;
+  if (cfg === null) return <div className="alert alert-error">OTP settings unavailable.</div>;
+
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h3>OTP / 2FA</h3>
+        <span className="card-sub">
+          Central one-time-code policy. Every service that needs an OTP (login MFA, transaction sign-off, password reset, phone/email verification) calls the notification service. Codes are HMAC-SHA256-hashed before storage.
+        </span>
+      </div>
+      <div className="card-body">
+        {err && <div className="alert alert-error">{err}</div>}
+        <div className="grid-3">
+          <Field label="Code length (digits)" hint="4–8. Spec recommends 6.">
+            <input className="input mono" type="number" min={4} max={8} value={codeLength}
+              onChange={(e) => setCodeLength(parseInt(e.target.value, 10) || 6)} disabled={!canEdit} />
+          </Field>
+          <Field label="Expiry (minutes)" hint="1–60. Default 5.">
+            <input className="input mono" type="number" min={1} max={60} value={expiry}
+              onChange={(e) => setExpiry(parseInt(e.target.value, 10) || 5)} disabled={!canEdit} />
+          </Field>
+          <Field label="Max verification attempts" hint="3–5. Exhaustion is terminal.">
+            <input className="input mono" type="number" min={3} max={5} value={maxAttempts}
+              onChange={(e) => setMaxAttempts(parseInt(e.target.value, 10) || 3)} disabled={!canEdit} />
+          </Field>
+          <Field label="Resend cooldown (seconds)" hint="15–600. Prevents OTP spam.">
+            <input className="input mono" type="number" min={15} max={600} value={cooldown}
+              onChange={(e) => setCooldown(parseInt(e.target.value, 10) || 60)} disabled={!canEdit} />
+          </Field>
+          <Field label="Default delivery channel" hint="Overridable per request.">
+            <select className="input" value={channel} onChange={(e) => setChannel(e.target.value as NotificationChannel)} disabled={!canEdit}>
+              <option value="sms">SMS</option>
+              <option value="email">Email</option>
+              <option value="in_app">In-app</option>
+            </select>
+          </Field>
+        </div>
+        {canEdit && (
+          <div className="row" style={{ marginTop: 10, gap: 8 }}>
+            <button className="btn btn-accent" disabled={busy} onClick={() => void save()}>
+              <Icon name="check" size={12} /> {busy ? 'Saving…' : 'Save OTP settings'}
+            </button>
+            {savedAt && <span className="muted tiny" style={{ alignSelf: 'center' }}>Saved {new Date(savedAt).toLocaleTimeString()}</span>}
+          </div>
+        )}
+        <p className="muted tiny" style={{ marginTop: 12 }}>
+          Last updated {cfg.updated_at?.slice(0, 19).replace('T', ' ')} · request audit is available via the notification log (filter by event <span className="mono">OTP_REQUESTED</span>).
+        </p>
+      </div>
+    </div>
   );
 }

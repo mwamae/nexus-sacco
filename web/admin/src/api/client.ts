@@ -3416,3 +3416,55 @@ export async function testSMSConfig(to: string, body?: string): Promise<{
   const r = await api.post('/v1/notification-config/sms/test', { to, body });
   return r.data.data;
 }
+
+// ─────────── OTP (Stage 6) ───────────
+
+export type OTPSettings = {
+  tenant_id: string;
+  code_length: number;
+  expiry_minutes: number;
+  max_attempts: number;
+  resend_cooldown_seconds: number;
+  default_channel: NotificationChannel;
+  updated_at: string;
+};
+
+export type OTPRequestRow = {
+  id: string;
+  tenant_id: string;
+  purpose: string;
+  subject_user_id?: string;
+  subject_member_id?: string;
+  subject_identifier?: string;
+  channel: NotificationChannel;
+  destination: string;
+  code_length: number;
+  status: 'pending' | 'verified' | 'expired' | 'exhausted' | 'cancelled';
+  attempts_used: number;
+  max_attempts: number;
+  generated_at: string;
+  expires_at: string;
+  verified_at?: string;
+  ip_address?: string;
+  notification_id?: string;
+};
+
+export async function getOTPSettings(): Promise<OTPSettings> {
+  const r = await api.get('/v1/otp-settings');
+  return r.data.data;
+}
+
+export async function updateOTPSettings(input: Partial<Omit<OTPSettings, 'tenant_id' | 'updated_at'>>): Promise<OTPSettings> {
+  const r = await api.put('/v1/otp-settings', input);
+  return r.data.data;
+}
+
+export async function listOTPRequests(opts: { status?: string; purpose?: string; limit?: number; offset?: number } = {}): Promise<{ items: OTPRequestRow[]; total: number }> {
+  const p = new URLSearchParams();
+  if (opts.status) p.set('status', opts.status);
+  if (opts.purpose) p.set('purpose', opts.purpose);
+  if (opts.limit) p.set('limit', String(opts.limit));
+  if (opts.offset) p.set('offset', String(opts.offset));
+  const r = await api.get('/v1/otp-requests' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data.data;
+}
