@@ -128,3 +128,29 @@ type FeedItem struct {
 	InAppStatus Status     `json:"in_app_status"`
 	ReadAt      *time.Time `json:"read_at,omitempty"`
 }
+
+// SMTPEncryption is the wire mode for the SMTP connection.
+type SMTPEncryption string
+
+const (
+	SMTPNone     SMTPEncryption = "none"
+	SMTPStartTLS SMTPEncryption = "starttls"
+	SMTPTLS      SMTPEncryption = "tls" // implicit TLS, port 465
+)
+
+// SMTPConfig is the per-tenant SMTP configuration. Password is stored
+// encrypted at rest; the in-memory struct here may hold the decrypted
+// plaintext when the worker is preparing to send.
+type SMTPConfig struct {
+	TenantID    uuid.UUID      `json:"tenant_id"`
+	Host        string         `json:"host"`
+	Port        int            `json:"port"`
+	Username    string         `json:"username"`
+	Password    string         `json:"-"` // decrypted, never marshalled
+	Encryption  SMTPEncryption `json:"encryption"`
+	FromAddress string         `json:"from_address"`
+	FromName    string         `json:"from_name"`
+	ReplyTo     *string        `json:"reply_to,omitempty"`
+	IsActive    bool           `json:"is_active"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+}

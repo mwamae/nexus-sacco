@@ -22,6 +22,7 @@ import (
 	"github.com/nexussacco/notification/internal/db"
 	"github.com/nexussacco/notification/internal/handler"
 	"github.com/nexussacco/notification/internal/store"
+	"github.com/nexussacco/notification/internal/worker"
 )
 
 func main() {
@@ -62,6 +63,7 @@ func main() {
 	events := store.NewEventStore(pool.Pool)
 	templates := store.NewTemplateStore(pool.Pool)
 	notifs := store.NewNotificationStore(pool.Pool)
+	smtpStore := store.NewSMTPConfigStore(pool.Pool, cfg.JWTSecret)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
@@ -74,14 +76,31 @@ func main() {
 		InternalToken: cfg.InternalToken,
 		Logger:        logger,
 	}
+	smtpH := &handler.SMTPHandler{
+		DB:     pool,
+		SMTP:   smtpStore,
+		Logger: logger,
+	}
 
 	router := handler.Routes(handler.Deps{
 		Notify:      notifyH,
+		SMTP:        smtpH,
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,
 		Logger:      logger,
 	})
+
+	// Email worker — drains the queued email deliveries continuously.
+	emailWorker := &worker.EmailWorker{
+		DB:           pool,
+		Notifs:       notifs,
+		SMTPStore:    smtpStore,
+		TickInterval: 10 * time.Second,
+		BatchSize:    25,
+		Logger:       logger,
+	}
+	go emailWorker.Run(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

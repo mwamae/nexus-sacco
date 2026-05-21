@@ -140,6 +140,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        '/api/v1/notification-config': {
+          target: notificationTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/pending-approvals': {
           target: savingsTarget,
           changeOrigin: false,

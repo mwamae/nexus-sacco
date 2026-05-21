@@ -3332,3 +3332,46 @@ export async function getNotificationLog(limit = 50, offset = 0): Promise<{ item
   const r = await api.get('/v1/notifications/log?' + p.toString());
   return r.data.data;
 }
+
+// ─────────── SMTP config (Stage 2) ───────────
+
+export type SMTPEncryption = 'none' | 'starttls' | 'tls';
+
+export type SMTPConfig = {
+  tenant_id: string;
+  host: string;
+  port: number;
+  username: string;
+  encryption: SMTPEncryption;
+  from_address: string;
+  from_name: string;
+  reply_to?: string;
+  is_active: boolean;
+  updated_at: string;
+  password_set: boolean;
+};
+
+export async function getSMTPConfig(): Promise<SMTPConfig | null> {
+  const r = await api.get('/v1/notification-config/smtp');
+  return r.data.data ?? null;
+}
+
+export async function updateSMTPConfig(input: {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string; // empty string = keep existing
+  encryption: SMTPEncryption;
+  from_address: string;
+  from_name?: string;
+  reply_to?: string;
+  is_active: boolean;
+}): Promise<SMTPConfig> {
+  const r = await api.put('/v1/notification-config/smtp', input);
+  return r.data.data;
+}
+
+export async function testSMTPConfig(to_address: string, subject?: string, body?: string): Promise<{ ok: boolean; provider_message_id?: string; error?: string; to?: string }> {
+  const r = await api.post('/v1/notification-config/smtp/test', { to_address, subject, body });
+  return r.data.data;
+}

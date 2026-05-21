@@ -10,6 +10,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -323,6 +324,153 @@ func (s *NotificationStore) UnreadCountForUserTx(ctx context.Context, tx pgx.Tx,
 		WHERE n.recipient_user_id = $1 AND d.channel = 'in_app' AND d.status <> 'read'
 	`, userID).Scan(&n)
 	return n, err
+}
+
+// ─────────── Worker queries (Stage 2) ───────────
+
+// DueEmailDelivery is the joined row the worker needs to send: the
+// rendered email body plus the recipient address from the parent
+// notification row.
+type DueEmailDelivery struct {
+	DeliveryID     uuid.UUID
+	NotificationID uuid.UUID
+	TenantID       uuid.UUID
+	Subject        string
+	Body           string
+	RecipientName  string
+	RecipientEmail string
+	AttemptCount   int
+	MaxAttempts    int
+}
+
+// ClaimDueEmailsForTenantTx atomically marks up to `limit` email
+// deliveries as 'sent' (we'll roll them back to 'queued' or 'failed'
+// after the SMTP attempt) and returns them. Using a CTE keeps the
+// claim atomic so two worker ticks can't pick the same row.
+//
+// We claim only rows where: status='queued', channel='email', and
+// either there's no scheduled retry yet OR the retry time has passed.
+// Rows missing a recipient_email are skipped (returned to failed-final).
+func (s *NotificationStore) ClaimDueEmailsForTenantTx(
+	ctx context.Context, tx pgx.Tx, limit int,
+) ([]DueEmailDelivery, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := tx.Query(ctx, `
+		WITH due AS (
+			SELECT d.id
+			FROM notification_deliveries d
+			WHERE d.channel = 'email'
+			  AND d.status = 'queued'
+			  AND (d.next_retry_at IS NULL OR d.next_retry_at <= now())
+			ORDER BY d.created_at
+			FOR UPDATE SKIP LOCKED
+			LIMIT $1
+		),
+		claimed AS (
+			UPDATE notification_deliveries d
+			SET status = 'sent', attempt_count = attempt_count + 1, updated_at = now()
+			FROM due
+			WHERE d.id = due.id
+			RETURNING d.id, d.notification_id, d.tenant_id, d.subject, d.body, d.attempt_count, d.max_attempts
+		)
+		SELECT c.id, c.notification_id, c.tenant_id,
+		       COALESCE(c.subject, ''), c.body,
+		       n.recipient_name, COALESCE(n.recipient_email, ''),
+		       c.attempt_count, c.max_attempts
+		FROM claimed c
+		JOIN notifications n ON n.id = c.notification_id
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DueEmailDelivery{}
+	for rows.Next() {
+		var d DueEmailDelivery
+		if err := rows.Scan(
+			&d.DeliveryID, &d.NotificationID, &d.TenantID,
+			&d.Subject, &d.Body, &d.RecipientName, &d.RecipientEmail,
+			&d.AttemptCount, &d.MaxAttempts,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// MarkSentTx records a successful SMTP send. Provider message id is
+// optional (some servers don't return one).
+func (s *NotificationStore) MarkSentTx(
+	ctx context.Context, tx pgx.Tx,
+	deliveryID uuid.UUID, providerMessageID *string,
+) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE notification_deliveries
+		SET status = 'sent', sent_at = now(), updated_at = now(),
+		    provider_message_id = COALESCE($2, provider_message_id),
+		    failure_reason = NULL
+		WHERE id = $1
+	`, deliveryID, providerMessageID)
+	return err
+}
+
+// MarkFailedRetryableTx pushes a delivery back to 'queued' and schedules
+// the next attempt. Caller computes nextRetryAt from the attempt count
+// using the platform retry table (1m, 5m, 15m).
+func (s *NotificationStore) MarkFailedRetryableTx(
+	ctx context.Context, tx pgx.Tx,
+	deliveryID uuid.UUID, reason string, nextRetryAt time.Time,
+) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE notification_deliveries
+		SET status = 'queued',
+		    failure_reason = $2,
+		    next_retry_at = $3,
+		    updated_at = now()
+		WHERE id = $1
+	`, deliveryID, reason, nextRetryAt)
+	return err
+}
+
+// MarkFailedFinalTx records the terminal failure after retries are
+// exhausted. Triggers a system alert via the caller's logger.
+func (s *NotificationStore) MarkFailedFinalTx(
+	ctx context.Context, tx pgx.Tx,
+	deliveryID uuid.UUID, reason string,
+) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE notification_deliveries
+		SET status = 'failed',
+		    failed_at = now(),
+		    failure_reason = $2,
+		    next_retry_at = NULL,
+		    updated_at = now()
+		WHERE id = $1
+	`, deliveryID, reason)
+	return err
+}
+
+// AllActiveTenantsTx returns tenant IDs the worker needs to scan.
+// Lives here (not in TenantStore) because the worker pulls active
+// tenants then iterates inside its own loop.
+func (s *NotificationStore) AllActiveTenantsTx(ctx context.Context, tx pgx.Tx) ([]uuid.UUID, error) {
+	rows, err := tx.Query(ctx, `SELECT id FROM tenants WHERE status = 'active'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 func prefixedCols(cols, alias string) string {

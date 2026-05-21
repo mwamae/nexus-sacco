@@ -13,8 +13,13 @@ import {
   uploadLogo,
   extractError,
   getApprovalSettings,
+  getSMTPConfig,
+  testSMTPConfig,
   updateApprovalSettings,
+  updateSMTPConfig,
   type ApprovalToggles,
+  type SMTPConfig,
+  type SMTPEncryption,
   type DividendFrequency,
   type InterestMethod,
   type TenantBranding,
@@ -25,12 +30,13 @@ import {
 import { Badge } from '../components/Badge';
 import { Icon } from '../components/Icon';
 
-type Tab = 'branding' | 'region' | 'operations' | 'approvals';
+type Tab = 'branding' | 'region' | 'operations' | 'approvals' | 'notifications';
 const TABS: { id: Tab; label: string; hint: string }[] = [
-  { id: 'branding',   label: 'Branding',   hint: 'Logo, colors, typography, channel sender IDs' },
-  { id: 'region',     label: 'Region',     hint: 'Timezone, language, regulator, tax rates' },
-  { id: 'operations', label: 'Operations', hint: 'Lending, savings, dividends, penalties, approval thresholds' },
-  { id: 'approvals',  label: 'Approvals',  hint: 'Per-kind maker-checker toggles for cash actions' },
+  { id: 'branding',      label: 'Branding',      hint: 'Logo, colors, typography, channel sender IDs' },
+  { id: 'region',        label: 'Region',        hint: 'Timezone, language, regulator, tax rates' },
+  { id: 'operations',    label: 'Operations',    hint: 'Lending, savings, dividends, penalties, approval thresholds' },
+  { id: 'approvals',     label: 'Approvals',     hint: 'Per-kind maker-checker toggles for cash actions' },
+  { id: 'notifications', label: 'Notifications', hint: 'SMTP, SMS (Africa’s Talking), and channel toggles' },
 ];
 
 const FONT_OPTIONS = ['IBM Plex Sans', 'Inter', 'System', 'Roboto', 'Source Sans 3'];
@@ -106,6 +112,9 @@ export default function TenantSettings() {
           )}
           {s && tab === 'approvals' && (
             <ApprovalsTab canEdit={canEdit} />
+          )}
+          {s && tab === 'notifications' && (
+            <NotificationsConfigTab canEdit={canEdit} />
           )}
         </div>
       </div>
@@ -693,5 +702,167 @@ function SaveBar({ disabled, busy, onSave }: { disabled: boolean; busy: boolean;
         <Icon name="check" size={12} /> {busy ? 'Saving…' : 'Save changes'}
       </button>
     </div>
+  );
+}
+
+// ─────────── Notifications config (Stage 2 — SMTP) ───────────
+
+function NotificationsConfigTab({ canEdit }: { canEdit: boolean }) {
+  const [cfg, setCfg] = useState<SMTPConfig | null | undefined>(undefined); // undefined = loading
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState(587);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [encryption, setEncryption] = useState<SMTPEncryption>('starttls');
+  const [fromAddr, setFromAddr] = useState('');
+  const [fromName, setFromName] = useState('');
+  const [replyTo, setReplyTo] = useState('');
+  const [isActive, setIsActive] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [testTo, setTestTo] = useState('');
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const c = await getSMTPConfig();
+        setCfg(c);
+        if (c) {
+          setHost(c.host);
+          setPort(c.port);
+          setUsername(c.username);
+          setEncryption(c.encryption);
+          setFromAddr(c.from_address);
+          setFromName(c.from_name);
+          setReplyTo(c.reply_to ?? '');
+          setIsActive(c.is_active);
+        }
+      } catch (e) { setErr(e instanceof Error ? e.message : 'failed to load'); }
+    })();
+  }, []);
+
+  async function save() {
+    setBusy(true); setErr(null); setTestResult(null);
+    try {
+      const c = await updateSMTPConfig({
+        host, port, username,
+        password,             // empty = keep existing
+        encryption,
+        from_address: fromAddr,
+        from_name: fromName,
+        reply_to: replyTo || undefined,
+        is_active: isActive,
+      });
+      setCfg(c);
+      setPassword(''); // never echo back into the field
+    } catch (e) { setErr(e instanceof Error ? e.message : 'save failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function runTest() {
+    if (!testTo) { setTestResult({ ok: false, msg: 'Enter a recipient address first.' }); return; }
+    setBusy(true); setTestResult(null);
+    try {
+      const r = await testSMTPConfig(testTo);
+      if (r.ok) {
+        setTestResult({ ok: true, msg: `Sent to ${r.to}. Message id: ${r.provider_message_id ?? '—'}` });
+      } else {
+        setTestResult({ ok: false, msg: r.error ?? 'unknown error' });
+      }
+    } catch (e) {
+      const m = e instanceof Error ? e.message : 'request failed';
+      setTestResult({ ok: false, msg: m });
+    } finally { setBusy(false); }
+  }
+
+  if (cfg === undefined) return <div className="empty">Loading…</div>;
+
+  return (
+    <>
+      <p className="muted" style={{ marginTop: 0 }}>
+        SMTP credentials for outbound email. The password is encrypted at rest (AES-GCM).
+        Leave the password field blank to keep the existing password unchanged.
+      </p>
+
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-hd">
+          <h3>SMTP server</h3>
+          {cfg ? (
+            <span className="card-sub">{cfg.is_active ? 'Active' : 'Disabled'} · password {cfg.password_set ? 'configured' : 'not set'} · last updated {cfg.updated_at?.slice(0,10)}</span>
+          ) : (
+            <span className="card-sub">No SMTP config yet — fill in and save to enable email delivery</span>
+          )}
+        </div>
+        <div className="card-body">
+          {err && <div className="alert alert-error">{err}</div>}
+          <div className="grid-2">
+            <Field label="Host"><input className="input" value={host} onChange={(e) => setHost(e.target.value)} placeholder="smtp.example.com" disabled={!canEdit} /></Field>
+            <Field label="Port"><input className="input mono" type="number" value={port} onChange={(e) => setPort(parseInt(e.target.value, 10) || 0)} disabled={!canEdit} /></Field>
+            <Field label="Encryption">
+              <select className="input" value={encryption} onChange={(e) => setEncryption(e.target.value as SMTPEncryption)} disabled={!canEdit}>
+                <option value="none">None (dev / Mailpit)</option>
+                <option value="starttls">STARTTLS (most providers, port 587)</option>
+                <option value="tls">Implicit TLS / SMTPS (port 465)</option>
+              </select>
+            </Field>
+            <Field label="Username (often the from address)">
+              <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} disabled={!canEdit} />
+            </Field>
+            <Field label={cfg?.password_set ? 'New password (leave blank to keep)' : 'Password'}>
+              <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={!canEdit} placeholder={cfg?.password_set ? '••••••••' : ''} />
+            </Field>
+            <Field label="Active">
+              <label className="row" style={{ alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} disabled={!canEdit} />
+                <span>{isActive ? 'Worker will dispatch emails using this config' : 'Email queue is paused for this tenant'}</span>
+              </label>
+            </Field>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-hd"><h3>Identity</h3></div>
+        <div className="card-body">
+          <div className="grid-2">
+            <Field label="From address"><input className="input" value={fromAddr} onChange={(e) => setFromAddr(e.target.value)} placeholder="no-reply@yoursacco.co.ke" disabled={!canEdit} /></Field>
+            <Field label="From name (display)"><input className="input" value={fromName} onChange={(e) => setFromName(e.target.value)} placeholder="Your SACCO" disabled={!canEdit} /></Field>
+            <Field label="Reply-to (optional)"><input className="input" value={replyTo} onChange={(e) => setReplyTo(e.target.value)} placeholder="members@yoursacco.co.ke" disabled={!canEdit} /></Field>
+          </div>
+        </div>
+      </div>
+
+      <div className="row" style={{ gap: 8, marginBottom: 14 }}>
+        {canEdit && (
+          <button className="btn btn-accent" disabled={busy || !host || !fromAddr} onClick={() => void save()}>
+            <Icon name="check" size={12} /> {busy ? 'Saving…' : 'Save SMTP config'}
+          </button>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-hd">
+          <h3>Send a test email</h3>
+          <span className="card-sub">Goes through the saved config — verify your server accepts the connection.</span>
+        </div>
+        <div className="card-body">
+          <div className="row" style={{ gap: 8, alignItems: 'flex-end' }}>
+            <Field label="Recipient address">
+              <input className="input" value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="you@example.com" />
+            </Field>
+            <button className="btn" disabled={busy || !cfg?.is_active} onClick={() => void runTest()}>Send test</button>
+          </div>
+          {!cfg?.is_active && (
+            <p className="muted tiny" style={{ marginTop: 8 }}>Save an active SMTP config first.</p>
+          )}
+          {testResult && (
+            <div className={`alert ${testResult.ok ? 'alert-success' : 'alert-error'}`} style={{ marginTop: 10 }}>
+              {testResult.msg}
+            </div>
+          )}
+        </div>
+      </div>
+    </>
   );
 }

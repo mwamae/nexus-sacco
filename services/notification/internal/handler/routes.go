@@ -13,6 +13,7 @@ import (
 
 type Deps struct {
 	Notify      *Handler
+	SMTP        *SMTPHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -47,6 +48,10 @@ func Routes(d Deps) http.Handler {
 			r.Get("/notifications/log", d.Notify.Log)
 			r.Get("/notification-events", d.Notify.ListEvents)
 			r.Get("/notification-templates", d.Notify.ListTemplates)
+
+			r.Get("/notification-config/smtp", d.SMTP.Get)
+			r.Put("/notification-config/smtp", d.SMTP.Update)
+			r.Post("/notification-config/smtp/test", d.SMTP.Test)
 		})
 	})
 
