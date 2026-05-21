@@ -51,6 +51,7 @@ import BudgetDetailPage from './pages/Accounting/BudgetDetail';
 import BudgetVariancePage from './pages/Accounting/BudgetVariance';
 import SASRAReturnPage from './pages/Accounting/SASRAReturn';
 import FinanceDashboardPage from './pages/Accounting/FinanceDashboard';
+import MemberStatementPage from './pages/Members/MemberStatement';
 import ProvisioningPage from './pages/Loans/Provisioning';
 
 function Gate() {
@@ -75,6 +76,7 @@ function Gate() {
   else if (path === '/roles') page = <Roles />;
   else if (path === '/members/new') page = <MemberOnboarding />;
   else if (path === '/members') page = <Members />;
+  else if (path.match(/^\/members\/[^/]+\/statement$/)) page = <MemberStatementPage />;
   else if (path.startsWith('/members/')) page = <MemberProfile />;
   else if (path === '/tenants/new') page = <TenantOnboarding />;
   else if (path.startsWith('/tenants/')) page = <TenantProfile />;

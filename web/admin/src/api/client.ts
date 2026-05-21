@@ -5018,3 +5018,80 @@ export async function getFinanceDashboard(asOf?: string): Promise<Dashboard> {
   const r = await api.get('/v1/reports/dashboard' + q);
   return r.data.data;
 }
+
+// ─────────── Member 360° Statement ───────────
+
+export type MemberStatement = {
+  member_id: string;
+  generated_at: string;
+  member: {
+    id: string;
+    member_no: string;
+    full_name: string;
+    phone?: string | null;
+    email?: string | null;
+    status: string;
+    joined_at?: string | null;
+  };
+  shares?: {
+    account_id: string;
+    shares_held: number;
+    par_value: string;
+    book_value: string;
+    certificate_no?: string | null;
+    certificate_issued_at?: string | null;
+  } | null;
+  deposits: {
+    total_balance: string;
+    account_count: number;
+    accounts: {
+      account_id: string;
+      account_no: string;
+      product_code: string;
+      product_name: string;
+      status: string;
+      balance: string;
+      available_balance: string;
+      opened_at: string;
+    }[];
+  };
+  loans: {
+    total_loans_ever_taken: number;
+    active_loans: number;
+    total_disbursed: string;
+    total_outstanding: string;
+    loans: {
+      loan: {
+        id: string;
+        loan_no: string;
+        status: string;
+        principal: string;
+        principal_balance: string;
+        interest_balance: string;
+        days_past_due: number;
+        arrears_classification: string;
+        next_installment_due_at?: string | null;
+        disbursed_at?: string | null;
+        closed_at?: string | null;
+      };
+      product_code: string;
+      product_name: string;
+    }[];
+  };
+  recent_activity: {
+    posted_at: string;
+    module: 'shares' | 'deposits' | 'loans';
+    type: string;
+    txn_no: string;
+    reference?: string;
+    description: string;
+    amount: string;
+    narration?: string | null;
+  }[];
+  total_financial_position: string;
+};
+
+export async function getMemberStatement(memberID: string): Promise<MemberStatement> {
+  const r = await api.get(`/v1/member-statements/${memberID}`);
+  return r.data.data;
+}

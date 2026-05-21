@@ -24,6 +24,7 @@ type Deps struct {
 	LoanCollect *LoanCollectionsHandler
 	LoanReports *LoanReportsHandler
 	Provisioning *ProvisioningHandler
+	MemberStmt   *MemberStatementHandler
 	Approvals   *PendingApprovalsHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
@@ -198,6 +199,11 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/crb-submission", d.LoanReports.CRB)
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/by-member/{member_id}", d.LoanReports.MemberHistory)
 			r.With(middleware.RequirePermission("loans:writeoff")).Post("/loans/{loan_id}/writeoff", d.LoanReports.WriteOff)
+
+			// ─────────── Member 360° statement ───────────
+			// Path uses /member-statements/ rather than /members/{id}/statement
+			// because the latter prefix is proxied to the member service.
+			r.With(middleware.RequirePermission("members:view")).Get("/member-statements/{member_id}", d.MemberStmt.Get)
 
 			// ─────────── Loan loss provisioning (Phase 11/3) ───────────
 			r.With(middleware.RequirePermission("loans:view")).Get("/provisioning/runs", d.Provisioning.List)

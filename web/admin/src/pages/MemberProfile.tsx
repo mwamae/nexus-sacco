@@ -262,9 +262,9 @@ function HeaderCard({
               <Icon name="check" size={12} /> Reactivate
             </button>
           )}
-          <button className="btn btn-sm" disabled title="Statement export coming with the transactions module">
+          <a className="btn btn-sm" href={`/members/${m.id}/statement`}>
             <Icon name="arrow_dn" size={12} /> Statement
-          </button>
+          </a>
         </div>
       </div>
 
