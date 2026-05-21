@@ -62,7 +62,7 @@ func (s *DocumentStore) ListForMemberTx(ctx context.Context, tx pgx.Tx, memberID
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*domain.Document
+	out := []*domain.Document{}
 	for rows.Next() {
 		var d domain.Document
 		if err := rows.Scan(&d.ID, &d.MemberID, &d.Kind, &d.StoragePath, &d.MIME, &d.SizeBytes, &d.UploadedAt); err != nil {

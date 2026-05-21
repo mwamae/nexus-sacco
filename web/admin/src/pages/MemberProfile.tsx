@@ -697,17 +697,18 @@ function DocumentsGallery({
   memberId, documents, canUpload, onReplaced,
 }: {
   memberId: string;
-  documents: { kind: DocumentKind; mime: string; size_bytes: number; uploaded_at: string }[];
+  documents: { kind: DocumentKind; mime: string; size_bytes: number; uploaded_at: string }[] | null | undefined;
   canUpload: boolean;
   onReplaced: () => void | Promise<void>;
 }) {
-  const have = new Map(documents.map((d) => [d.kind, d]));
+  const docs = documents ?? [];
+  const have = new Map(docs.map((d) => [d.kind, d]));
   const kinds: DocumentKind[] = ['signature', 'passport_photo', 'id_front', 'id_back'];
   return (
     <div className="card">
       <div className="card-hd">
         <h3>Documents</h3>
-        <span className="card-sub">{documents.length} of {kinds.length} on file</span>
+        <span className="card-sub">{docs.length} of {kinds.length} on file</span>
       </div>
       <div className="card-body">
         <div className="grid-4">

@@ -994,7 +994,9 @@ export type ApiDocument = {
 export type ApiMemberDetail = ApiMember & {
   next_of_kin: ApiRelation | null;
   beneficiaries: ApiRelation[];
-  documents: ApiDocument[];
+  // Backend may legitimately serialise this as null when the member has
+  // no documents on file. Callers must coalesce before iterating.
+  documents: ApiDocument[] | null;
 };
 
 export type RelationInput = {
@@ -3032,7 +3034,7 @@ export type AgingBand = {
 };
 
 export type AgingReport = {
-  bands: AgingBand[];
+  bands: AgingBand[] | null;
   total_loans: number;
   total_outstanding: string;
   total_provisioning: string;

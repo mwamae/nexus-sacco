@@ -65,7 +65,10 @@ type StatusPortfolioRow struct {
 }
 
 func (s *LoanReportsStore) PortfolioSummaryTx(ctx context.Context, tx pgx.Tx) (*PortfolioSummary, error) {
-	out := &PortfolioSummary{}
+	out := &PortfolioSummary{
+		ByProduct: []ProductPortfolioRow{},
+		ByStatus:  []StatusPortfolioRow{},
+	}
 
 	// Lifetime + outstanding totals.
 	err := tx.QueryRow(ctx, `
@@ -208,7 +211,7 @@ func (s *LoanReportsStore) AgingReportTx(ctx context.Context, tx pgx.Tx) (*Aging
 		return nil, err
 	}
 	defer rows.Close()
-	out := &AgingReport{}
+	out := &AgingReport{Bands: []AgingRow{}}
 	for rows.Next() {
 		var r AgingRow
 		if err := rows.Scan(&r.Classification, &r.LoanCount, &r.PrincipalBalance, &r.InterestBalance, &r.TotalOutstanding); err != nil {
