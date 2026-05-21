@@ -38,6 +38,15 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Flush is required so SSE handlers downstream of this middleware can
+// still flush each event to the client. Without it, http.Flusher type
+// assertion fails because the embedded ResponseWriter is wrapped.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

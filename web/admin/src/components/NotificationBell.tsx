@@ -1,6 +1,9 @@
 // Topbar bell: shows unread count, opens a dropdown with the latest
-// notifications. Polls every 30s for stage 1; stage 4 swaps the poll
-// for an SSE subscription.
+// notifications.
+//
+// Stage 4: subscribes to /v1/notifications/stream (SSE) for real-time
+// push. Falls back to a 60s safety poll so a missed push (network
+// blip, server restart) is recovered within at most a minute.
 //
 // Clicking a notification marks it read and navigates to its
 // deep_link (if any). The dropdown also includes "Mark all read" and
@@ -10,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   getNotificationFeed,
   getNotificationUnreadCount,
+  loadTokens,
   markAllNotificationsRead,
   markNotificationRead,
   type NotificationFeedItem,
@@ -17,7 +21,9 @@ import {
 } from '../api/client';
 import { Icon } from './Icon';
 
-const POLL_INTERVAL_MS = 30_000;
+// Safety poll — the SSE stream is the primary signal; this catches
+// anything we missed (server restart, mid-push disconnect, etc.).
+const SAFETY_POLL_INTERVAL_MS = 60_000;
 
 const PRIORITY_DOT: Record<NotificationPriority, string> = {
   info:    'var(--accent)',
@@ -48,8 +54,47 @@ export function NotificationBell() {
 
   useEffect(() => {
     void refresh();
-    const id = window.setInterval(() => void refresh(), POLL_INTERVAL_MS);
+    const id = window.setInterval(() => void refresh(), SAFETY_POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
+  }, []);
+
+  // Real-time push via SSE. EventSource handles reconnection itself —
+  // if the connection drops it retries indefinitely with backoff. The
+  // safety poll above covers any push we miss in the meantime.
+  useEffect(() => {
+    const tokens = loadTokens();
+    if (!tokens?.accessToken) return;
+    const url = `/api/v1/notifications/stream?token=${encodeURIComponent(tokens.accessToken)}`;
+    const es = new EventSource(url);
+
+    es.addEventListener('ready', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as { unread: number };
+        if (typeof data.unread === 'number') setUnread(data.unread);
+      } catch { /* ignore malformed ready */ }
+    });
+
+    es.addEventListener('notification', (e: MessageEvent) => {
+      try {
+        const item = JSON.parse(e.data) as NotificationFeedItem;
+        setItems((prev) => {
+          // Drop a duplicate if the same notification arrives twice
+          // (e.g. safety-poll just re-fetched + SSE pushed too).
+          const filtered = prev.filter((x) => x.id !== item.id);
+          return [item, ...filtered].slice(0, 10);
+        });
+        if (item.in_app_status !== 'read') {
+          setUnread((n) => n + 1);
+        }
+      } catch { /* ignore malformed event */ }
+    });
+
+    es.onerror = () => {
+      // EventSource auto-reconnects; nothing to do but let it.
+      // The safety poll fills any gap.
+    };
+
+    return () => es.close();
   }, []);
 
   // Close on outside-click.

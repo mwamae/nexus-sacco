@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/nexussacco/notification/internal/auth"
+	"github.com/nexussacco/notification/internal/bus"
 	"github.com/nexussacco/notification/internal/config"
 	"github.com/nexussacco/notification/internal/db"
 	"github.com/nexussacco/notification/internal/handler"
@@ -67,6 +68,7 @@ func main() {
 	smsStore := store.NewSMSConfigStore(pool.Pool, cfg.JWTSecret)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
+	realtime := bus.New()
 
 	notifyH := &handler.Handler{
 		DB:            pool,
@@ -74,8 +76,15 @@ func main() {
 		Templates:     templates,
 		Notifications: notifs,
 		Tenants:       tenants,
+		Bus:           realtime,
 		InternalToken: cfg.InternalToken,
 		Logger:        logger,
+	}
+	sseH := &handler.SSEHandler{
+		DB:     pool,
+		Notifs: notifs,
+		Bus:    realtime,
+		Logger: logger,
 	}
 	smtpH := &handler.SMTPHandler{
 		DB:     pool,
@@ -93,6 +102,7 @@ func main() {
 		Notify:      notifyH,
 		SMTP:        smtpH,
 		SMS:         smsH,
+		SSE:         sseH,
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,

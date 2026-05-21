@@ -15,6 +15,7 @@ type Deps struct {
 	Notify      *Handler
 	SMTP        *SMTPHandler
 	SMS         *SMSHandler
+	SSE         *SSEHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -45,6 +46,7 @@ func Routes(d Deps) http.Handler {
 			r.Use(middleware.Authenticated(d.Issuer))
 			r.Use(middleware.RequireTenant)
 
+			r.Get("/notifications/stream", d.SSE.Stream)
 			r.Get("/notifications", d.Notify.Feed)
 			r.Get("/notifications/unread", d.Notify.UnreadCount)
 			r.Post("/notifications/mark-all-read", d.Notify.MarkAllRead)

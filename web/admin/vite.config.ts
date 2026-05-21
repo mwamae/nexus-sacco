@@ -125,6 +125,14 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        '/api/v1/notifications/stream': {
+          // SSE — http-proxy pipes chunked responses by default which
+          // is what we want; keep this entry above the catch-all
+          // /api/v1/notifications so it wins specificity.
+          target: notificationTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/notifications': {
           target: notificationTarget,
           changeOrigin: false,

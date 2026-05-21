@@ -66,12 +66,17 @@ func RequirePermission(perm string) func(http.Handler) http.Handler {
 
 func bearerToken(r *http.Request) string {
 	h := r.Header.Get("Authorization")
-	if h == "" {
-		return ""
+	if h != "" {
+		const prefix = "Bearer "
+		if strings.HasPrefix(h, prefix) {
+			return strings.TrimSpace(h[len(prefix):])
+		}
 	}
-	const prefix = "Bearer "
-	if !strings.HasPrefix(h, prefix) {
-		return ""
+	// EventSource can't set custom headers, so SSE endpoints accept the
+	// JWT via the ?token= query parameter. Accepting it for all routes
+	// keeps the auth path simple; the token still has to verify.
+	if t := r.URL.Query().Get("token"); t != "" {
+		return t
 	}
-	return strings.TrimSpace(h[len(prefix):])
+	return ""
 }

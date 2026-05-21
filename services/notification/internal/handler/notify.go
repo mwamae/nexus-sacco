@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/nexussacco/notification/internal/bus"
 	"github.com/nexussacco/notification/internal/db"
 	"github.com/nexussacco/notification/internal/domain"
 	"github.com/nexussacco/notification/internal/httpx"
@@ -37,6 +38,7 @@ type Handler struct {
 	Templates     *store.TemplateStore
 	Notifications *store.NotificationStore
 	Tenants       *store.TenantStore
+	Bus           *bus.Bus
 	InternalToken string
 	Logger        *slog.Logger
 }
@@ -176,6 +178,35 @@ func (h *Handler) Notify(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeNotifyErr(w, r, err)
 		return
+	}
+	// Real-time push to any connected SSE subscriber for this recipient.
+	// Only meaningful for the in-app channel; SMS/email handle their
+	// own asynchronous delivery via the workers.
+	if h.Bus != nil {
+		var inAppBody string
+		var inAppStatus domain.Status = domain.StatusDelivered
+		for _, d := range out.Deliveries {
+			if d.Channel == domain.ChannelInApp {
+				inAppBody = d.Body
+				inAppStatus = d.Status
+				break
+			}
+		}
+		if inAppBody != "" {
+			feedItem := &domain.FeedItem{
+				Notification: out.Notification,
+				Body:         inAppBody,
+				InAppStatus:  inAppStatus,
+			}
+			key := bus.Key{TenantID: in.TenantID}
+			if in.RecipientUserID != nil {
+				key.UserID = *in.RecipientUserID
+			}
+			if in.RecipientMemberID != nil {
+				key.MemberID = *in.RecipientMemberID
+			}
+			h.Bus.Publish(key, feedItem)
+		}
 	}
 	httpx.Created(w, out)
 }
