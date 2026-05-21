@@ -329,6 +329,49 @@ export async function archiveTenant(id: string): Promise<void> {
   await api.post(`/v1/platform/tenants/${id}/archive`);
 }
 
+// ─────────── Tenant contacts (platform-admin CRUD) ───────────
+
+export type TenantContactInput = {
+  full_name: string;
+  title?: string;
+  email?: string;
+  phone?: string;
+};
+
+export async function addTenantContact(tenantId: string, input: TenantContactInput): Promise<ApiTenantContact> {
+  const r = await api.post(`/v1/platform/tenants/${tenantId}/contacts`, input);
+  return r.data.data;
+}
+export async function updateTenantContact(tenantId: string, contactId: string, input: TenantContactInput): Promise<ApiTenantContact> {
+  const r = await api.patch(`/v1/platform/tenants/${tenantId}/contacts/${contactId}`, input);
+  return r.data.data;
+}
+export async function deleteTenantContact(tenantId: string, contactId: string): Promise<void> {
+  await api.delete(`/v1/platform/tenants/${tenantId}/contacts/${contactId}`);
+}
+
+// ─────────── Tenant users (platform-admin: list + invite to another tenant) ───────────
+
+export type TenantUserRow = {
+  user: ApiUser;
+  roles: Array<{ id: string; code: string; name: string }>;
+};
+
+export async function listTenantUsers(tenantId: string): Promise<{ users: TenantUserRow[]; total: number }> {
+  const r = await api.get(`/v1/platform/tenants/${tenantId}/users`);
+  return r.data.data;
+}
+
+export async function inviteUserToTenant(tenantId: string, input: {
+  email: string;
+  full_name: string;
+  phone?: string;
+  role_codes: string[];
+}): Promise<{ user: ApiUser; invite_expires: string }> {
+  const r = await api.post(`/v1/platform/tenants/${tenantId}/users/invite`, input);
+  return r.data.data;
+}
+
 // Triggers a browser download by hitting the export/backup endpoint with
 // the auth header, then handing the blob off to a synthetic <a download>.
 async function downloadBundle(id: string, kind: 'export' | 'backup'): Promise<void> {

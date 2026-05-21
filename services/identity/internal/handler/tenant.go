@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -24,8 +25,19 @@ type TenantHandler struct {
 	Tenants *store.TenantStore
 	Users   *store.UserStore
 	Roles   *store.RoleStore
+	Invites *store.InviteStore
 	Audit   *store.AuditStore
 	Logger  *slog.Logger
+
+	// InviteTTL is mirrored from UserHandler so the platform-side
+	// invite endpoint (TenantHandler.InviteUser) can stamp the same
+	// expiry as the tenant-side one.
+	InviteTTL time.Duration
+
+	// UserH lets the platform-side contact/staff endpoints reuse the
+	// existing role-resolution + invite-email helpers on UserHandler
+	// without duplicating them.
+	UserH *UserHandler
 }
 
 var slugRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{1,38}[a-z0-9])?$`)

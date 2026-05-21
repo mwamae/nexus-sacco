@@ -112,6 +112,15 @@ func Routes(d Deps) http.Handler {
 				r.Post("/platform/tenants/{id}/archive", d.Tenant.Archive)
 				r.Get("/platform/tenants/{id}/export", d.Tenant.Export)
 				r.Get("/platform/tenants/{id}/backup", d.Tenant.Backup)
+
+				// Contacts (add / edit / remove)
+				r.Post("/platform/tenants/{id}/contacts", d.Tenant.AddContact)
+				r.Patch("/platform/tenants/{id}/contacts/{contact_id}", d.Tenant.UpdateContact)
+				r.Delete("/platform/tenants/{id}/contacts/{contact_id}", d.Tenant.DeleteContact)
+
+				// Staff users (list + invite). Reuses UserHandler internals.
+				r.Get("/platform/tenants/{id}/users", d.Tenant.ListUsers)
+				r.Post("/platform/tenants/{id}/users/invite", d.Tenant.InviteUser)
 			})
 		})
 	})

@@ -16,8 +16,16 @@ import {
   setTenantRestrictions,
   setTenantStatus,
   extractError,
+  addTenantContact,
+  deleteTenantContact,
+  updateTenantContact,
+  inviteUserToTenant,
+  listTenantUsers,
+  type ApiTenantContact,
   type ApiTenantDetail,
+  type TenantContactInput,
   type TenantStatus,
+  type TenantUserRow,
 } from '../api/client';
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
@@ -231,34 +239,8 @@ export default function TenantProfile() {
             </div>
           </div>
 
-          <div className="card" style={{ marginTop: 14 }}>
-            <div className="card-hd">
-              <h3>Contacts</h3>
-              <span className="card-sub">{t.contacts.length} on file</span>
-            </div>
-            <div className="card-body flush">
-              {t.contacts.length === 0 ? (
-                <div className="empty">No contacts recorded.</div>
-              ) : (
-                <table className="tbl">
-                  <thead><tr>
-                    <th style={{ width: 44 }}></th><th>Name</th><th>Title</th><th>Email</th><th>Phone</th>
-                  </tr></thead>
-                  <tbody>
-                    {t.contacts.map((c) => (
-                      <tr key={c.id}>
-                        <td><Avatar name={c.full_name} size="sm" /></td>
-                        <td>{c.full_name}</td>
-                        <td>{c.title || <span className="muted">—</span>}</td>
-                        <td className="tiny-mono">{c.email || <span className="muted">—</span>}</td>
-                        <td className="mono">{c.phone || <span className="muted">—</span>}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
+          <ContactsCard tenantID={t.id} initial={t.contacts} disabled={archived} />
+          <UsersCard tenantID={t.id} disabled={archived} />
 
           <StatusCard t={t} busy={busy} onChange={onStatusChange} disabled={archived} />
           <RestrictionsCard t={t} busy={busy} onToggle={onToggle} disabled={archived} />
@@ -274,6 +256,364 @@ export default function TenantProfile() {
           />
         </>
       )}
+    </div>
+  );
+}
+
+// ─────────── Contacts card (editable) ───────────
+//
+// Replaces the read-only contacts table that lived inline. Supports
+// add / edit / delete via the platform-admin endpoints on the identity
+// service.
+
+function ContactsCard({
+  tenantID, initial, disabled,
+}: {
+  tenantID: string;
+  initial: ApiTenantContact[];
+  disabled: boolean;
+}) {
+  const [contacts, setContacts] = useState<ApiTenantContact[]>(initial);
+  const [editingID, setEditingID] = useState<string | 'new' | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => { setContacts(initial); }, [initial]);
+
+  async function handleAdd(input: TenantContactInput) {
+    setErr(null);
+    try {
+      const c = await addTenantContact(tenantID, input);
+      setContacts((cs) => [...cs, c]);
+      setEditingID(null);
+    } catch (e) {
+      setErr(extractError(e));
+      throw e;
+    }
+  }
+  async function handleUpdate(id: string, input: TenantContactInput) {
+    setErr(null);
+    try {
+      const c = await updateTenantContact(tenantID, id, input);
+      setContacts((cs) => cs.map((x) => (x.id === id ? c : x)));
+      setEditingID(null);
+    } catch (e) {
+      setErr(extractError(e));
+      throw e;
+    }
+  }
+  async function handleDelete(id: string) {
+    if (!window.confirm('Delete this contact?')) return;
+    setErr(null);
+    try {
+      await deleteTenantContact(tenantID, id);
+      setContacts((cs) => cs.filter((x) => x.id !== id));
+    } catch (e) {
+      setErr(extractError(e));
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-hd">
+        <h3>Contacts</h3>
+        <span className="card-sub">{contacts.length} on file</span>
+        {!disabled && (
+          <div className="card-hd-actions">
+            <button className="btn btn-sm" disabled={editingID !== null} onClick={() => setEditingID('new')}>
+              <Icon name="plus" size={12} /> Add contact
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="card-body flush">
+        {err && <div className="alert alert-error" style={{ margin: 10 }}>{err}</div>}
+        {contacts.length === 0 && editingID !== 'new' && (
+          <div className="empty">
+            No contacts recorded.{!disabled && (
+              <> Click <strong>Add contact</strong> to record one.</>
+            )}
+          </div>
+        )}
+        {(contacts.length > 0 || editingID === 'new') && (
+          <table className="tbl">
+            <thead><tr>
+              <th style={{ width: 44 }}></th><th>Name</th><th>Title</th><th>Email</th><th>Phone</th>
+              <th style={{ width: 1 }}></th>
+            </tr></thead>
+            <tbody>
+              {contacts.map((c) => {
+                if (editingID === c.id) {
+                  return (
+                    <ContactEditRow
+                      key={c.id}
+                      initial={c}
+                      onSave={(v) => handleUpdate(c.id, v)}
+                      onCancel={() => setEditingID(null)}
+                    />
+                  );
+                }
+                return (
+                  <tr key={c.id}>
+                    <td><Avatar name={c.full_name} size="sm" /></td>
+                    <td>{c.full_name}</td>
+                    <td>{c.title || <span className="muted">—</span>}</td>
+                    <td className="tiny-mono">{c.email || <span className="muted">—</span>}</td>
+                    <td className="mono">{c.phone || <span className="muted">—</span>}</td>
+                    <td>
+                      {!disabled && (
+                        <div className="row" style={{ gap: 4 }}>
+                          <button
+                            className="btn btn-sm btn-ghost"
+                            disabled={editingID !== null}
+                            onClick={() => setEditingID(c.id)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="btn btn-sm btn-danger"
+                            disabled={editingID !== null}
+                            onClick={() => void handleDelete(c.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {editingID === 'new' && (
+                <ContactEditRow
+                  onSave={handleAdd}
+                  onCancel={() => setEditingID(null)}
+                />
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ContactEditRow({
+  initial, onSave, onCancel,
+}: {
+  initial?: ApiTenantContact;
+  onSave: (v: TenantContactInput) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [fullName, setFullName] = useState(initial?.full_name ?? '');
+  const [title, setTitle] = useState(initial?.title ?? '');
+  const [email, setEmail] = useState(initial?.email ?? '');
+  const [phone, setPhone] = useState(initial?.phone ?? '');
+  const [busy, setBusy] = useState(false);
+  async function submit() {
+    if (!fullName.trim()) return;
+    setBusy(true);
+    try {
+      await onSave({ full_name: fullName, title, email, phone });
+    } catch { /* parent surfaces err */ }
+    finally { setBusy(false); }
+  }
+  return (
+    <tr style={{ background: 'var(--surface-2)' }}>
+      <td><Avatar name={fullName || '?'} size="sm" /></td>
+      <td>
+        <input
+          value={fullName}
+          onChange={(e) => setFullName(e.target.value)}
+          placeholder="Full name *"
+          style={{ width: '100%' }}
+          autoFocus
+        />
+      </td>
+      <td>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" style={{ width: '100%' }} />
+      </td>
+      <td>
+        <input
+          type="email" value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="email@example.com"
+          style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+        />
+      </td>
+      <td>
+        <input
+          value={phone} onChange={(e) => setPhone(e.target.value)}
+          placeholder="+254..."
+          style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+        />
+      </td>
+      <td>
+        <div className="row" style={{ gap: 4 }}>
+          <button className="btn btn-sm btn-primary" disabled={busy || !fullName.trim()} onClick={() => void submit()}>
+            {busy ? '…' : 'Save'}
+          </button>
+          <button className="btn btn-sm btn-ghost" disabled={busy} onClick={onCancel}>Cancel</button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// ─────────── Users card (staff in this tenant) ───────────
+//
+// Lists every staff user in the tenant and lets the platform admin
+// invite new ones without leaving the dashboard. Role codes are free
+// text in the form because tenants can define custom roles — the
+// server validates against the role catalogue.
+
+function UsersCard({ tenantID, disabled }: { tenantID: string; disabled: boolean }) {
+  const [users, setUsers] = useState<TenantUserRow[] | null>(null);
+  const [inviting, setInviting] = useState(false);
+  const [email, setEmail] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [roleCodes, setRoleCodes] = useState('sacco_admin');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+
+  async function load() {
+    setErr(null);
+    try {
+      const r = await listTenantUsers(tenantID);
+      setUsers(r.users ?? []);
+    } catch (e) {
+      setErr(extractError(e));
+    }
+  }
+  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tenantID]);
+
+  async function submitInvite() {
+    setErr(null); setInfo(null);
+    const codes = roleCodes.split(',').map((c) => c.trim()).filter(Boolean);
+    if (!email.trim() || !fullName.trim() || codes.length === 0) {
+      setErr('Email, full name, and at least one role are required.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await inviteUserToTenant(tenantID, {
+        email: email.trim(),
+        full_name: fullName.trim(),
+        role_codes: codes,
+      });
+      setInfo(`Invited ${r.user.email}. Invite link valid until ${new Date(r.invite_expires).toLocaleString()}.`);
+      setEmail(''); setFullName(''); setRoleCodes('sacco_admin');
+      setInviting(false);
+      await load();
+    } catch (e) {
+      setErr(extractError(e));
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-hd">
+        <h3>Staff users</h3>
+        <span className="card-sub">{users?.length ?? '—'} on file</span>
+        {!disabled && (
+          <div className="card-hd-actions">
+            <button className="btn btn-sm" disabled={inviting} onClick={() => setInviting(true)}>
+              <Icon name="plus" size={12} /> Invite user
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="card-body">
+        {err && <div className="alert alert-error" style={{ marginBottom: 8 }}>{err}</div>}
+        {info && <div className="alert alert-info" style={{ marginBottom: 8 }}>{info}</div>}
+
+        {inviting && (
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="card-body">
+              <h4 style={{ marginTop: 0 }}>Invite a user into this tenant</h4>
+              <div className="grid-2">
+                <label>
+                  <div className="muted tiny" style={{ marginBottom: 4 }}>Email *</div>
+                  <input
+                    type="email" value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="user@example.com"
+                    style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                  />
+                </label>
+                <label>
+                  <div className="muted tiny" style={{ marginBottom: 4 }}>Full name *</div>
+                  <input
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="Jane Doe"
+                    style={{ width: '100%' }}
+                  />
+                </label>
+                <label style={{ gridColumn: 'span 2' }}>
+                  <div className="muted tiny" style={{ marginBottom: 4 }}>
+                    Role codes (comma-separated)
+                  </div>
+                  <input
+                    value={roleCodes}
+                    onChange={(e) => setRoleCodes(e.target.value)}
+                    placeholder="sacco_admin, accountant"
+                    style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                  />
+                  <div className="muted tiny" style={{ marginTop: 4 }}>
+                    Examples: <code>sacco_admin</code>, <code>tenant_owner</code>, <code>accountant</code>,
+                    <code> credit_officer</code>, <code>teller</code>, <code>branch_manager</code>, <code>auditor</code>.
+                  </div>
+                </label>
+              </div>
+              <div className="row" style={{ gap: 8, marginTop: 10 }}>
+                <button className="btn btn-primary" disabled={busy} onClick={() => void submitInvite()}>
+                  {busy ? 'Sending…' : 'Send invite'}
+                </button>
+                <button className="btn btn-ghost" disabled={busy} onClick={() => { setInviting(false); setErr(null); }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {users === null && <div className="empty">Loading…</div>}
+        {users !== null && users.length === 0 && (
+          <div className="empty">No staff users yet. Click <strong>Invite user</strong> to add one.</div>
+        )}
+        {users !== null && users.length > 0 && (
+          <table className="tbl">
+            <thead><tr>
+              <th style={{ width: 44 }}></th>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Status</th>
+              <th>Roles</th>
+            </tr></thead>
+            <tbody>
+              {users.map((row) => (
+                <tr key={row.user.id}>
+                  <td><Avatar name={row.user.full_name || row.user.email} size="sm" /></td>
+                  <td>{row.user.full_name || <span className="muted">—</span>}</td>
+                  <td className="tiny-mono">{row.user.email}</td>
+                  <td>
+                    <Badge tone={
+                      row.user.status === 'active'    ? 'pos' :
+                      row.user.status === 'pending'   ? 'warn' :
+                      row.user.status === 'suspended' ? 'neg' : 'neutral'
+                    }>
+                      {row.user.status}
+                    </Badge>
+                  </td>
+                  <td className="tiny">
+                    {(row.roles ?? []).map((r) => r.code).join(', ') || <span className="muted">—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }

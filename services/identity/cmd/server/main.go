@@ -149,15 +149,17 @@ func main() {
 		Email:            emailSender,
 		PlatformTenant:   platformTenant,
 	}
-	tenantH := &handler.TenantHandler{
-		DB: pool, Tenants: tenantStore, Users: userStore, Roles: roleStore,
-		Audit: auditStore, Logger: logger,
-	}
 	userH := &handler.UserHandler{
 		DB: pool, Users: userStore, Roles: roleStore, Invites: inviteStore,
 		Tenants: tenantStore, Audit: auditStore, Email: emailSender,
 		WebBaseURL: cfg.WebBaseURL, InviteTTL: cfg.InviteTTL,
 		Logger: logger, PlatformTenant: platformTenant,
+	}
+	tenantH := &handler.TenantHandler{
+		DB: pool, Tenants: tenantStore, Users: userStore, Roles: roleStore,
+		Invites: inviteStore, Audit: auditStore, Logger: logger,
+		InviteTTL: cfg.InviteTTL,
+		UserH:     userH,
 	}
 	rbacH := &handler.RBACHandler{
 		DB: pool, Roles: roleStore, Permissions: permissionStore,

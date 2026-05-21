@@ -169,6 +169,68 @@ type ContactInput struct {
 	Phone    string
 }
 
+// AddContactTx inserts a single new contact, appending it to the end
+// of the tenant's contact list. Used by the per-tenant "Add contact"
+// flow that's separate from the bulk-replace used at tenant creation.
+func (s *TenantStore) AddContactTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, in ContactInput) (*domain.TenantContact, error) {
+	var nextPos int
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(position)+1, 0) FROM tenant_contacts WHERE tenant_id = $1`,
+		tenantID,
+	).Scan(&nextPos); err != nil {
+		return nil, err
+	}
+	var c domain.TenantContact
+	err := tx.QueryRow(ctx, `
+		INSERT INTO tenant_contacts (tenant_id, full_name, title, email, phone, position)
+		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), $6)
+		RETURNING id, tenant_id, full_name, COALESCE(title,''), COALESCE(email,''), COALESCE(phone,''), position
+	`, tenantID, in.FullName, in.Title, in.Email, in.Phone, nextPos,
+	).Scan(&c.ID, &c.TenantID, &c.FullName, &c.Title, &c.Email, &c.Phone, &c.Position)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// UpdateContactTx edits an existing contact in place. Position is left
+// unchanged; if reordering is needed we'd add a separate endpoint.
+func (s *TenantStore) UpdateContactTx(ctx context.Context, tx pgx.Tx, contactID uuid.UUID, in ContactInput) (*domain.TenantContact, error) {
+	var c domain.TenantContact
+	err := tx.QueryRow(ctx, `
+		UPDATE tenant_contacts
+		SET full_name = $2,
+		    title     = NULLIF($3,''),
+		    email     = NULLIF($4,''),
+		    phone     = NULLIF($5,'')
+		WHERE id = $1
+		RETURNING id, tenant_id, full_name, COALESCE(title,''), COALESCE(email,''), COALESCE(phone,''), position
+	`, contactID, in.FullName, in.Title, in.Email, in.Phone,
+	).Scan(&c.ID, &c.TenantID, &c.FullName, &c.Title, &c.Email, &c.Phone, &c.Position)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// DeleteContactTx removes a single contact row. Positions of remaining
+// contacts are not renumbered — they're sparse (e.g. 0, 2, 3) but the
+// ORDER BY position in ContactsForTenantTx still returns them in the
+// right sequence.
+func (s *TenantStore) DeleteContactTx(ctx context.Context, tx pgx.Tx, contactID uuid.UUID) error {
+	tag, err := tx.Exec(ctx, `DELETE FROM tenant_contacts WHERE id = $1`, contactID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *TenantStore) ReplaceContactsTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, rows []ContactInput) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM tenant_contacts WHERE tenant_id = $1`, tenantID); err != nil {
 		return err
