@@ -71,6 +71,9 @@ func main() {
 	pdfStore := store.NewPDFStore(pool.Pool)
 	otpStore := store.NewOTPStore(pool.Pool)
 	otpSettingsStore := store.NewOTPSettingsStore(pool.Pool)
+	campaignStore := store.NewCampaignStore(pool.Pool)
+	schedulerStore := store.NewSchedulerStore(pool.Pool)
+	audienceStore := store.NewAudienceStore(pool.Pool)
 
 	pdfStorage, err := pdf.NewStorage(cfg.PDFStorageDir)
 	if err != nil {
@@ -148,6 +151,39 @@ func main() {
 		Logger:        logger,
 	}
 
+	// Stage 7 — campaign worker + scheduler. The registry maps a
+	// job_key (stored on the row) to a Go handler function. Add new
+	// jobs by writing a handler in worker/jobs.go and registering it
+	// here; the DB row is the source of truth for cron schedule + on/off.
+	jobRegistry := worker.NewJobRegistry()
+	jobRegistry.Register("loan_repayment_reminders", worker.LoanRepaymentReminderHandler(notifs, templates))
+	jobRegistry.Register("dormancy_warnings", worker.DormancyWarningHandler(notifs, templates))
+
+	scheduler := worker.NewScheduler(pool, schedulerStore, notifs, jobRegistry, logger)
+	campaignWorker := &worker.CampaignWorker{
+		DB:           pool,
+		Notifs:       notifs,
+		Templates:    templates,
+		Campaigns:    campaignStore,
+		Audience:     audienceStore,
+		TickInterval: 15 * time.Second,
+		Logger:       logger,
+	}
+
+	campaignH := &handler.CampaignHandler{
+		DB:        pool,
+		Campaigns: campaignStore,
+		Audience:  audienceStore,
+		Templates: templates,
+		Logger:    logger,
+	}
+	schedulerH := &handler.SchedulerHandler{
+		DB:        pool,
+		Sched:     schedulerStore,
+		Scheduler: scheduler,
+		Logger:    logger,
+	}
+
 	router := handler.Routes(handler.Deps{
 		Notify:      notifyH,
 		SMTP:        smtpH,
@@ -155,6 +191,8 @@ func main() {
 		SSE:         sseH,
 		PDF:         pdfH,
 		OTP:         otpH,
+		Campaign:    campaignH,
+		Scheduler:   schedulerH,
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,
@@ -181,6 +219,9 @@ func main() {
 		Logger:       logger,
 	}
 	go smsWorker.Run(ctx)
+
+	go campaignWorker.Run(ctx)
+	go scheduler.Run(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

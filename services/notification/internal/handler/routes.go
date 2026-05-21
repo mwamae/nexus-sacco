@@ -18,6 +18,8 @@ type Deps struct {
 	SSE         *SSEHandler
 	PDF         *PDFHandler
 	OTP         *OTPHandler
+	Campaign    *CampaignHandler
+	Scheduler   *SchedulerHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -78,6 +80,25 @@ func Routes(d Deps) http.Handler {
 			r.Get("/otp-settings", d.OTP.GetSettings)
 			r.Put("/otp-settings", d.OTP.UpdateSettings)
 			r.Get("/otp-requests", d.OTP.ListRequests)
+
+			// Campaigns
+			r.Get("/campaigns", d.Campaign.List)
+			r.Post("/campaigns", d.Campaign.Create)
+			r.Get("/campaigns/{id}", d.Campaign.Get)
+			r.Post("/campaigns/{id}/preview", d.Campaign.Preview)
+			r.Post("/campaigns/{id}/schedule", d.Campaign.Schedule)
+			r.Post("/campaigns/{id}/send", d.Campaign.Send)
+			r.Post("/campaigns/{id}/cancel", d.Campaign.Cancel)
+			r.Get("/campaign-settings", d.Campaign.GetSettings)
+			r.Put("/campaign-settings", d.Campaign.UpdateSettings)
+
+			// Scheduled jobs
+			r.Get("/scheduled-jobs", d.Scheduler.List)
+			r.Post("/scheduled-jobs/preview-cron", d.Scheduler.PreviewCron)
+			r.Get("/scheduled-jobs/{id}", d.Scheduler.Get)
+			r.Put("/scheduled-jobs/{id}", d.Scheduler.Update)
+			r.Post("/scheduled-jobs/{id}/run", d.Scheduler.Run)
+			r.Get("/scheduled-jobs/{id}/runs", d.Scheduler.ListRuns)
 		})
 	})
 

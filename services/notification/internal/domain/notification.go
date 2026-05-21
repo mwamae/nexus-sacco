@@ -3,6 +3,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -93,7 +94,7 @@ type Notification struct {
 	SourceModule      *string    `json:"source_module,omitempty"`
 	SourceRecordID    *uuid.UUID `json:"source_record_id,omitempty"`
 	DeepLink          *string    `json:"deep_link,omitempty"`
-	Payload           []byte     `json:"payload"`
+	Payload           json.RawMessage `json:"payload"`
 	InitiatedBy       *uuid.UUID `json:"initiated_by,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
 }
@@ -190,7 +191,7 @@ type PDFDocument struct {
 	SubjectLoanID     *uuid.UUID `json:"subject_loan_id,omitempty"`
 	SubjectAccountID  *uuid.UUID `json:"subject_account_id,omitempty"`
 	SubjectLabel      string     `json:"subject_label"`
-	Payload           []byte     `json:"payload"`
+	Payload           json.RawMessage `json:"payload"`
 	StoragePath       string     `json:"-"`                // never returned to clients
 	FileSizeBytes     int        `json:"file_size_bytes"`
 	DownloadToken     *string    `json:"download_token,omitempty"`
@@ -199,6 +200,80 @@ type PDFDocument struct {
 	LastDownloadedAt  *time.Time `json:"last_downloaded_at,omitempty"`
 	GeneratedAt       time.Time  `json:"generated_at"`
 	GeneratedBy       *uuid.UUID `json:"generated_by,omitempty"`
+}
+
+// ─────────── Campaigns + scheduler (Stage 7) ───────────
+
+type CampaignStatus string
+
+const (
+	CampaignDraft            CampaignStatus = "draft"
+	CampaignAwaitingApproval CampaignStatus = "awaiting_approval"
+	CampaignScheduled        CampaignStatus = "scheduled"
+	CampaignSending          CampaignStatus = "sending"
+	CampaignSent             CampaignStatus = "sent"
+	CampaignCancelled        CampaignStatus = "cancelled"
+	CampaignFailed           CampaignStatus = "failed"
+)
+
+type Campaign struct {
+	ID                  uuid.UUID      `json:"id"`
+	TenantID            uuid.UUID      `json:"tenant_id"`
+	Name                string         `json:"name"`
+	Description         *string        `json:"description,omitempty"`
+	EventCode           string         `json:"event_code"`
+	Channels            []Channel      `json:"channels"`
+	Audience            json.RawMessage `json:"audience"`
+	Payload             json.RawMessage `json:"payload"`
+	Status              CampaignStatus `json:"status"`
+	ScheduledFor        *time.Time     `json:"scheduled_for,omitempty"`
+	EstimatedRecipients int            `json:"estimated_recipients"`
+	TotalRecipients     int            `json:"total_recipients"`
+	DispatchedCount     int            `json:"dispatched_count"`
+	FailedCount         int            `json:"failed_count"`
+	CreatedAt           time.Time      `json:"created_at"`
+	CreatedBy           *uuid.UUID     `json:"created_by,omitempty"`
+	ApprovedAt          *time.Time     `json:"approved_at,omitempty"`
+	ApprovedBy          *uuid.UUID     `json:"approved_by,omitempty"`
+	SentAt              *time.Time     `json:"sent_at,omitempty"`
+	CancelledAt         *time.Time     `json:"cancelled_at,omitempty"`
+	CancelReason        *string        `json:"cancel_reason,omitempty"`
+	FailureReason       *string        `json:"failure_reason,omitempty"`
+	UpdatedAt           time.Time      `json:"updated_at"`
+}
+
+type CampaignSettings struct {
+	TenantID                   uuid.UUID `json:"tenant_id"`
+	ApprovalRecipientThreshold int       `json:"approval_recipient_threshold"`
+	UpdatedAt                  time.Time `json:"updated_at"`
+}
+
+type ScheduledJob struct {
+	ID          uuid.UUID  `json:"id"`
+	TenantID    uuid.UUID  `json:"tenant_id"`
+	JobKey      string     `json:"job_key"`
+	Description string     `json:"description"`
+	CronExpr    string     `json:"cron_expr"`
+	IsActive    bool       `json:"is_active"`
+	Config      json.RawMessage `json:"config"`
+	LastRunAt   *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt   *time.Time `json:"next_run_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+type JobRun struct {
+	ID               uuid.UUID  `json:"id"`
+	TenantID         uuid.UUID  `json:"tenant_id"`
+	ScheduledJobID   uuid.UUID  `json:"scheduled_job_id"`
+	JobKey           string     `json:"job_key"`
+	ScheduledFor     time.Time  `json:"scheduled_for"`
+	StartedAt        time.Time  `json:"started_at"`
+	FinishedAt       *time.Time `json:"finished_at,omitempty"`
+	RecordsProcessed int        `json:"records_processed"`
+	RecordsFailed    int        `json:"records_failed"`
+	Status           string     `json:"status"`
+	ErrorMessage     *string    `json:"error_message,omitempty"`
 }
 
 // ─────────── OTP (Stage 6) ───────────
