@@ -4808,3 +4808,109 @@ export async function postDepreciationRun(id: string): Promise<DepreciationRun> 
   const r = await api.post(`/v1/depreciation-runs/${id}/post`);
   return r.data.data;
 }
+
+// ─────────── Budgets ───────────
+
+export type BudgetStatus = 'draft' | 'submitted' | 'approved' | 'archived';
+
+export type Budget = {
+  id: string;
+  name: string;
+  fiscal_year: number;
+  period_start: string;
+  period_end: string;
+  status: BudgetStatus;
+  total_income_budget: string;
+  total_expense_budget: string;
+  net_surplus_budget: string;
+  notes?: string | null;
+  submitted_at?: string | null;
+  approved_at?: string | null;
+  archived_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BudgetLine = {
+  id: string;
+  budget_id: string;
+  account_id: string;
+  account_code: string;
+  account_class: 'income' | 'expense';
+  period_month: number;
+  amount: string;
+  notes?: string | null;
+};
+
+export type VarianceRow = {
+  account_id: string;
+  account_code: string;
+  account_name: string;
+  account_class: 'income' | 'expense';
+  budget: string;
+  actual: string;
+  variance: string;
+  variance_pct: string;
+  favourable: boolean;
+};
+
+export type VarianceReport = {
+  budget_id: string;
+  from: string;
+  to: string;
+  rows: VarianceRow[];
+  total_income_budget: string;
+  total_income_actual: string;
+  total_expense_budget: string;
+  total_expense_actual: string;
+  net_surplus_budget: string;
+  net_surplus_actual: string;
+  net_surplus_variance: string;
+};
+
+export async function listBudgets(year?: number): Promise<{ items: Budget[]; total: number }> {
+  const q = year ? `?year=${year}` : '';
+  const r = await api.get(`/v1/budgets${q}`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function createBudget(input: {
+  name: string;
+  fiscal_year: number;
+  period_start?: string;
+  period_end?: string;
+  notes?: string;
+}): Promise<Budget> {
+  const r = await api.post('/v1/budgets', input);
+  return r.data.data;
+}
+
+export async function getBudget(id: string): Promise<{ budget: Budget; lines: BudgetLine[] }> {
+  const r = await api.get(`/v1/budgets/${id}`);
+  return r.data.data;
+}
+
+export async function bulkUpsertBudgetLines(id: string, lines: { account_code: string; period_month: number; amount: string; notes?: string }[]): Promise<{ budget: Budget; lines: BudgetLine[] }> {
+  const r = await api.post(`/v1/budgets/${id}/lines/bulk-upsert`, { lines });
+  return r.data.data;
+}
+
+export async function submitBudget(id: string): Promise<Budget> {
+  const r = await api.post(`/v1/budgets/${id}/submit`);
+  return r.data.data;
+}
+
+export async function approveBudget(id: string): Promise<Budget> {
+  const r = await api.post(`/v1/budgets/${id}/approve`);
+  return r.data.data;
+}
+
+export async function archiveBudget(id: string): Promise<Budget> {
+  const r = await api.post(`/v1/budgets/${id}/archive`);
+  return r.data.data;
+}
+
+export async function budgetVariance(id: string, from: string, to: string): Promise<VarianceReport> {
+  const r = await api.get(`/v1/budgets/${id}/variance?from=${from}&to=${to}`);
+  return r.data.data;
+}

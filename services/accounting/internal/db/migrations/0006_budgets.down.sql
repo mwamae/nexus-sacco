@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS budget_lines;
+DROP TABLE IF EXISTS budgets;
