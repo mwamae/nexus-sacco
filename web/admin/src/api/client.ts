@@ -529,12 +529,22 @@ export async function fetchTenantLogo(): Promise<Blob | null> {
 }
 
 export async function updateRegion(patch: Partial<TenantRegion>): Promise<TenantRegion> {
-  const r = await api.patch('/v1/tenant/region', patch);
+  // The backend PATCH only accepts editable fields. Pages typically
+  // pass the full object including tenant_id + updated_at — strip
+  // those server-managed fields here so the JSON decoder doesn't
+  // reject the request as "unknown field".
+  const { tenant_id: _t, updated_at: _u, ...body } = patch;
+  void _t; void _u;
+  const r = await api.patch('/v1/tenant/region', body);
   return r.data.data;
 }
 
 export async function updateOperations(patch: Partial<TenantOperations>): Promise<TenantOperations> {
-  const r = await api.patch('/v1/tenant/operations', patch);
+  // Same defensive strip as updateRegion — keep server-managed fields
+  // out of the wire payload.
+  const { tenant_id: _t, updated_at: _u, ...body } = patch;
+  void _t; void _u;
+  const r = await api.patch('/v1/tenant/operations', body);
   return r.data.data;
 }
 
@@ -5094,4 +5104,34 @@ export type MemberStatement = {
 export async function getMemberStatement(memberID: string): Promise<MemberStatement> {
   const r = await api.get(`/v1/member-statements/${memberID}`);
   return r.data.data;
+}
+
+// ─────────── Report XLSX exports ───────────
+
+// Reports are exported via /v1/exports/{report}.xlsx?...query params...
+// The backend writes the binary XLSX directly to the response; we
+// receive it as a Blob and trigger a browser download.
+export async function downloadReport(report: string, query: Record<string, string> = {}): Promise<void> {
+  const qs = new URLSearchParams(query).toString();
+  const r = await api.get(`/v1/exports/${report}.xlsx${qs ? '?' + qs : ''}`, {
+    responseType: 'blob',
+  });
+  // Extract filename from Content-Disposition header if present.
+  let filename = `${report}.xlsx`;
+  const dispo: string | undefined = r.headers['content-disposition'];
+  if (dispo) {
+    const m = dispo.match(/filename="?([^"]+)"?/);
+    if (m) filename = m[1];
+  }
+  const blob = new Blob([r.data], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }

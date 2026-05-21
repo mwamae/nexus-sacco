@@ -5,7 +5,7 @@
 // has been formally closed).
 
 import { useEffect, useState } from 'react';
-import { changesInEquity, type ChangesInEquityRow } from '../../api/client';
+import { changesInEquity, downloadReport, type ChangesInEquityRow } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 
 export default function ChangesInEquityPage() {
@@ -52,6 +52,12 @@ export default function ChangesInEquityPage() {
           <button className="btn btn-primary" disabled={busy} onClick={() => void load()}>
             {busy ? 'Loading…' : 'Run report'}
           </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            <button className="btn" disabled={!data} onClick={() => void downloadReport('changes-in-equity', { from, to })}>
+              Export XLSX
+            </button>
+            <button className="btn" onClick={() => window.print()}>Print</button>
+          </div>
         </div>
       </div>
 

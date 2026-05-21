@@ -3,7 +3,7 @@
 // flags from the GL at an as-of date.
 
 import { useEffect, useState } from 'react';
-import { sasraReturn, type SASRAReturn } from '../../api/client';
+import { downloadReport, sasraReturn, type SASRAReturn } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 
 export default function SASRAReturnPage() {
@@ -46,6 +46,12 @@ export default function SASRAReturnPage() {
           <button className="btn btn-primary" disabled={busy} onClick={() => void load()}>
             {busy ? 'Loading…' : 'Run'}
           </button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn" disabled={!data} onClick={() => void downloadReport('sasra-return', { as_of: asOf })}>
+              Export XLSX
+            </button>
+            <button className="btn" onClick={() => window.print()}>Print</button>
+          </div>
           {data && (
             <div style={{ marginLeft: 'auto' }}>
               <div className="muted tiny">Overall compliance</div>

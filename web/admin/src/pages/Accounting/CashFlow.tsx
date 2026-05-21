@@ -10,7 +10,7 @@
 // balance — the `reconciles` flag from the backend is the canary.
 
 import { useEffect, useState } from 'react';
-import { cashFlow, type CashFlowSection } from '../../api/client';
+import { cashFlow, downloadReport, type CashFlowSection } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 
 export default function CashFlowPage() {
@@ -57,6 +57,12 @@ export default function CashFlowPage() {
           <button className="btn btn-primary" disabled={busy} onClick={() => void load()}>
             {busy ? 'Loading…' : 'Run report'}
           </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            <button className="btn" disabled={!data} onClick={() => void downloadReport('cash-flow', { from, to })}>
+              Export XLSX
+            </button>
+            <button className="btn" onClick={() => window.print()}>Print</button>
+          </div>
         </div>
       </div>
 

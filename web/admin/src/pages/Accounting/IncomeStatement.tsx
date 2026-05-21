@@ -3,7 +3,7 @@
 // earnings.
 
 import { useEffect, useState } from 'react';
-import { incomeStatement, type IncomeStatementRow } from '../../api/client';
+import { downloadReport, incomeStatement, type IncomeStatementRow } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 
 export default function IncomeStatementPage() {
@@ -50,6 +50,12 @@ export default function IncomeStatementPage() {
           <button className="btn btn-primary" disabled={busy} onClick={() => void load()}>
             {busy ? 'Loading…' : 'Run report'}
           </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            <button className="btn" disabled={!data} onClick={() => void downloadReport('income-statement', { from, to })}>
+              Export XLSX
+            </button>
+            <button className="btn" onClick={() => window.print()}>Print</button>
+          </div>
         </div>
       </div>
 

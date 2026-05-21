@@ -102,6 +102,10 @@ func main() {
 		Budget: &handler.BudgetHandler{
 			DB: pool, Budgets: budgetStore, Logger: logger,
 		},
+		Export: &handler.ExportHandler{
+			DB: pool, Reports: reportStore, Budgets: budgetStore,
+			Tenants: tenants, Logger: logger,
+		},
 		InternalPost: &handler.InternalPostHandler{
 			DB: pool, Engine: engine,
 			InternalToken: cfg.InternalToken, Logger: logger,

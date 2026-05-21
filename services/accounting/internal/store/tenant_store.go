@@ -41,3 +41,19 @@ func (s *TenantStore) BySlug(ctx context.Context, slug string) (*Tenant, error) 
 	}
 	return &t, nil
 }
+
+// GetByID looks up a tenant by id. Used by report exports to render
+// the tenant name in the spreadsheet header.
+func (s *TenantStore) GetByID(ctx context.Context, id uuid.UUID) (*Tenant, error) {
+	var t Tenant
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, slug, name, status FROM tenants WHERE id = $1
+	`, id).Scan(&t.ID, &t.Slug, &t.Name, &t.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}

@@ -34,6 +34,7 @@ type Deps struct {
 	Cash         *CashHandler
 	FixedAssets  *FixedAssetsHandler
 	Budget       *BudgetHandler
+	Export       *ExportHandler
 	InternalPost *InternalPostHandler
 	TenantStore  *store.TenantStore
 	Issuer       *auth.TokenIssuer
@@ -142,6 +143,9 @@ func Routes(d Deps) http.Handler {
 			r.Post("/budgets/{id}/approve", d.Budget.Approve)
 			r.Post("/budgets/{id}/archive", d.Budget.Archive)
 			r.Get("/budgets/{id}/variance", d.Budget.Variance)
+
+			// Excel exports
+			r.Get("/exports/{report}", d.Export.Export)
 		})
 	})
 

@@ -1144,3 +1144,47 @@ svg.ico { display: inline-block; vertical-align: middle; }
   height: 100%;
   border-radius: 999px;
 }
+
+/* ─── Print stylesheet ───
+   Hide the app shell (sidebar / topbar) and the interactive controls
+   so the page prints as a clean financial report. The .page-hd
+   eyebrow + h1 are kept so each printout has a title and tenant
+   context at the top. */
+@media print {
+  .sidebar, .topbar, .tweaks, .credit-banner,
+  .tb-icon-btn, .sb-tenant, .sb-brand, .sb-user {
+    display: none !important;
+  }
+  .app {
+    display: block !important;
+  }
+  .main {
+    margin: 0 !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+  .page {
+    padding: 12px !important;
+  }
+  .page-hd .btn, .page-hd a.btn, .card-hd .btn,
+  input[type="date"], input[type="number"], select {
+    display: none !important;
+  }
+  .card {
+    box-shadow: none !important;
+    border: 1px solid #ccc !important;
+    page-break-inside: avoid;
+  }
+  .tbl {
+    page-break-inside: auto;
+  }
+  .tbl tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+  /* Keep semantic colors (positive/negative, status flags). */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}
