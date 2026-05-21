@@ -22,6 +22,20 @@ import {
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
+import {
+  getPlatformTenantDetail,
+  platformLedger,
+  type CreditBalance,
+  type CreditChannel,
+  type CreditLedgerEntry,
+  type CreditPricing,
+} from '../api/client';
+import {
+  AdjustmentForm,
+  LedgerTable,
+  PricingForm,
+  TopupForm,
+} from './PlatformCredits';
 
 const ACTIVE_STATUSES: Exclude<TenantStatus, 'archived'>[] = [
   'active', 'trial', 'pending_setup', 'suspended', 'expired',
@@ -248,6 +262,7 @@ export default function TenantProfile() {
 
           <StatusCard t={t} busy={busy} onChange={onStatusChange} disabled={archived} />
           <RestrictionsCard t={t} busy={busy} onToggle={onToggle} disabled={archived} />
+          <TenantCreditsCard tenantID={t.id} />
 
           <DangerZone
             t={t}
@@ -259,6 +274,103 @@ export default function TenantProfile() {
           />
         </>
       )}
+    </div>
+  );
+}
+
+// ─────────── Credits card ───────────
+//
+// Inline replacement for the old PlatformCredits modal. Reuses the
+// per-channel TopupForm / AdjustmentForm / PricingForm components
+// (now exported from PlatformCredits.tsx) and a fresh ledger view.
+// Tabbed so the long ledger doesn't push the danger zone off-screen.
+
+const CHANNEL_LABEL: Record<CreditChannel, string> = { sms: 'SMS', email: 'Email' };
+
+function TenantCreditsCard({ tenantID }: { tenantID: string }) {
+  type View = 'top-up' | 'adjust' | 'ledger' | 'pricing';
+  const [view, setView] = useState<View>('top-up');
+  const [detail, setDetail] = useState<{ balances: CreditBalance[]; pricing: CreditPricing[] } | null>(null);
+  const [ledger, setLedger] = useState<CreditLedgerEntry[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    setErr(null);
+    try {
+      const [d, l] = await Promise.all([
+        getPlatformTenantDetail(tenantID),
+        platformLedger(tenantID, { limit: 50 }),
+      ]);
+      setDetail(d);
+      setLedger(l.items ?? []);
+    } catch (e) {
+      setErr(extractError(e));
+    }
+  }
+  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tenantID]);
+
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-hd">
+        <h3>Notification credits</h3>
+        <span className="card-sub">SMS + email prepaid balance, ledger, pricing, top-up &amp; adjustment actions.</span>
+      </div>
+      <div className="card-body">
+        {err && <div className="alert alert-error" style={{ marginBottom: 10 }}>{err}</div>}
+
+        {/* Balance + last-topup summary */}
+        {detail && (
+          <div className="row" style={{ gap: 20, flexWrap: 'wrap', marginBottom: 14 }}>
+            {detail.balances.map((b) => {
+              const zero = b.balance < 1;
+              const low = !zero && b.low_balance_threshold > 0 && b.balance <= b.low_balance_threshold;
+              return (
+                <div key={b.channel} style={{ minWidth: 140 }}>
+                  <div className="muted tiny" style={{ marginBottom: 2 }}>{CHANNEL_LABEL[b.channel]} balance</div>
+                  <div style={{
+                    fontSize: 28, fontWeight: 700, lineHeight: 1,
+                    color: zero ? 'var(--neg)' : low ? 'var(--warn)' : undefined,
+                  }}>
+                    {b.balance.toLocaleString()}
+                  </div>
+                  {b.last_topup_at && (
+                    <div className="muted tiny" style={{ marginTop: 4 }}>
+                      Last top-up {new Date(b.last_topup_at).toLocaleDateString()}
+                      {b.last_topup_credits != null && ` (+${b.last_topup_credits})`}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Sub-tabs for the four action surfaces */}
+        <div className="tabs" style={{ padding: 0, marginBottom: 10 }}>
+          {[
+            { id: 'top-up' as const,   label: 'Top up' },
+            { id: 'adjust' as const,   label: 'Adjust (maker)' },
+            { id: 'ledger' as const,   label: 'Ledger' },
+            { id: 'pricing' as const,  label: 'Pricing' },
+          ].map((v) => (
+            <div
+              key={v.id}
+              className="tab"
+              data-active={view === v.id || undefined}
+              onClick={() => setView(v.id)}
+            >
+              {v.label}
+            </div>
+          ))}
+        </div>
+
+        {view === 'top-up'  && <TopupForm tenantID={tenantID} onCompleted={load} />}
+        {view === 'adjust'  && <AdjustmentForm tenantID={tenantID} onCompleted={load} />}
+        {view === 'ledger'  && <LedgerTable entries={ledger} />}
+        {view === 'pricing' && detail && (
+          <PricingForm tenantID={tenantID} pricing={detail.pricing} onSaved={load} />
+        )}
+      </div>
     </div>
   );
 }

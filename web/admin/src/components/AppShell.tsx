@@ -85,8 +85,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
     groups.push({
       section: 'Platform',
       items: [
-        { href: '/', label: 'Tenants', icon: 'building', show: true },
-        { href: '/platform/credits', label: 'Tenant credits', icon: 'bank', show: true },
+        // Single entry — Tenants list, credit operations, and shared
+        // driver configuration are all tabs within the dashboard.
+        { href: '/', label: 'Tenants & credits', icon: 'building', show: true },
       ],
     });
   }

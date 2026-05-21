@@ -174,7 +174,7 @@ function TenantsTable({
 
 // ─────────── Per-tenant detail modal ───────────
 
-function TenantDetailModal({
+export function TenantDetailModal({
   tenantID, tenantName, onClose, onChanged,
 }: {
   tenantID: string;
@@ -257,7 +257,7 @@ function TenantDetailModal({
   );
 }
 
-function TopupForm({ tenantID, onCompleted }: { tenantID: string; onCompleted: () => void }) {
+export function TopupForm({ tenantID, onCompleted }: { tenantID: string; onCompleted: () => void }) {
   const [channel, setChannel] = useState<CreditChannel>('sms');
   const [credits, setCredits] = useState(100);
   const [reference, setReference] = useState('');
@@ -304,7 +304,7 @@ function TopupForm({ tenantID, onCompleted }: { tenantID: string; onCompleted: (
   );
 }
 
-function LedgerTable({ entries }: { entries: CreditLedgerEntry[] }) {
+export function LedgerTable({ entries }: { entries: CreditLedgerEntry[] }) {
   if (entries.length === 0) return <div className="empty">No movements yet.</div>;
   return (
     <table className="tbl">
@@ -340,7 +340,7 @@ function LedgerTable({ entries }: { entries: CreditLedgerEntry[] }) {
   );
 }
 
-function PricingForm({ tenantID, pricing, onSaved }: { tenantID: string; pricing: CreditPricing[]; onSaved: () => void }) {
+export function PricingForm({ tenantID, pricing, onSaved }: { tenantID: string; pricing: CreditPricing[]; onSaved: () => void }) {
   const byCh = useMemo(() => {
     const m: Record<string, CreditPricing> = {};
     for (const p of pricing) m[p.channel] = p;
@@ -422,7 +422,7 @@ function PricingRow({
 
 // ─────────── Top-up requests tab ───────────
 
-function RequestsTable({ onChanged }: { onChanged: () => void }) {
+export function RequestsTable({ onChanged }: { onChanged: () => void }) {
   const [items, setItems] = useState<Array<TopupRequest & { tenant_slug?: string; tenant_name?: string }>>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -501,7 +501,7 @@ function RequestsTable({ onChanged }: { onChanged: () => void }) {
 
 // Per-tenant maker form. Posts a request which then needs a different
 // platform admin to approve via the Adjustments tab.
-function AdjustmentForm({ tenantID, onCompleted }: { tenantID: string; onCompleted: () => void }) {
+export function AdjustmentForm({ tenantID, onCompleted }: { tenantID: string; onCompleted: () => void }) {
   const [channel, setChannel] = useState<CreditChannel>('sms');
   const [credits, setCredits] = useState(0);
   const [reason, setReason] = useState('');
@@ -557,7 +557,7 @@ function AdjustmentForm({ tenantID, onCompleted }: { tenantID: string; onComplet
 // Platform-wide pending adjustments queue. Each row shows Approve /
 // Reject — but Approve is hidden for the requester themselves so a
 // single admin can't bypass the checker rule from the UI.
-function AdjustmentsTable({ currentUserID, onChanged }: { currentUserID: string; onChanged: () => void }) {
+export function AdjustmentsTable({ currentUserID, onChanged }: { currentUserID: string; onChanged: () => void }) {
   const [items, setItems] = useState<Array<CreditAdjustment & { tenant_slug?: string; tenant_name?: string }>>([]);
   const [status, setStatus] = useState<'pending_approval' | 'approved' | 'rejected'>('pending_approval');
   const [busy, setBusy] = useState<string | null>(null);
@@ -674,7 +674,7 @@ function AdjustmentsTable({ currentUserID, onChanged }: { currentUserID: string;
 
 // ─────────── Analytics ───────────
 
-function AnalyticsPanel() {
+export function AnalyticsPanel() {
   const [data, setData] = useState<Awaited<ReturnType<typeof platformUsageSummary>> | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
