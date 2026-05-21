@@ -160,6 +160,7 @@ func main() {
 		Invites: inviteStore, Audit: auditStore, Logger: logger,
 		InviteTTL: cfg.InviteTTL,
 		UserH:     userH,
+		AuthH:     authH,
 	}
 	rbacH := &handler.RBACHandler{
 		DB: pool, Roles: roleStore, Permissions: permissionStore,

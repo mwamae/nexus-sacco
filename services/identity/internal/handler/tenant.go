@@ -38,6 +38,11 @@ type TenantHandler struct {
 	// existing role-resolution + invite-email helpers on UserHandler
 	// without duplicating them.
 	UserH *UserHandler
+
+	// AuthH is reached for password-reset issuance — the platform
+	// "force reset" action delegates to AuthHandler.IssuePasswordResetFor
+	// so the token rules + session revocation stay in one place.
+	AuthH *AuthHandler
 }
 
 var slugRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{1,38}[a-z0-9])?$`)
@@ -109,12 +114,16 @@ func (h *TenantHandler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("name is required"))
 		return
 	}
-	if req.OwnerEmail == "" || req.OwnerPassword == "" || req.OwnerName == "" {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("owner_email, owner_name, and owner_password are required"))
+	if req.OwnerEmail == "" || req.OwnerName == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("owner_email and owner_name are required"))
 		return
 	}
-	if len(req.OwnerPassword) < 12 {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("owner_password must be at least 12 characters"))
+	// owner_password is optional now. When omitted, the owner is
+	// provisioned in pending state and gets an invitation email — the
+	// "primary contact" flow from the spec. The platform admin never
+	// sets passwords for tenant users.
+	if req.OwnerPassword != "" && len(req.OwnerPassword) < 12 {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("owner_password must be at least 12 characters when provided"))
 		return
 	}
 	if req.Kind == "" {
@@ -209,10 +218,24 @@ func (h *TenantHandler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, err)
 		return
 	}
-	hash, err := auth.HashPassword(req.OwnerPassword)
-	if err != nil {
-		httpx.WriteErr(w, r, err)
-		return
+
+	// If the platform admin supplied a password, the owner starts
+	// Active immediately. Otherwise the owner is Pending and we issue
+	// a single-use invite token the user redeems to set their own
+	// password (the canonical "primary contact" flow from the spec).
+	var (
+		passwordHash string
+		ownerStatus  = domain.UserStatusPending
+		rawInvite    string
+	)
+	if req.OwnerPassword != "" {
+		ph, herr := auth.HashPassword(req.OwnerPassword)
+		if herr != nil {
+			httpx.WriteErr(w, r, herr)
+			return
+		}
+		passwordHash = ph
+		ownerStatus = domain.UserStatusActive
 	}
 
 	var (
@@ -226,8 +249,8 @@ func (h *TenantHandler) Create(w http.ResponseWriter, r *http.Request) {
 			Email:        req.OwnerEmail,
 			Phone:        req.OwnerPhone,
 			FullName:     req.OwnerName,
-			PasswordHash: hash,
-			Status:       domain.UserStatusActive,
+			PasswordHash: passwordHash,
+			Status:       ownerStatus,
 		})
 		if err != nil {
 			return err
@@ -235,6 +258,25 @@ func (h *TenantHandler) Create(w http.ResponseWriter, r *http.Request) {
 		owner = u
 		if err := h.Roles.AssignTx(r.Context(), tx, u.ID, ownerRole.ID, nil); err != nil {
 			return err
+		}
+		// Pending owner gets an invite token so the password-setup link
+		// can be sent. Single tx so a failure to insert the invite
+		// rolls back the whole tenant creation.
+		if ownerStatus == domain.UserStatusPending {
+			raw, hash, terr := store.NewInviteToken()
+			if terr != nil {
+				return terr
+			}
+			if ierr := h.Invites.CreateTx(r.Context(), tx, store.CreateInviteInput{
+				TenantID:  t.ID,
+				UserID:    u.ID,
+				TokenHash: hash,
+				InvitedBy: nil, // platform-driven, no actor user-id
+				ExpiresAt: time.Now().Add(h.InviteTTL),
+			}); ierr != nil {
+				return ierr
+			}
+			rawInvite = raw
 		}
 		if len(branches) > 0 {
 			if err := h.Tenants.ReplaceBranchesTx(r.Context(), tx, t.ID, branches); err != nil {
@@ -273,9 +315,20 @@ func (h *TenantHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Metadata: map[string]any{
 			"slug": t.Slug, "owner_id": owner.ID.String(),
 			"branches": len(outBranches), "contacts": len(outContacts),
-			"billing_plan": string(t.BillingPlan),
+			"billing_plan": string(t.BillingPlan), "invite_sent": rawInvite != "",
 		},
 	})
+
+	// Fire the activation email after the tx commits so a bad SMTP
+	// doesn't block tenant creation. The notifier is "log and continue".
+	if rawInvite != "" && h.UserH != nil {
+		claims := middleware.ClaimsFrom(r)
+		inviterName := ""
+		if claims != nil {
+			inviterName = claims.FullName
+		}
+		h.UserH.sendInviteEmail(t, owner, inviterName, rawInvite)
+	}
 
 	httpx.Created(w, createTenantResponse{
 		Tenant:   t,

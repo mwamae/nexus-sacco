@@ -3,7 +3,7 @@
 // from pending → active.
 
 import { useMemo, useState, type FormEvent } from 'react';
-import { extractError, inviteAccept } from '../api/client';
+import { extractError, inviteAccept, saveTokens } from '../api/client';
 
 export default function AcceptInvite() {
   const token = useMemo(() => new URLSearchParams(window.location.search).get('token') ?? '', []);
@@ -33,7 +33,21 @@ export default function AcceptInvite() {
     setError(null);
     setBusy(true);
     try {
-      await inviteAccept(token, password);
+      const r = await inviteAccept(token, password);
+      // Auto-login: persist tokens then route to the dashboard with a
+      // welcome marker so the dashboard can show a first-run banner.
+      if (r.tokens) {
+        saveTokens({
+          accessToken:      r.tokens.access_token,
+          refreshToken:     r.tokens.refresh_token,
+          expiresAt:        r.tokens.expires_at,
+          refreshExpiresAt: r.tokens.refresh_expires_at,
+        });
+        window.location.assign((r.redirect || '/') + '?welcome=1');
+        return;
+      }
+      // Legacy path: backend didn't return tokens — fall back to the
+      // old "go log in" message.
       setDone(true);
     } catch (err) {
       setError(extractError(err, 'Could not accept invite'));

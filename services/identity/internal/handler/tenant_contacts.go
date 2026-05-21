@@ -35,10 +35,15 @@ import (
 // ─────────── Contacts ───────────
 
 type contactRequest struct {
-	FullName string `json:"full_name"`
-	Title    string `json:"title,omitempty"`
-	Email    string `json:"email,omitempty"`
-	Phone    string `json:"phone,omitempty"`
+	FullName        string   `json:"full_name"`
+	Title           string   `json:"title,omitempty"`
+	Email           string   `json:"email,omitempty"`
+	Phone           string   `json:"phone,omitempty"`
+	// Provision the contact as a tenant-side user with the listed
+	// roles (defaults to tenant_owner). Email becomes required when
+	// this is true.
+	ProvisionAsUser bool     `json:"provision_as_user,omitempty"`
+	RoleCodes       []string `json:"role_codes,omitempty"`
 }
 
 func (in contactRequest) normalised() store.ContactInput {
@@ -66,7 +71,12 @@ func (h *TenantHandler) AddContact(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("full_name is required"))
 		return
 	}
-	if _, err := h.Tenants.ByID(r.Context(), tenantID); err != nil {
+	if in.ProvisionAsUser && c.Email == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("email is required when provision_as_user=true"))
+		return
+	}
+	tenant, err := h.Tenants.ByID(r.Context(), tenantID)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			httpx.WriteErr(w, r, httpx.ErrNotFound("tenant not found"))
 			return
@@ -74,17 +84,98 @@ func (h *TenantHandler) AddContact(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, err)
 		return
 	}
-	var created *domain.TenantContact
+
+	roleCodes := in.RoleCodes
+	if in.ProvisionAsUser && len(roleCodes) == 0 {
+		roleCodes = []string{"tenant_owner"}
+	}
+
+	var (
+		created      *domain.TenantContact
+		createdUser  *domain.User
+		rawInvite    string
+		actorID, _   = middleware.UserIDFrom(r)
+	)
 	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var lerr error
 		created, lerr = h.Tenants.AddContactTx(r.Context(), tx, tenantID, c)
-		return lerr
+		if lerr != nil {
+			return lerr
+		}
+		if !in.ProvisionAsUser {
+			return nil
+		}
+		// Provision the contact as a tenant-side user with the chosen
+		// roles. Pending status + invite, no password — same flow as
+		// the InviteUser endpoint, kept inline here so a contact + user
+		// land in the same tx (rolls back atomically if either fails).
+		roleIDs := make([]uuid.UUID, 0, len(roleCodes))
+		for _, code := range roleCodes {
+			code = strings.ToLower(strings.TrimSpace(code))
+			if code == "platform_admin" {
+				return httpx.ErrBadRequest("platform_admin cannot be granted via contact provisioning")
+			}
+			role, rerr := h.UserH.lookupAssignableRole(r.Context(), tx, tenantID, code)
+			if rerr != nil {
+				return rerr
+			}
+			roleIDs = append(roleIDs, role.ID)
+		}
+		u, uerr := h.Users.CreateTx(r.Context(), tx, store.CreateUserInput{
+			TenantID: tenantID,
+			Email:    c.Email,
+			Phone:    c.Phone,
+			FullName: c.FullName,
+			Status:   domain.UserStatusPending,
+		})
+		if uerr != nil {
+			return uerr
+		}
+		for _, rid := range roleIDs {
+			if aerr := h.Roles.AssignTx(r.Context(), tx, u.ID, rid, nonZero(actorID)); aerr != nil {
+				return aerr
+			}
+		}
+		raw, hash, terr := store.NewInviteToken()
+		if terr != nil {
+			return terr
+		}
+		if ierr := h.Invites.CreateTx(r.Context(), tx, store.CreateInviteInput{
+			TenantID:  tenantID,
+			UserID:    u.ID,
+			TokenHash: hash,
+			InvitedBy: nonZero(actorID),
+			ExpiresAt: time.Now().Add(h.InviteTTL),
+		}); ierr != nil {
+			return ierr
+		}
+		createdUser = u
+		rawInvite = raw
+		return nil
 	})
 	if err != nil {
+		if db.IsUniqueViolation(err) {
+			httpx.WriteErr(w, r, httpx.ErrConflict("a user with that email already exists in this tenant"))
+			return
+		}
 		httpx.WriteErr(w, r, err)
 		return
 	}
-	httpx.Created(w, created)
+
+	// Fire the invite email out-of-band.
+	if rawInvite != "" && createdUser != nil && h.UserH != nil {
+		claims := middleware.ClaimsFrom(r)
+		inviterName := ""
+		if claims != nil {
+			inviterName = claims.FullName
+		}
+		h.UserH.sendInviteEmail(tenant, createdUser, inviterName, rawInvite)
+	}
+
+	httpx.Created(w, map[string]any{
+		"contact": created,
+		"user":    createdUser, // null when not provisioned
+	})
 }
 
 func (h *TenantHandler) UpdateContact(w http.ResponseWriter, r *http.Request) {

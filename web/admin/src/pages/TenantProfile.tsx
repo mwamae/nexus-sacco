@@ -19,8 +19,13 @@ import {
   addTenantContact,
   deleteTenantContact,
   updateTenantContact,
+  forceTenantUserPasswordReset,
   inviteUserToTenant,
   listTenantUsers,
+  reactivateTenantUser,
+  resendTenantUserInvite,
+  revokeTenantUser,
+  suspendTenantUser,
   type ApiTenantContact,
   type ApiTenantDetail,
   type TenantContactInput,
@@ -73,6 +78,7 @@ export default function TenantProfile() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [usersRefreshTick, setUsersRefreshTick] = useState(0);
 
   async function reload() {
     if (!tenantId) return;
@@ -239,8 +245,17 @@ export default function TenantProfile() {
             </div>
           </div>
 
-          <ContactsCard tenantID={t.id} initial={t.contacts} disabled={archived} />
-          <UsersCard tenantID={t.id} disabled={archived} />
+          <ContactsCard
+            tenantID={t.id}
+            initial={t.contacts}
+            disabled={archived}
+            onUserAdded={() => setUsersRefreshTick((n) => n + 1)}
+          />
+          <UsersCard
+            tenantID={t.id}
+            disabled={archived}
+            refreshTick={usersRefreshTick}
+          />
 
           <StatusCard t={t} busy={busy} onChange={onStatusChange} disabled={archived} />
           <RestrictionsCard t={t} busy={busy} onToggle={onToggle} disabled={archived} />
@@ -267,24 +282,30 @@ export default function TenantProfile() {
 // service.
 
 function ContactsCard({
-  tenantID, initial, disabled,
+  tenantID, initial, disabled, onUserAdded,
 }: {
   tenantID: string;
   initial: ApiTenantContact[];
   disabled: boolean;
+  onUserAdded?: () => void; // notify UsersCard to refresh when a contact provisions a user
 }) {
   const [contacts, setContacts] = useState<ApiTenantContact[]>(initial);
   const [editingID, setEditingID] = useState<string | 'new' | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
 
   useEffect(() => { setContacts(initial); }, [initial]);
 
   async function handleAdd(input: TenantContactInput) {
-    setErr(null);
+    setErr(null); setInfo(null);
     try {
-      const c = await addTenantContact(tenantID, input);
-      setContacts((cs) => [...cs, c]);
+      const r = await addTenantContact(tenantID, input);
+      setContacts((cs) => [...cs, r.contact]);
       setEditingID(null);
+      if (r.user) {
+        setInfo(`Invite sent to ${r.user.email}. They'll receive an email to set their password.`);
+        onUserAdded?.();
+      }
     } catch (e) {
       setErr(extractError(e));
       throw e;
@@ -327,6 +348,7 @@ function ContactsCard({
       </div>
       <div className="card-body flush">
         {err && <div className="alert alert-error" style={{ margin: 10 }}>{err}</div>}
+        {info && <div className="alert alert-info" style={{ margin: 10 }}>{info}</div>}
         {contacts.length === 0 && editingID !== 'new' && (
           <div className="empty">
             No contacts recorded.{!disabled && (
@@ -396,6 +418,14 @@ function ContactsCard({
   );
 }
 
+// Roles offered when "provision as user" is checked on a new contact.
+// Free-text override is always available (server validates against the
+// tenant's role catalogue).
+const PROVISION_ROLE_OPTIONS = [
+  'tenant_owner', 'sacco_admin', 'accountant', 'credit_officer',
+  'teller', 'branch_manager', 'auditor', 'collections_officer',
+];
+
 function ContactEditRow({
   initial, onSave, onCancel,
 }: {
@@ -403,58 +433,97 @@ function ContactEditRow({
   onSave: (v: TenantContactInput) => Promise<void>;
   onCancel: () => void;
 }) {
+  const isNew = !initial;
   const [fullName, setFullName] = useState(initial?.full_name ?? '');
   const [title, setTitle] = useState(initial?.title ?? '');
   const [email, setEmail] = useState(initial?.email ?? '');
   const [phone, setPhone] = useState(initial?.phone ?? '');
+  const [provision, setProvision] = useState(false);
+  const [role, setRole] = useState('tenant_owner');
   const [busy, setBusy] = useState(false);
   async function submit() {
     if (!fullName.trim()) return;
+    if (provision && !email.trim()) return;
     setBusy(true);
     try {
-      await onSave({ full_name: fullName, title, email, phone });
+      const payload: TenantContactInput = { full_name: fullName, title, email, phone };
+      if (isNew && provision) {
+        payload.provision_as_user = true;
+        payload.role_codes = [role];
+      }
+      await onSave(payload);
     } catch { /* parent surfaces err */ }
     finally { setBusy(false); }
   }
   return (
-    <tr style={{ background: 'var(--surface-2)' }}>
-      <td><Avatar name={fullName || '?'} size="sm" /></td>
-      <td>
-        <input
-          value={fullName}
-          onChange={(e) => setFullName(e.target.value)}
-          placeholder="Full name *"
-          style={{ width: '100%' }}
-          autoFocus
-        />
-      </td>
-      <td>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" style={{ width: '100%' }} />
-      </td>
-      <td>
-        <input
-          type="email" value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="email@example.com"
-          style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
-        />
-      </td>
-      <td>
-        <input
-          value={phone} onChange={(e) => setPhone(e.target.value)}
-          placeholder="+254..."
-          style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
-        />
-      </td>
-      <td>
-        <div className="row" style={{ gap: 4 }}>
-          <button className="btn btn-sm btn-primary" disabled={busy || !fullName.trim()} onClick={() => void submit()}>
-            {busy ? '…' : 'Save'}
-          </button>
-          <button className="btn btn-sm btn-ghost" disabled={busy} onClick={onCancel}>Cancel</button>
-        </div>
-      </td>
-    </tr>
+    <>
+      <tr style={{ background: 'var(--surface-2)' }}>
+        <td><Avatar name={fullName || '?'} size="sm" /></td>
+        <td>
+          <input
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            placeholder="Full name *"
+            style={{ width: '100%' }}
+            autoFocus
+          />
+        </td>
+        <td>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" style={{ width: '100%' }} />
+        </td>
+        <td>
+          <input
+            type="email" value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={provision ? 'login@example.com *' : 'email@example.com'}
+            style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+          />
+        </td>
+        <td>
+          <input
+            value={phone} onChange={(e) => setPhone(e.target.value)}
+            placeholder="+254..."
+            style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+          />
+        </td>
+        <td>
+          <div className="row" style={{ gap: 4 }}>
+            <button
+              className="btn btn-sm btn-primary"
+              disabled={busy || !fullName.trim() || (provision && !email.trim())}
+              onClick={() => void submit()}
+            >
+              {busy ? '…' : 'Save'}
+            </button>
+            <button className="btn btn-sm btn-ghost" disabled={busy} onClick={onCancel}>Cancel</button>
+          </div>
+        </td>
+      </tr>
+      {isNew && (
+        <tr style={{ background: 'var(--surface-2)' }}>
+          <td></td>
+          <td colSpan={5} style={{ paddingTop: 0 }}>
+            <label className="row" style={{ gap: 6, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={provision}
+                onChange={(e) => setProvision(e.target.checked)}
+              />
+              <span>Also provision as a tenant user (email becomes their login; they'll receive an invite)</span>
+            </label>
+            {provision && (
+              <div className="row" style={{ gap: 6, marginTop: 6, alignItems: 'center' }}>
+                <label className="muted tiny" style={{ marginRight: 4 }}>Role:</label>
+                <select value={role} onChange={(e) => setRole(e.target.value)}>
+                  {PROVISION_ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                </select>
+                <span className="muted tiny">(Tenant Super Admin = <code>tenant_owner</code>)</span>
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -465,13 +534,14 @@ function ContactEditRow({
 // text in the form because tenants can define custom roles — the
 // server validates against the role catalogue.
 
-function UsersCard({ tenantID, disabled }: { tenantID: string; disabled: boolean }) {
+function UsersCard({ tenantID, disabled, refreshTick }: { tenantID: string; disabled: boolean; refreshTick?: number }) {
   const [users, setUsers] = useState<TenantUserRow[] | null>(null);
   const [inviting, setInviting] = useState(false);
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [roleCodes, setRoleCodes] = useState('sacco_admin');
   const [busy, setBusy] = useState(false);
+  const [rowBusy, setRowBusy] = useState<string | null>(null); // user_id of the row currently performing an action
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
 
@@ -484,7 +554,47 @@ function UsersCard({ tenantID, disabled }: { tenantID: string; disabled: boolean
       setErr(extractError(e));
     }
   }
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tenantID]);
+  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tenantID, refreshTick]);
+
+  async function doAction(userID: string, label: string, fn: () => Promise<unknown>) {
+    setErr(null); setInfo(null);
+    setRowBusy(userID);
+    try {
+      await fn();
+      setInfo(`${label} succeeded.`);
+      await load();
+    } catch (e) {
+      setErr(extractError(e));
+    } finally {
+      setRowBusy(null);
+    }
+  }
+  async function onResend(u: TenantUserRow) {
+    await doAction(u.user.id, `Invite resent to ${u.user.email}`,
+      () => resendTenantUserInvite(tenantID, u.user.id));
+  }
+  async function onSuspend(u: TenantUserRow) {
+    const reason = prompt(`Reason for suspending ${u.user.email}:`) ?? '';
+    if (!reason.trim()) return;
+    await doAction(u.user.id, `${u.user.email} suspended`,
+      () => suspendTenantUser(tenantID, u.user.id, reason));
+  }
+  async function onReactivate(u: TenantUserRow) {
+    await doAction(u.user.id, `${u.user.email} reactivated`,
+      () => reactivateTenantUser(tenantID, u.user.id));
+  }
+  async function onForceReset(u: TenantUserRow) {
+    if (!confirm(`Force a password reset for ${u.user.email}? They'll receive a reset email and any active session is killed.`)) return;
+    await doAction(u.user.id, `Reset email sent to ${u.user.email}`,
+      () => forceTenantUserPasswordReset(tenantID, u.user.id));
+  }
+  async function onRevoke(u: TenantUserRow) {
+    const reason = prompt(`Reason for permanently revoking access for ${u.user.email}:`) ?? '';
+    if (!reason.trim()) return;
+    if (!confirm(`Permanently revoke access for ${u.user.email}? They can no longer log in.`)) return;
+    await doAction(u.user.id, `${u.user.email} access revoked`,
+      () => revokeTenantUser(tenantID, u.user.id, reason));
+  }
 
   async function submitInvite() {
     setErr(null); setInfo(null);
@@ -589,31 +699,91 @@ function UsersCard({ tenantID, disabled }: { tenantID: string; disabled: boolean
               <th>Email</th>
               <th>Status</th>
               <th>Roles</th>
+              {!disabled && <th style={{ width: 1 }}>Actions</th>}
             </tr></thead>
             <tbody>
-              {users.map((row) => (
-                <tr key={row.user.id}>
-                  <td><Avatar name={row.user.full_name || row.user.email} size="sm" /></td>
-                  <td>{row.user.full_name || <span className="muted">—</span>}</td>
-                  <td className="tiny-mono">{row.user.email}</td>
-                  <td>
-                    <Badge tone={
-                      row.user.status === 'active'    ? 'pos' :
-                      row.user.status === 'pending'   ? 'warn' :
-                      row.user.status === 'suspended' ? 'neg' : 'neutral'
-                    }>
-                      {row.user.status}
-                    </Badge>
-                  </td>
-                  <td className="tiny">
-                    {(row.roles ?? []).map((r) => r.code).join(', ') || <span className="muted">—</span>}
-                  </td>
-                </tr>
-              ))}
+              {users.map((row) => {
+                const isSuperAdmin = (row.roles ?? []).some((r) => r.code === 'tenant_owner');
+                const status = row.user.status;
+                return (
+                  <tr key={row.user.id}>
+                    <td><Avatar name={row.user.full_name || row.user.email} size="sm" /></td>
+                    <td>
+                      {row.user.full_name || <span className="muted">—</span>}
+                      {isSuperAdmin && (
+                        <Badge tone="warn" style={{ marginLeft: 6 }}>Super Admin</Badge>
+                      )}
+                    </td>
+                    <td className="tiny-mono">{row.user.email}</td>
+                    <td>
+                      <Badge tone={
+                        status === 'active'    ? 'pos' :
+                        status === 'pending'   ? 'warn' :
+                        status === 'suspended' ? 'neg' :
+                        status === 'closed'    ? 'neg' : 'neutral'
+                      }>
+                        {status === 'closed' ? 'revoked' : status}
+                      </Badge>
+                    </td>
+                    <td className="tiny">
+                      {(row.roles ?? []).map((r) => r.code).join(', ') || <span className="muted">—</span>}
+                    </td>
+                    {!disabled && (
+                      <td>
+                        <UserActionMenu
+                          row={row}
+                          busy={rowBusy === row.user.id}
+                          onResend={() => onResend(row)}
+                          onSuspend={() => onSuspend(row)}
+                          onReactivate={() => onReactivate(row)}
+                          onForceReset={() => onForceReset(row)}
+                          onRevoke={() => onRevoke(row)}
+                        />
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
       </div>
+    </div>
+  );
+}
+
+// Tiny dropdown of per-user actions. Buttons are filtered by status:
+// pending users see only Resend invite + Revoke; active users see
+// Suspend + Reset password + Revoke; suspended users see Reactivate +
+// Revoke; closed (revoked) users see nothing.
+function UserActionMenu({
+  row, busy, onResend, onSuspend, onReactivate, onForceReset, onRevoke,
+}: {
+  row: TenantUserRow;
+  busy: boolean;
+  onResend: () => void;
+  onSuspend: () => void;
+  onReactivate: () => void;
+  onForceReset: () => void;
+  onRevoke: () => void;
+}) {
+  const s = row.user.status;
+  if (s === 'closed') return <span className="muted tiny">—</span>;
+  return (
+    <div className="row" style={{ gap: 4 }}>
+      {s === 'pending' && (
+        <button className="btn btn-sm" disabled={busy} onClick={onResend}>Resend invite</button>
+      )}
+      {s === 'active' && (
+        <>
+          <button className="btn btn-sm" disabled={busy} onClick={onForceReset}>Reset password</button>
+          <button className="btn btn-sm btn-ghost" disabled={busy} onClick={onSuspend}>Suspend</button>
+        </>
+      )}
+      {s === 'suspended' && (
+        <button className="btn btn-sm btn-primary" disabled={busy} onClick={onReactivate}>Reactivate</button>
+      )}
+      <button className="btn btn-sm btn-danger" disabled={busy} onClick={onRevoke}>Revoke</button>
     </div>
   );
 }

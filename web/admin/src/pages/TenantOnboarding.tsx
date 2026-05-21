@@ -139,7 +139,9 @@ export default function TenantOnboarding() {
         owner_email: s.owner_email.trim().toLowerCase(),
         owner_name: s.owner_name.trim(),
         owner_phone: s.owner_phone.trim() || undefined,
-        owner_password: s.owner_password,
+        // Blank = invite flow. The backend creates the owner in
+        // Pending state and emails an activation link.
+        owner_password: s.owner_password.trim() || undefined,
         branches: branches.length ? branches : undefined,
         contacts: contacts.length ? contacts : undefined,
       };
@@ -308,10 +310,15 @@ function validateStep(step: number, s: FormState): string[] {
     }
   }
   if (step === 4) {
-    if (!s.owner_name.trim()) errs.push('Owner full name is required');
-    if (!s.owner_email.trim()) errs.push('Owner email is required');
-    if (s.owner_password.length < 12) errs.push('Owner password must be ≥ 12 characters');
-    if (s.owner_password !== s.owner_confirm) errs.push('Owner password and confirmation do not match');
+    if (!s.owner_name.trim()) errs.push('Primary contact name is required');
+    if (!s.owner_email.trim()) errs.push('Primary contact email is required');
+    // Password is now optional — when blank the owner is created in
+    // pending state and receives an invitation email. Only validate
+    // length + match when something has actually been entered.
+    if (s.owner_password) {
+      if (s.owner_password.length < 12) errs.push('If setting a password, it must be ≥ 12 characters');
+      if (s.owner_password !== s.owner_confirm) errs.push('Password and confirmation do not match');
+    }
   }
   return errs;
 }
@@ -547,24 +554,25 @@ function StepContacts({ s, setS }: { s: FormState; setS: (fn: (p: FormState) => 
 function StepOwnerReview({ s, update }: { s: FormState; update: <K extends keyof FormState>(k: K, v: FormState[K]) => void }) {
   return (
     <>
-      <div className="h-sec">Tenant owner login</div>
+      <div className="h-sec">Primary contact &amp; tenant owner</div>
       <p className="muted tiny" style={{ marginTop: -4, marginBottom: 8 }}>
-        Creates a user with the <code className="mono">tenant_owner</code> role. They can invite other staff once they sign in.
+        The primary contact is automatically provisioned as the <code className="mono">tenant_owner</code> (Tenant Super Admin).
+        Leave the password fields blank to send them an <strong>invitation email</strong> — they set their own password and are activated automatically. Filling in a password creates them as Active immediately.
       </p>
       <div className="grid-3">
         <Field label="Full name" required>
           <input className="input" value={s.owner_name} onChange={(e) => update('owner_name', e.target.value)} />
         </Field>
-        <Field label="Email" required>
+        <Field label="Work email" required hint="Becomes their login identifier.">
           <input className="input" type="email" value={s.owner_email} onChange={(e) => update('owner_email', e.target.value)} />
         </Field>
         <Field label="Phone">
           <input className="input mono" value={s.owner_phone} onChange={(e) => update('owner_phone', e.target.value)} />
         </Field>
-        <Field label="Password" required hint="≥ 12 characters. Owner should change on first login.">
+        <Field label="Password (optional)" hint="Leave blank to use the invite flow (recommended).">
           <input className="input" type="password" value={s.owner_password} onChange={(e) => update('owner_password', e.target.value)} minLength={12} />
         </Field>
-        <Field label="Confirm password" required>
+        <Field label="Confirm password">
           <input className="input" type="password" value={s.owner_confirm} onChange={(e) => update('owner_confirm', e.target.value)} />
         </Field>
       </div>

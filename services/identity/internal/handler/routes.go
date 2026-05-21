@@ -121,6 +121,11 @@ func Routes(d Deps) http.Handler {
 				// Staff users (list + invite). Reuses UserHandler internals.
 				r.Get("/platform/tenants/{id}/users", d.Tenant.ListUsers)
 				r.Post("/platform/tenants/{id}/users/invite", d.Tenant.InviteUser)
+				r.Post("/platform/tenants/{id}/users/{user_id}/invite/resend", d.Tenant.ResendUserInvite)
+				r.Post("/platform/tenants/{id}/users/{user_id}/suspend", d.Tenant.SuspendUser)
+				r.Post("/platform/tenants/{id}/users/{user_id}/reactivate", d.Tenant.ReactivateUser)
+				r.Post("/platform/tenants/{id}/users/{user_id}/password-reset", d.Tenant.ForcePasswordReset)
+				r.Post("/platform/tenants/{id}/users/{user_id}/revoke", d.Tenant.RevokeUser)
 			})
 		})
 	})

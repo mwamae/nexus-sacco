@@ -45,6 +45,11 @@ export default function TenantDashboard() {
     }
   }
 
+  // Show a one-time welcome banner when the user lands here straight
+  // after activating their account (URL has ?welcome=1, set by the
+  // AcceptInvite page after auto-login).
+  const showWelcome = new URLSearchParams(window.location.search).get('welcome') === '1';
+
   return (
     <div className="page">
       <div className="page-hd">
@@ -56,6 +61,17 @@ export default function TenantDashboard() {
           </div>
         </div>
       </div>
+
+      {showWelcome && (
+        <div className="alert alert-info" style={{ marginBottom: 14 }}>
+          <strong>🎉 Your account is active.</strong> You're now signed in as the
+          Tenant Super Admin for {tenant?.name}. Complete your SACCO setup from
+          the <a href="/settings" style={{ color: 'var(--accent)', fontWeight: 600 }}>
+            Settings page
+          </a> — start with branding + region, then add staff under <a href="/users"
+          style={{ color: 'var(--accent)', fontWeight: 600 }}>Users</a>.
+        </div>
+      )}
 
       <SecurityCard />
 

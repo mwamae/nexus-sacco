@@ -288,7 +288,9 @@ export type CreateTenantInput = {
   owner_email: string;
   owner_name: string;
   owner_phone?: string;
-  owner_password: string;
+  // Optional now — when omitted the owner is created in Pending state
+  // and receives an invitation email to set their own password.
+  owner_password?: string;
   branches?: BranchInput[];
   contacts?: ContactInput[];
 };
@@ -336,9 +338,19 @@ export type TenantContactInput = {
   title?: string;
   email?: string;
   phone?: string;
+  // When true, also provision a tenant-side user with role_codes.
+  // The contact email becomes the user's login; an invitation email
+  // is sent for them to set their own password.
+  provision_as_user?: boolean;
+  role_codes?: string[];
 };
 
-export async function addTenantContact(tenantId: string, input: TenantContactInput): Promise<ApiTenantContact> {
+export type AddContactResponse = {
+  contact: ApiTenantContact;
+  user: ApiUser | null;
+};
+
+export async function addTenantContact(tenantId: string, input: TenantContactInput): Promise<AddContactResponse> {
   const r = await api.post(`/v1/platform/tenants/${tenantId}/contacts`, input);
   return r.data.data;
 }
@@ -370,6 +382,25 @@ export async function inviteUserToTenant(tenantId: string, input: {
 }): Promise<{ user: ApiUser; invite_expires: string }> {
   const r = await api.post(`/v1/platform/tenants/${tenantId}/users/invite`, input);
   return r.data.data;
+}
+
+// ─────────── Platform-side per-user actions ───────────
+
+export async function resendTenantUserInvite(tenantId: string, userId: string): Promise<{ user: ApiUser; invite_expires: string }> {
+  const r = await api.post(`/v1/platform/tenants/${tenantId}/users/${userId}/invite/resend`);
+  return r.data.data;
+}
+export async function suspendTenantUser(tenantId: string, userId: string, reason: string): Promise<void> {
+  await api.post(`/v1/platform/tenants/${tenantId}/users/${userId}/suspend`, { reason });
+}
+export async function reactivateTenantUser(tenantId: string, userId: string): Promise<void> {
+  await api.post(`/v1/platform/tenants/${tenantId}/users/${userId}/reactivate`);
+}
+export async function forceTenantUserPasswordReset(tenantId: string, userId: string): Promise<void> {
+  await api.post(`/v1/platform/tenants/${tenantId}/users/${userId}/password-reset`);
+}
+export async function revokeTenantUser(tenantId: string, userId: string, reason: string): Promise<void> {
+  await api.post(`/v1/platform/tenants/${tenantId}/users/${userId}/revoke`, { reason });
 }
 
 // Triggers a browser download by hitting the export/backup endpoint with
@@ -958,8 +989,23 @@ export async function listPermissions(): Promise<ApiPermission[]> {
   return r.data.data ?? [];
 }
 
-export async function inviteAccept(token: string, newPassword: string): Promise<void> {
-  await api.post('/v1/auth/invite/accept', { token, new_password: newPassword });
+// inviteAccept now returns access+refresh tokens for auto-login
+// after activation. Caller passes the tokens to saveTokens() so the
+// user lands on a logged-in session without a separate /login step.
+export type InviteAcceptResult = {
+  ok: true;
+  tokens?: {
+    access_token: string;
+    refresh_token: string;
+    expires_at: string;
+    refresh_expires_at: string;
+  };
+  redirect?: string;
+};
+
+export async function inviteAccept(token: string, newPassword: string): Promise<InviteAcceptResult> {
+  const r = await api.post('/v1/auth/invite/accept', { token, new_password: newPassword });
+  return r.data.data;
 }
 
 // ─── Members ───

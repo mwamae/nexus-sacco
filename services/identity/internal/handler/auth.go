@@ -780,6 +780,44 @@ func (h *AuthHandler) PasswordForgot(w http.ResponseWriter, r *http.Request) {
 	httpx.NoContent(w)
 }
 
+// IssuePasswordResetFor generates a fresh password-reset token for an
+// arbitrary user (no email lookup), stores it, revokes the user's
+// active sessions, and emails the reset link. Used by the
+// platform-admin "force password reset" action — the platform admin
+// never sees the token, the user follows the link from their email.
+func (h *AuthHandler) IssuePasswordResetFor(ctx context.Context, tenant *domain.Tenant, user *domain.User) error {
+	var rawToken string
+	err := h.DB.WithTenantTx(ctx, tenant.ID, func(tx pgx.Tx) error {
+		raw, hash, err := store.NewResetToken()
+		if err != nil {
+			return err
+		}
+		if err := h.PasswordResets.CreateTx(ctx, tx, store.CreatePasswordResetInput{
+			TenantID:  user.TenantID,
+			UserID:    user.ID,
+			TokenHash: hash,
+			ExpiresAt: time.Now().Add(h.PasswordResetTTL),
+		}); err != nil {
+			return err
+		}
+		// Invalidate active sessions so any existing browser tab is
+		// kicked out immediately — spec requires this on force reset.
+		if h.Sessions != nil {
+			if err := h.Sessions.RevokeAllForUserTx(ctx, tx, user.ID, "force_password_reset"); err != nil {
+				return err
+			}
+		}
+		rawToken = raw
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	resetURL := strings.ReplaceAll(h.WebBaseURL, "{slug}", tenant.Slug) + "/reset?token=" + rawToken
+	go h.sendPasswordResetEmail(user.Email, user.FullName, resetURL)
+	return nil
+}
+
 // ─────────── POST /v1/auth/password/reset ───────────
 
 type resetRequest struct {
@@ -973,7 +1011,14 @@ func (h *AuthHandler) InviteAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userID uuid.UUID
+	// Single tx: validate invite → activate user → mark invite used →
+	// invalidate other outstanding invites → issue session tokens. The
+	// auto-login means the frontend doesn't need a separate login step
+	// after the user sets their password.
+	var (
+		userID uuid.UUID
+		tokens *tokenResponse
+	)
 	err = h.DB.WithTenantTx(r.Context(), tenant.ID, func(tx pgx.Tx) error {
 		inv, err := h.Invites.ByTokenHashTx(r.Context(), tx, store.HashInviteToken(req.Token))
 		if err != nil {
@@ -1001,6 +1046,16 @@ func (h *AuthHandler) InviteAccept(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		userID = inv.UserID
+		// Load the freshly-activated user and issue tokens in the same tx.
+		u, err := h.Users.ByIDTx(r.Context(), tx, inv.UserID)
+		if err != nil {
+			return err
+		}
+		t, err := h.issueTokensTxFull(r.Context(), tx, u, tenant, nil, r.UserAgent(), clientIP(r))
+		if err != nil {
+			return err
+		}
+		tokens = t
 		return nil
 	})
 	if err != nil {
@@ -1011,7 +1066,11 @@ func (h *AuthHandler) InviteAccept(w http.ResponseWriter, r *http.Request) {
 		TenantID: &tenant.ID, ActorID: &userID,
 		Action: "user.invite_accepted", IP: clientIP(r), UserAgent: r.UserAgent(),
 	})
-	httpx.OK(w, map[string]any{"ok": true})
+	httpx.OK(w, map[string]any{
+		"ok":     true,
+		"tokens": tokens,
+		"redirect": "/", // dashboard — the frontend can override based on first-login UX
+	})
 }
 
 // ─────────── Helpers ───────────
