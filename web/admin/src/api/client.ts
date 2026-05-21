@@ -4670,3 +4670,141 @@ export async function getCashPosition(): Promise<CashPosition> {
   const r = await api.get('/v1/cash-position');
   return r.data.data;
 }
+
+// ─────────── Fixed Assets ───────────
+
+export type AssetStatus = 'active' | 'disposed' | 'written_off' | 'fully_depreciated';
+export type DepreciationMethod = 'straight_line' | 'none';
+
+export type FixedAsset = {
+  id: string;
+  tenant_id: string;
+  asset_no: string;
+  name: string;
+  description?: string | null;
+  category: string;
+  gl_asset_code: string;
+  gl_accumulated_code: string;
+  gl_expense_code: string;
+  purchase_date: string;
+  purchase_cost: string;
+  salvage_value: string;
+  useful_life_months: number;
+  depreciation_method: DepreciationMethod;
+  location?: string | null;
+  custodian?: string | null;
+  supplier?: string | null;
+  invoice_ref?: string | null;
+  acquisition_journal_entry_id?: string | null;
+  status: AssetStatus;
+  accumulated_depreciation: string;
+  last_depreciation_date?: string | null;
+  disposal_journal_entry_id?: string | null;
+  disposal_proceeds?: string | null;
+  disposal_gain_loss?: string | null;
+  disposed_at?: string | null;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DepreciationRun = {
+  id: string;
+  as_of_date: string;
+  period_year: number;
+  period_month: number;
+  status: 'pending' | 'computed' | 'posted' | 'failed' | 'superseded';
+  assets_processed: number;
+  total_depreciation: string;
+  journal_entry_id?: string | null;
+  notes?: string | null;
+  computed_at?: string | null;
+  posted_at?: string | null;
+  created_at: string;
+};
+
+export type DepreciationRunLine = {
+  id: string;
+  run_id: string;
+  asset_id: string;
+  asset_no: string;
+  asset_name: string;
+  category: string;
+  method: string;
+  cost: string;
+  salvage: string;
+  accumulated_before: string;
+  depreciation_amount: string;
+  accumulated_after: string;
+  book_value_after: string;
+  months_depreciated: number;
+};
+
+export async function listFixedAssets(opts?: { status?: string; category?: string }): Promise<{ items: FixedAsset[]; total: number }> {
+  const q = new URLSearchParams();
+  if (opts?.status) q.set('status', opts.status);
+  if (opts?.category) q.set('category', opts.category);
+  const r = await api.get(`/v1/fixed-assets${q.toString() ? '?' + q.toString() : ''}`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function createFixedAsset(input: {
+  asset_no: string;
+  name: string;
+  description?: string;
+  category: string;
+  gl_asset_code: string;
+  gl_accumulated_code?: string;
+  gl_expense_code?: string;
+  purchase_date: string;
+  purchase_cost: string;
+  salvage_value?: string;
+  useful_life_months: number;
+  depreciation_method?: DepreciationMethod;
+  location?: string;
+  custodian?: string;
+  supplier?: string;
+  invoice_ref?: string;
+  funded_from_code?: string;
+  notes?: string;
+}): Promise<FixedAsset> {
+  const r = await api.post('/v1/fixed-assets', input);
+  return r.data.data;
+}
+
+export async function getFixedAsset(id: string): Promise<FixedAsset> {
+  const r = await api.get(`/v1/fixed-assets/${id}`);
+  return r.data.data;
+}
+
+export async function disposeFixedAsset(id: string, input: {
+  disposal_date?: string;
+  proceeds?: string;
+  proceeds_account?: string;
+  gain_account?: string;
+  loss_account?: string;
+  notes?: string;
+}): Promise<FixedAsset> {
+  const r = await api.post(`/v1/fixed-assets/${id}/dispose`, input);
+  return r.data.data;
+}
+
+export async function listDepreciationRuns(): Promise<{ items: DepreciationRun[]; total: number }> {
+  const r = await api.get('/v1/depreciation-runs');
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function createDepreciationRun(input: { as_of_date: string; notes?: string }): Promise<DepreciationRun> {
+  const r = await api.post('/v1/depreciation-runs', input);
+  return r.data.data;
+}
+
+export async function getDepreciationRun(id: string): Promise<{ run: DepreciationRun; lines: DepreciationRunLine[] }> {
+  const r = await api.get(`/v1/depreciation-runs/${id}`);
+  return r.data.data;
+}
+
+export async function postDepreciationRun(id: string): Promise<DepreciationRun> {
+  const r = await api.post(`/v1/depreciation-runs/${id}/post`);
+  return r.data.data;
+}

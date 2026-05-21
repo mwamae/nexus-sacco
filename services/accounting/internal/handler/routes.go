@@ -32,6 +32,7 @@ type Deps struct {
 	FiscalYear   *FiscalYearHandler
 	Bank         *BankHandler
 	Cash         *CashHandler
+	FixedAssets  *FixedAssetsHandler
 	InternalPost *InternalPostHandler
 	TenantStore  *store.TenantStore
 	Issuer       *auth.TokenIssuer
@@ -118,6 +119,16 @@ func Routes(d Deps) http.Handler {
 			r.Get("/cash-transfers", d.Cash.ListTransfers)
 			r.Post("/cash-transfers", d.Cash.CreateTransfer)
 			r.Get("/cash-position", d.Cash.CashPosition)
+
+			// Fixed assets + depreciation
+			r.Get("/fixed-assets", d.FixedAssets.List)
+			r.Post("/fixed-assets", d.FixedAssets.Create)
+			r.Get("/fixed-assets/{id}", d.FixedAssets.Get)
+			r.Post("/fixed-assets/{id}/dispose", d.FixedAssets.Dispose)
+			r.Get("/depreciation-runs", d.FixedAssets.ListRuns)
+			r.Post("/depreciation-runs", d.FixedAssets.CreateRun)
+			r.Get("/depreciation-runs/{id}", d.FixedAssets.GetRun)
+			r.Post("/depreciation-runs/{id}/post", d.FixedAssets.PostRun)
 		})
 	})
 

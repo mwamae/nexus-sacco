@@ -45,6 +45,7 @@ import FiscalYearClosePage from './pages/Accounting/FiscalYearClose';
 import BankAccountsPage from './pages/Accounting/BankAccounts';
 import BankAccountDetailPage from './pages/Accounting/BankAccountDetail';
 import CashManagementPage from './pages/Accounting/CashManagement';
+import FixedAssetsPage from './pages/Accounting/FixedAssets';
 import ProvisioningPage from './pages/Loans/Provisioning';
 
 function Gate() {
@@ -105,6 +106,7 @@ function Gate() {
   else if (path === '/bank-accounts') page = <BankAccountsPage />;
   else if (path.startsWith('/bank-accounts/')) page = <BankAccountDetailPage />;
   else if (path === '/cash-management') page = <CashManagementPage />;
+  else if (path === '/fixed-assets' || path.startsWith('/fixed-assets/')) page = <FixedAssetsPage />;
   else if (path === '/provisioning' || path.startsWith('/provisioning/')) page = <ProvisioningPage />;
   else page = <Dashboard />;
 
