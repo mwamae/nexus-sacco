@@ -14,12 +14,17 @@ import {
   extractError,
   getApprovalSettings,
   getSMTPConfig,
+  getSMSConfig,
   testSMTPConfig,
+  testSMSConfig,
   updateApprovalSettings,
   updateSMTPConfig,
+  updateSMSConfig,
   type ApprovalToggles,
   type SMTPConfig,
   type SMTPEncryption,
+  type SMSConfig,
+  type SMSProvider,
   type DividendFrequency,
   type InterestMethod,
   type TenantBranding,
@@ -856,6 +861,160 @@ function NotificationsConfigTab({ canEdit }: { canEdit: boolean }) {
           {!cfg?.is_active && (
             <p className="muted tiny" style={{ marginTop: 8 }}>Save an active SMTP config first.</p>
           )}
+          {testResult && (
+            <div className={`alert ${testResult.ok ? 'alert-success' : 'alert-error'}`} style={{ marginTop: 10 }}>
+              {testResult.msg}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ height: 24 }} />
+      <SMSConfigSection canEdit={canEdit} />
+    </>
+  );
+}
+
+// ─────────── SMS config (Stage 3 — Africa's Talking) ───────────
+
+function SMSConfigSection({ canEdit }: { canEdit: boolean }) {
+  const { tenant } = useAuth();
+  const [cfg, setCfg] = useState<SMSConfig | null | undefined>(undefined);
+  const [provider, setProvider] = useState<SMSProvider>('mock');
+  const [username, setUsername] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [senderId, setSenderId] = useState('');
+  const [ratePerMinute, setRatePerMinute] = useState(600);
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [isActive, setIsActive] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [testTo, setTestTo] = useState('');
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const c = await getSMSConfig();
+        setCfg(c);
+        if (c) {
+          setProvider(c.provider);
+          setUsername(c.username);
+          setSenderId(c.sender_id);
+          setRatePerMinute(c.rate_per_minute);
+          setIsActive(c.is_active);
+        }
+      } catch (e) { setErr(e instanceof Error ? e.message : 'failed to load'); }
+    })();
+  }, []);
+
+  async function save() {
+    setBusy(true); setErr(null); setTestResult(null);
+    try {
+      const c = await updateSMSConfig({
+        provider,
+        username,
+        api_key: apiKey,          // empty = keep existing
+        sender_id: senderId,
+        rate_per_minute: ratePerMinute,
+        webhook_secret: webhookSecret,
+        is_active: isActive,
+      });
+      setCfg(c);
+      setApiKey('');
+      setWebhookSecret('');
+    } catch (e) { setErr(e instanceof Error ? e.message : 'save failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function runTest() {
+    if (!testTo) { setTestResult({ ok: false, msg: 'Enter a recipient number first.' }); return; }
+    setBusy(true); setTestResult(null);
+    try {
+      const r = await testSMSConfig(testTo);
+      if (r.ok) {
+        setTestResult({ ok: true, msg: `Sent via ${r.provider}. Message id: ${r.provider_message_id ?? '—'}${r.cost ? `. Cost: ${r.cost}` : ''}` });
+      } else {
+        setTestResult({ ok: false, msg: r.error ?? 'unknown error' });
+      }
+    } catch (e) {
+      setTestResult({ ok: false, msg: e instanceof Error ? e.message : 'request failed' });
+    } finally { setBusy(false); }
+  }
+
+  if (cfg === undefined) return <div className="empty">Loading SMS config…</div>;
+  const webhookURL = `${window.location.origin.replace(':5173', ':8085')}/webhooks/at/delivery/${tenant?.id ?? cfg?.tenant_id ?? ''}`;
+
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-hd">
+          <h3>SMS — Africa's Talking</h3>
+          {cfg && (
+            <span className="card-sub">{cfg.is_active ? 'Active' : 'Disabled'} · provider <strong>{cfg.provider}</strong> · api key {cfg.api_key_set ? 'set' : 'not set'} · last updated {cfg.updated_at?.slice(0,10)}</span>
+          )}
+        </div>
+        <div className="card-body">
+          {err && <div className="alert alert-error">{err}</div>}
+          <div className="grid-2">
+            <Field label="Provider">
+              <select className="input" value={provider} onChange={(e) => setProvider(e.target.value as SMSProvider)} disabled={!canEdit}>
+                <option value="mock">Mock (dev / no AT account)</option>
+                <option value="sandbox">Sandbox (Africa's Talking)</option>
+                <option value="production">Production (Africa's Talking)</option>
+              </select>
+            </Field>
+            <Field label="Sender ID (alphanumeric, up to 11 chars)">
+              <input className="input mono" value={senderId} onChange={(e) => setSenderId(e.target.value)} placeholder="SACCO" disabled={!canEdit} />
+            </Field>
+            <Field label="AT username" hint={provider === 'mock' ? 'Optional for mock' : 'Required'}>
+              <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} disabled={!canEdit} />
+            </Field>
+            <Field label={cfg?.api_key_set ? 'New API key (leave blank to keep)' : 'API key'} hint={provider === 'mock' ? 'Optional for mock' : 'Required'}>
+              <input className="input" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={cfg?.api_key_set ? '••••••••' : ''} disabled={!canEdit} />
+            </Field>
+            <Field label="Send rate cap (per minute)" hint="Worker honours this as a hard ceiling.">
+              <input className="input mono" type="number" min={1} value={ratePerMinute} onChange={(e) => setRatePerMinute(parseInt(e.target.value, 10) || 0)} disabled={!canEdit} />
+            </Field>
+            <Field label={cfg?.webhook_secret_set ? 'New webhook secret (optional, leave blank to keep)' : 'Webhook secret (optional)'}>
+              <input className="input" type="password" value={webhookSecret} onChange={(e) => setWebhookSecret(e.target.value)} placeholder={cfg?.webhook_secret_set ? '••••••••' : ''} disabled={!canEdit} />
+            </Field>
+            <Field label="Active">
+              <label className="row" style={{ alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} disabled={!canEdit} />
+                <span>{isActive ? 'Worker will dispatch SMS using this config' : 'SMS queue is paused for this tenant'}</span>
+              </label>
+            </Field>
+          </div>
+
+          <div className="alert" style={{ marginTop: 12, background: 'var(--surface-2)' }}>
+            <strong>Delivery report webhook URL</strong>
+            <div className="mono tiny" style={{ marginTop: 4, wordBreak: 'break-all' }}>{webhookURL}</div>
+            <div className="muted tiny" style={{ marginTop: 4 }}>Configure this URL in your Africa's Talking dashboard so delivery statuses flow back to the platform.</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="row" style={{ gap: 8, marginBottom: 14 }}>
+        {canEdit && (
+          <button className="btn btn-accent" disabled={busy || !senderId} onClick={() => void save()}>
+            <Icon name="check" size={12} /> {busy ? 'Saving…' : 'Save SMS config'}
+          </button>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-hd">
+          <h3>Send a test SMS</h3>
+          <span className="card-sub">{provider === 'mock' ? 'Mock provider will not hit the network — just simulates a successful send.' : 'Goes through the saved AT config.'}</span>
+        </div>
+        <div className="card-body">
+          <div className="row" style={{ gap: 8, alignItems: 'flex-end' }}>
+            <Field label="Recipient phone (E.164, e.g. +254712345678)">
+              <input className="input mono" value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="+254..." />
+            </Field>
+            <button className="btn" disabled={busy || !cfg?.is_active} onClick={() => void runTest()}>Send test</button>
+          </div>
           {testResult && (
             <div className={`alert ${testResult.ok ? 'alert-success' : 'alert-error'}`} style={{ marginTop: 10 }}>
               {testResult.msg}

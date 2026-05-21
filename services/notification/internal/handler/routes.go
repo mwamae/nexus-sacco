@@ -14,6 +14,7 @@ import (
 type Deps struct {
 	Notify      *Handler
 	SMTP        *SMTPHandler
+	SMS         *SMSHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -35,6 +36,9 @@ func Routes(d Deps) http.Handler {
 	// Internal endpoint — no tenant subdomain, no JWT, X-Internal-Token gate.
 	r.Post("/internal/v1/notify", d.Notify.Notify)
 
+	// Webhooks — tenant in URL path so RLS still applies. No JWT.
+	r.Post("/webhooks/at/delivery/{tenant_id}", d.SMS.ATDeliveryReport)
+
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
 		r.Group(func(r chi.Router) {
@@ -52,6 +56,10 @@ func Routes(d Deps) http.Handler {
 			r.Get("/notification-config/smtp", d.SMTP.Get)
 			r.Put("/notification-config/smtp", d.SMTP.Update)
 			r.Post("/notification-config/smtp/test", d.SMTP.Test)
+
+			r.Get("/notification-config/sms", d.SMS.Get)
+			r.Put("/notification-config/sms", d.SMS.Update)
+			r.Post("/notification-config/sms/test", d.SMS.Test)
 		})
 	})
 

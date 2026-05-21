@@ -453,6 +453,102 @@ func (s *NotificationStore) MarkFailedFinalTx(
 	return err
 }
 
+// DueSMSDelivery — SMS-side analogue of DueEmailDelivery.
+type DueSMSDelivery struct {
+	DeliveryID     uuid.UUID
+	NotificationID uuid.UUID
+	TenantID       uuid.UUID
+	Body           string
+	RecipientName  string
+	RecipientPhone string
+	AttemptCount   int
+	MaxAttempts    int
+}
+
+// ClaimDueSMSForTenantTx mirrors ClaimDueEmailsForTenantTx for the
+// 'sms' channel. Same atomic claim semantics (FOR UPDATE SKIP LOCKED).
+func (s *NotificationStore) ClaimDueSMSForTenantTx(
+	ctx context.Context, tx pgx.Tx, limit int,
+) ([]DueSMSDelivery, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := tx.Query(ctx, `
+		WITH due AS (
+			SELECT d.id
+			FROM notification_deliveries d
+			WHERE d.channel = 'sms'
+			  AND d.status = 'queued'
+			  AND (d.next_retry_at IS NULL OR d.next_retry_at <= now())
+			ORDER BY d.created_at
+			FOR UPDATE SKIP LOCKED
+			LIMIT $1
+		),
+		claimed AS (
+			UPDATE notification_deliveries d
+			SET status = 'sent', attempt_count = attempt_count + 1, updated_at = now()
+			FROM due
+			WHERE d.id = due.id
+			RETURNING d.id, d.notification_id, d.tenant_id, d.body, d.attempt_count, d.max_attempts
+		)
+		SELECT c.id, c.notification_id, c.tenant_id,
+		       c.body,
+		       n.recipient_name, COALESCE(n.recipient_phone, ''),
+		       c.attempt_count, c.max_attempts
+		FROM claimed c
+		JOIN notifications n ON n.id = c.notification_id
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DueSMSDelivery{}
+	for rows.Next() {
+		var d DueSMSDelivery
+		if err := rows.Scan(
+			&d.DeliveryID, &d.NotificationID, &d.TenantID,
+			&d.Body, &d.RecipientName, &d.RecipientPhone,
+			&d.AttemptCount, &d.MaxAttempts,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// MarkDeliveredTx is the terminal-success transition used by the
+// delivery-report webhook (SMS) and any future read-receipt webhooks.
+func (s *NotificationStore) MarkDeliveredTx(
+	ctx context.Context, tx pgx.Tx,
+	deliveryID uuid.UUID,
+) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE notification_deliveries
+		SET status = 'delivered', delivered_at = now(), updated_at = now()
+		WHERE id = $1
+	`, deliveryID)
+	return err
+}
+
+// FindByProviderMessageIDTx looks up a delivery row by its
+// provider-side correlation id. Used by the SMS delivery-report
+// webhook to resolve "who is this AT status callback for?".
+func (s *NotificationStore) FindByProviderMessageIDTx(
+	ctx context.Context, tx pgx.Tx, channel domain.Channel, providerMessageID string,
+) (uuid.UUID, uuid.UUID, error) {
+	var id, tenantID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT id, tenant_id FROM notification_deliveries
+		WHERE channel = $1 AND provider_message_id = $2
+		LIMIT 1
+	`, string(channel), providerMessageID).Scan(&id, &tenantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, uuid.Nil, ErrNotFound
+	}
+	return id, tenantID, err
+}
+
 // AllActiveTenantsTx returns tenant IDs the worker needs to scan.
 // Lives here (not in TenantStore) because the worker pulls active
 // tenants then iterates inside its own loop.

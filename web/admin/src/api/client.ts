@@ -3375,3 +3375,44 @@ export async function testSMTPConfig(to_address: string, subject?: string, body?
   const r = await api.post('/v1/notification-config/smtp/test', { to_address, subject, body });
   return r.data.data;
 }
+
+// ─────────── SMS config (Stage 3) ───────────
+
+export type SMSProvider = 'mock' | 'sandbox' | 'production';
+
+export type SMSConfig = {
+  tenant_id: string;
+  provider: SMSProvider;
+  username: string;
+  sender_id: string;
+  rate_per_minute: number;
+  is_active: boolean;
+  updated_at: string;
+  api_key_set: boolean;
+  webhook_secret_set: boolean;
+};
+
+export async function getSMSConfig(): Promise<SMSConfig | null> {
+  const r = await api.get('/v1/notification-config/sms');
+  return r.data.data ?? null;
+}
+
+export async function updateSMSConfig(input: {
+  provider: SMSProvider;
+  username?: string;
+  api_key?: string; // empty = keep existing
+  sender_id: string;
+  rate_per_minute: number;
+  webhook_secret?: string; // empty = keep existing
+  is_active: boolean;
+}): Promise<SMSConfig> {
+  const r = await api.put('/v1/notification-config/sms', input);
+  return r.data.data;
+}
+
+export async function testSMSConfig(to: string, body?: string): Promise<{
+  ok: boolean; provider?: SMSProvider; provider_message_id?: string; cost?: string; to?: string; error?: string;
+}> {
+  const r = await api.post('/v1/notification-config/sms/test', { to, body });
+  return r.data.data;
+}

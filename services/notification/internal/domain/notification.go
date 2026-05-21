@@ -154,3 +154,28 @@ type SMTPConfig struct {
 	IsActive    bool           `json:"is_active"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 }
+
+// SMSProvider selects the dispatch backend. 'mock' is for dev — the
+// worker simulates a successful send without hitting any network.
+type SMSProvider string
+
+const (
+	SMSProviderMock       SMSProvider = "mock"
+	SMSProviderSandbox    SMSProvider = "sandbox"
+	SMSProviderProduction SMSProvider = "production"
+)
+
+// SMSConfig is the per-tenant Africa's Talking configuration. ApiKey
+// and WebhookSecret are stored encrypted at rest; this struct may hold
+// the decrypted plaintext at worker / send time.
+type SMSConfig struct {
+	TenantID       uuid.UUID   `json:"tenant_id"`
+	Provider       SMSProvider `json:"provider"`
+	Username       string      `json:"username"`
+	APIKey         string      `json:"-"` // decrypted, never marshalled
+	SenderID       string      `json:"sender_id"`
+	RatePerMinute  int         `json:"rate_per_minute"`
+	WebhookSecret  string      `json:"-"` // decrypted, never marshalled
+	IsActive       bool        `json:"is_active"`
+	UpdatedAt      time.Time   `json:"updated_at"`
+}

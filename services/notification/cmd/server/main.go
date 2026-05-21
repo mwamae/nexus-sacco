@@ -64,6 +64,7 @@ func main() {
 	templates := store.NewTemplateStore(pool.Pool)
 	notifs := store.NewNotificationStore(pool.Pool)
 	smtpStore := store.NewSMTPConfigStore(pool.Pool, cfg.JWTSecret)
+	smsStore := store.NewSMSConfigStore(pool.Pool, cfg.JWTSecret)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
@@ -81,17 +82,24 @@ func main() {
 		SMTP:   smtpStore,
 		Logger: logger,
 	}
+	smsH := &handler.SMSHandler{
+		DB:     pool,
+		SMS:    smsStore,
+		Notifs: notifs,
+		Logger: logger,
+	}
 
 	router := handler.Routes(handler.Deps{
 		Notify:      notifyH,
 		SMTP:        smtpH,
+		SMS:         smsH,
 		TenantStore: tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,
 		Logger:      logger,
 	})
 
-	// Email worker — drains the queued email deliveries continuously.
+	// Workers — both drain their channel-specific queues continuously.
 	emailWorker := &worker.EmailWorker{
 		DB:           pool,
 		Notifs:       notifs,
@@ -101,6 +109,15 @@ func main() {
 		Logger:       logger,
 	}
 	go emailWorker.Run(ctx)
+
+	smsWorker := &worker.SMSWorker{
+		DB:           pool,
+		Notifs:       notifs,
+		SMSStore:     smsStore,
+		TickInterval: 10 * time.Second,
+		Logger:       logger,
+	}
+	go smsWorker.Run(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
