@@ -17,7 +17,9 @@ import {
   setMemberStatus,
   uploadMemberDocument,
   extractError,
+  getDepositAccountsByMember,
   getMemberLoanHistory,
+  getShareAccountByMember,
   listGuaranteesByMember,
   type ApiMemberDetail,
   type ApiRelation,
@@ -32,7 +34,7 @@ import { MemberStatusCard } from '../components/MemberStatusCard';
 import { MemberAccountsPanel } from '../components/MemberAccountsPanel';
 import { MemberLedgerPanel } from '../components/MemberLedgerPanel';
 import { Icon, type IconName } from '../components/Icon';
-import { AsyncPanel, isTimeoutError } from '../components/AsyncPanel';
+import { AsyncPanel, isTimeoutError, useAsyncPanel } from '../components/AsyncPanel';
 import { Tabs } from '../components/Tabs';
 import { usePageCrumb } from '../lib/pageCrumb';
 import { CLASS_TONE } from './Loans';
@@ -318,16 +320,9 @@ function OverviewTab({
 
   return (
     <>
-      {/* Financial-position KPI strip. Values are aggregated by the
-          dedicated balances service; until that wiring lands, the
-          tiles show the member's headline categories with neutral
-          placeholders so the layout doesn't collapse. */}
-      <div className="grid-4" style={{ marginBottom: 14 }}>
-        <FinKPI label="Total savings"  value={`${currency} —`} hint="Sum of all deposit account balances" muted />
-        <FinKPI label="Active loans"   value="—"               hint="Open loan principal balance" muted />
-        <FinKPI label="Shares balance" value={`${currency} —`} hint="Paid-up share equity" muted />
-        <FinKPI label="Net position"   value={`${currency} —`} hint="Savings + shares − loans" muted />
-      </div>
+      <FinancialKPIStrip memberId={m.id} currency={currency} onJump={onJump} />
+
+
 
       <div className="grid-2">
         {/* KYC summary */}
@@ -411,13 +406,190 @@ function OverviewTab({
   );
 }
 
-function FinKPI({ label, value, hint, muted }: { label: string; value: string; hint?: string; muted?: boolean }) {
+function FinKPI({ label, value, hint, sub, muted, onClick }: {
+  label: string;
+  value: string;
+  hint?: string;
+  sub?: string;
+  muted?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <div className="card" onClick={onClick} style={onClick ? { cursor: 'pointer' } : undefined}>
+      <div className="m360-stat">
+        <span className="m360-stat-label">{label}</span>
+        <span className="m360-stat-value" style={muted ? { color: 'var(--fg-3)' } : undefined}>{value}</span>
+        {sub && <span className="m360-stat-sub" style={{ fontWeight: 500 }}>{sub}</span>}
+        {hint && <span className="m360-stat-sub">{hint}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ─────────── Financial KPI strip ───────────
+//
+// Aggregates the member's headline financial position from three
+// existing endpoints — deposits, loans, shares. Loaded in parallel
+// inside the AsyncPanel hook (10s timeout, retry on failure). Each
+// tile clicks through to its source module's tab inside this page so
+// the user can drill in without leaving the member context.
+//
+// Bucket semantics:
+//   TOTAL SAVINGS  = sum of current_balance on every ACTIVE deposit account
+//   ACTIVE LOANS   = count of loans in an open status, with outstanding
+//                    principal as the sub-label
+//   SHARES BALANCE = share_account.total_value (shares_held × par_value)
+//   NET POSITION   = savings + shares − active-loan outstanding principal
+//
+// An empty bucket renders "KES 0.00", never a dash. The old "module
+// pending" copy is gone for good.
+
+type FinancialAggregate = {
+  totalSavings: number;
+  activeLoanCount: number;
+  activeLoanOutstanding: number;
+  sharesBalance: number;
+  netPosition: number;
+};
+
+// Loan statuses that count toward "active" — every other status is
+// terminal (settled / closed / written_off / defaulted). Kept inline
+// rather than imported from Loans.tsx so the Overview tab doesn't
+// pull in Loans.tsx's heavy module dependencies at first render.
+const ACTIVE_LOAN_STATUSES = new Set([
+  'active', 'in_arrears', 'restructured', 'pending_disbursement',
+]);
+
+async function aggregateFinancialPosition(memberId: string): Promise<FinancialAggregate> {
+  // Shares is allowed to 404 (the member may never have bought any).
+  const [deposits, loans, share] = await Promise.all([
+    getDepositAccountsByMember(memberId),
+    getMemberLoanHistory(memberId),
+    getShareAccountByMember(memberId).catch(() => null),
+  ]);
+
+  const totalSavings = deposits
+    .filter((d) => d.account.status === 'active')
+    .reduce((acc, d) => acc + (parseFloat(d.account.current_balance) || 0), 0);
+
+  const activeLoans = loans.loans.filter((row) => ACTIVE_LOAN_STATUSES.has(row.loan.status));
+  const activeLoanCount = activeLoans.length;
+  const activeLoanOutstanding = activeLoans.reduce(
+    (acc, row) => acc + (parseFloat(row.loan.principal_balance) || 0),
+    0,
+  );
+
+  const sharesBalance = share ? (parseFloat(share.account.total_value) || 0) : 0;
+
+  const netPosition = totalSavings + sharesBalance - activeLoanOutstanding;
+
+  return { totalSavings, activeLoanCount, activeLoanOutstanding, sharesBalance, netPosition };
+}
+
+function fmtFinMoney(n: number): string {
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function FinancialKPIStrip({ memberId, currency, onJump }: {
+  memberId: string;
+  currency: string;
+  onJump: (t: TabId) => void;
+}) {
+  const fetcher = useMemo(
+    () => () => aggregateFinancialPosition(memberId),
+    [memberId],
+  );
+  // Uses the standard AsyncPanel hook — same 10s default timeout that
+  // every other panel honours.
+  const { state, retry } = useAsyncPanel(fetcher, [memberId]);
+
+  if (state.kind === 'loading') {
+    return (
+      <div className="grid-4" style={{ marginBottom: 14 }} aria-busy="true">
+        <FinKPISkeleton label="Total savings"  />
+        <FinKPISkeleton label="Active loans"   />
+        <FinKPISkeleton label="Shares balance" />
+        <FinKPISkeleton label="Net position"   />
+      </div>
+    );
+  }
+  if (state.kind === 'error') {
+    const msg = isTimeoutError(state.error)
+      ? 'The financial services took too long to respond. Try again.'
+      : "We couldn't fetch this member's financial position.";
+    return (
+      <div className="alert alert-error" role="alert" style={{
+        display: 'flex', gap: 12, alignItems: 'center', marginBottom: 14,
+      }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600, marginBottom: 2 }}>Couldn't load financial position</div>
+          <div>{msg}</div>
+        </div>
+        <button className="btn btn-sm" onClick={retry}>Retry</button>
+      </div>
+    );
+  }
+
+  // 'data' and 'empty' both carry a value here — isEmpty wasn't set
+  // because every member has a defined (possibly zero) financial
+  // position. Treat both as data.
+  const agg = (state.kind === 'data' || state.kind === 'empty')
+    ? (state as { value?: FinancialAggregate }).value ?? {
+        totalSavings: 0, activeLoanCount: 0, activeLoanOutstanding: 0,
+        sharesBalance: 0, netPosition: 0,
+      }
+    : { totalSavings: 0, activeLoanCount: 0, activeLoanOutstanding: 0, sharesBalance: 0, netPosition: 0 };
+
+  return (
+    <div className="grid-4" style={{ marginBottom: 14 }}>
+      <FinKPI
+        label="Total savings"
+        value={`${currency} ${fmtFinMoney(agg.totalSavings)}`}
+        hint="Sum of active deposit account balances"
+        onClick={() => onJump('accounts')}
+      />
+      <FinKPI
+        label="Active loans"
+        value={agg.activeLoanCount.toString()}
+        sub={`${currency} ${fmtFinMoney(agg.activeLoanOutstanding)} outstanding`}
+        hint={agg.activeLoanCount === 1 ? '1 open loan' : `${agg.activeLoanCount} open loans`}
+        onClick={() => onJump('loans')}
+      />
+      <FinKPI
+        label="Shares balance"
+        value={`${currency} ${fmtFinMoney(agg.sharesBalance)}`}
+        hint="Paid-up share equity"
+        onClick={() => onJump('accounts')}
+      />
+      <FinKPI
+        label="Net position"
+        value={`${currency} ${fmtFinMoney(agg.netPosition)}`}
+        hint="Savings + shares − outstanding loans"
+        muted={agg.netPosition < 0}
+      />
+    </div>
+  );
+}
+
+function FinKPISkeleton({ label }: { label: string }) {
   return (
     <div className="card">
       <div className="m360-stat">
         <span className="m360-stat-label">{label}</span>
-        <span className="m360-stat-value" style={muted ? { color: 'var(--fg-3)' } : undefined}>{value}</span>
-        {hint && <span className="m360-stat-sub">{hint}</span>}
+        <span className="m360-stat-value" style={{ color: 'var(--fg-3)' }}>
+          <span
+            role="status"
+            aria-label={`Loading ${label}`}
+            style={{
+              display: 'inline-block',
+              width: 80, height: 22,
+              background: 'var(--surface-2)',
+              borderRadius: 3,
+              verticalAlign: 'middle',
+            }}
+          />
+        </span>
+        <span className="m360-stat-sub muted">Loading…</span>
       </div>
     </div>
   );
