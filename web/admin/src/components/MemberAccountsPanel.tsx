@@ -5,7 +5,7 @@
 // Permission gating, posting flows, statement view, and certificate
 // download are all preserved from the old cards.
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   adjustDeposit,
   adjustShares,
@@ -40,6 +40,7 @@ import {
 import { useAuth } from '../auth/AuthContext';
 import { Badge, StatusBadge } from './Badge';
 import { Icon } from './Icon';
+import { useAsyncPanel, isTimeoutError } from './AsyncPanel';
 
 // Silence the unused-import warning on bonusShareIssue (kept for future).
 void _bonus;
@@ -141,55 +142,69 @@ type Selection =
 
 export function MemberAccountsPanel({ memberId, currency }: { memberId: string; currency: string }) {
   const { hasPermission } = useAuth();
-  const [shares, setShares] = useState<ShareAccountView | null>(null);
-  const [deposits, setDeposits] = useState<MemberDepositItem[]>([]);
-  const [products, setProducts] = useState<DepositProduct[]>([]);
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Selection>({ kind: 'shares' });
   const [modal, setModal] = useState<ModalState>({ kind: null });
+  // Bumped from child callbacks (after a deposit/share action) to force
+  // the AsyncPanel to re-run its fetcher via the deps array.
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  async function reload() {
-    setErr(null);
-    try {
-      const [sv, d, p] = await Promise.all([
-        getShareAccountByMember(memberId).catch(() => null),
-        getDepositAccountsByMember(memberId),
-        listDepositProducts(false),
-      ]);
-      setShares(sv);
-      setDeposits(d);
-      setProducts(p);
-    } catch (e) { setErr(extractError(e)); }
-    finally { setLoading(false); }
-  }
-  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [memberId]);
+  const fetcher = useCallback(async () => {
+    // Shares is optional (a member may not have bought any), so its
+    // 404 is swallowed and surfaced as null below. Deposits + products
+    // are required for the rest of the UI; their failure goes to the
+    // error branch.
+    const [sv, d, p] = await Promise.all([
+      getShareAccountByMember(memberId).catch(() => null),
+      getDepositAccountsByMember(memberId),
+      listDepositProducts(false),
+    ]);
+    return { shares: sv, deposits: d, products: p };
+  }, [memberId, reloadNonce]);
+
+  const { state, retry } = useAsyncPanel(fetcher, [memberId, reloadNonce]);
+
+  const shares: ShareAccountView | null = state.kind === 'data' ? state.value.shares : null;
+  const deposits: MemberDepositItem[] = state.kind === 'data' ? state.value.deposits : [];
+  const products: DepositProduct[] = state.kind === 'data' ? state.value.products : [];
+  const loaded = state.kind === 'data';
 
   // Keep the selection valid as data refreshes.
   useEffect(() => {
-    if (loading) return;
+    if (!loaded) return;
     if (selected.kind === 'deposit' && !deposits.find((d) => d.account.id === selected.accountId)) {
       setSelected(shares ? { kind: 'shares' } : (deposits[0] ? { kind: 'deposit', accountId: deposits[0].account.id } : { kind: 'empty' }));
     } else if (selected.kind === 'shares' && !shares) {
       setSelected(deposits[0] ? { kind: 'deposit', accountId: deposits[0].account.id } : { kind: 'empty' });
     }
-  }, [loading, shares, deposits, selected]);
+  }, [loaded, shares, deposits, selected]);
 
   const canOpenDeposit = hasPermission('savings:transact');
 
-  if (loading) {
+  if (state.kind === 'loading') {
     return (
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-hd"><h3>Accounts</h3></div>
-        <div className="card-body"><div className="empty">Loading…</div></div>
+        <div className="card-body"><div className="muted tiny" role="status">Loading accounts…</div></div>
       </div>
     );
   }
-  if (err) {
+  if (state.kind === 'error') {
+    const msg = isTimeoutError(state.error)
+      ? "The savings service didn't respond in time. The balances on file are safe; retry to try again."
+      : "We couldn't fetch this member's shares or deposit accounts.";
     return (
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-hd"><h3>Accounts</h3></div>
-        <div className="card-body"><div className="alert alert-error">{err}</div></div>
+        <div className="card-body">
+          <div className="alert alert-error" role="alert" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>Couldn't load accounts</div>
+              <div>{msg}</div>
+            </div>
+            <button className="btn btn-sm" onClick={retry}>Retry</button>
+          </div>
+        </div>
       </div>
     );
   }

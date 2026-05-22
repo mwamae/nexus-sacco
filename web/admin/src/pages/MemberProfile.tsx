@@ -30,6 +30,7 @@ import { Badge, StatusBadge } from '../components/Badge';
 import { MemberStatusCard } from '../components/MemberStatusCard';
 import { MemberAccountsPanel } from '../components/MemberAccountsPanel';
 import { Icon, type IconName } from '../components/Icon';
+import { AsyncPanel, isTimeoutError } from '../components/AsyncPanel';
 
 const DOC_LABELS: Record<DocumentKind, string> = {
   signature: 'Signature',
@@ -855,34 +856,42 @@ function ActivityTab({ memberId, canSeeAudit }: { memberId: string; canSeeAudit:
 }
 
 function AuditTimeline({ memberId, limit }: { memberId: string; limit: number }) {
-  const [entries, setEntries] = useState<AuditEntry[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    listAuditForTarget('member', memberId, limit)
-      .then((es) => { if (!cancelled) setEntries(es); })
-      .catch((e) => { if (!cancelled) setErr(extractError(e)); });
-    return () => { cancelled = true; };
-  }, [memberId, limit]);
-
-  if (err) return <div className="alert alert-error">{err}</div>;
-  if (!entries) return <span className="muted tiny">Loading…</span>;
-  if (entries.length === 0) return <div className="empty" style={{ padding: 20 }}>No audit events yet.</div>;
-
+  const fetcher = useMemo(
+    () => () => listAuditForTarget('member', memberId, limit),
+    [memberId, limit],
+  );
   return (
-    <ol className="tl" style={{ listStyle: 'none', margin: 0 }}>
-      {entries.map((e) => (
-        <li key={e.id} className="tl-item" data-tone={toneFor(e.action)}>
-          <div className="tl-action">{prettyAction(e.action)}</div>
-          <div className="tl-meta">
-            <time>{new Date(e.created_at).toISOString().replace('T', ' ').slice(0, 19)}</time>
-            {e.metadata && Object.keys(e.metadata).length > 0 && (
-              <span> · <span className="mono">{summarizeMeta(e.metadata)}</span></span>
-            )}
-          </div>
-        </li>
-      ))}
-    </ol>
+    <AsyncPanel
+      fetcher={fetcher}
+      deps={[memberId, limit]}
+      isEmpty={(es) => es.length === 0}
+      empty={(
+        <div className="empty" style={{ padding: 20 }}>
+          No audit events yet — nothing has touched this member's record since they were onboarded.
+        </div>
+      )}
+      errorTitle="Couldn't load activity"
+      errorMessage={(err) => isTimeoutError(err)
+        ? "The audit query took too long to respond. The history is still on file; retry to try again."
+        : "We couldn't fetch the system events for this member."}
+      skeleton={<span className="muted tiny" role="status">Loading activity…</span>}
+    >
+      {(entries) => (
+        <ol className="tl" style={{ listStyle: 'none', margin: 0 }}>
+          {entries.map((e) => (
+            <li key={e.id} className="tl-item" data-tone={toneFor(e.action)}>
+              <div className="tl-action">{prettyAction(e.action)}</div>
+              <div className="tl-meta">
+                <time>{new Date(e.created_at).toISOString().replace('T', ' ').slice(0, 19)}</time>
+                {e.metadata && Object.keys(e.metadata).length > 0 && (
+                  <span> · <span className="mono">{summarizeMeta(e.metadata)}</span></span>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </AsyncPanel>
   );
 }
 

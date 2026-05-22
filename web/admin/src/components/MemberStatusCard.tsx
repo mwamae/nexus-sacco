@@ -3,7 +3,7 @@
 // open proposals + a transition modal that handles both direct-apply and
 // workflow-mediated paths transparently.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import {
   changeMemberStatus,
   getMemberStatusActions,
@@ -11,13 +11,13 @@ import {
   uploadStatusSupportingDoc,
   extractError,
   type MemberStatus,
-  type MemberStatusActions,
   type MemberStatusChange,
   type MemberStatusReason,
   type StatusTransition,
 } from '../api/client';
 import { Badge, StatusBadge } from './Badge';
 import { Icon } from './Icon';
+import { AsyncPanel, isTimeoutError } from './AsyncPanel';
 
 const REASON_OPTIONS: { v: MemberStatusReason; label: string }[] = [
   { v: 'admin_action',          label: 'Admin action' },
@@ -39,99 +39,104 @@ export function MemberStatusCard({ memberId, currentStatus, onChanged }: {
   currentStatus: MemberStatus;
   onChanged: () => void | Promise<void>;
 }) {
-  const [actions, setActions] = useState<MemberStatusActions | null>(null);
-  const [history, setHistory] = useState<MemberStatusChange[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [choosing, setChoosing] = useState<StatusTransition | null>(null);
+  // Bumped after a successful status change so both AsyncPanels (actions
+  // + history) refetch via their deps arrays.
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const bumpReload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  async function reload() {
-    setErr(null);
-    try {
-      const [a, h] = await Promise.all([
-        getMemberStatusActions(memberId),
-        listMemberStatusHistory(memberId),
-      ]);
-      setActions(a);
-      setHistory(h);
-    } catch (e) {
-      setErr(extractError(e));
-    }
-  }
-  // currentStatus changes when the page reloads after an action — refetch.
-  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [memberId, currentStatus]);
+  const fetchActions = useCallback(
+    () => getMemberStatusActions(memberId),
+    // currentStatus / reloadNonce drive a refetch after a transition.
+    [memberId, currentStatus, reloadNonce], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const fetchHistory = useCallback(
+    () => listMemberStatusHistory(memberId),
+    [memberId, currentStatus, reloadNonce], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   return (
     <>
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-hd">
           <h3>Status &amp; lifecycle</h3>
-          <span className="card-sub">{actions?.system_behavior ?? '—'}</span>
         </div>
         <div className="card-body">
-          {err && <div className="alert alert-error">{err}</div>}
-
           <div className="row" style={{ gap: 10, alignItems: 'center', marginBottom: 14 }}>
             <span className="muted tiny">Current</span>
             <StatusBadge status={currentStatus} />
-            {actions && (
-              <span className="muted tiny">
-                · Visibility: <strong>{actions.visibility}</strong>
-              </span>
-            )}
           </div>
 
-          {actions?.open_proposals && actions.open_proposals.length > 0 && (
-            <div className="alert alert-warn" style={{ marginBottom: 10 }}>
-              <strong>Pending proposals:</strong>{' '}
-              {actions.open_proposals.map((p) => (
-                <span key={p.id}>
-                  → {p.proposed_status} ({p.reason_category.replace(/_/g, ' ')}){' '}
-                  · <a href={`/approvals?wf=${p.workflow_instance_id}`} style={{ color: 'var(--accent)' }}>
-                    open in approvals →
-                  </a>
-                </span>
-              ))}
-            </div>
-          )}
-
           <div className="h-sec">Change to</div>
-          {!actions ? (
-            <div className="muted tiny">Loading…</div>
-          ) : actions.transitions.length === 0 ? (
-            <div className="muted tiny">No outbound transitions from <strong>{currentStatus}</strong>. This is a terminal state.</div>
-          ) : (
-            <div className="fchips">
-              {actions.transitions.map((t) => (
-                <button
-                  key={t.To}
-                  type="button"
-                  className="fchip"
-                  onClick={() => setChoosing(t)}
-                  title={t.Note}
-                >
-                  → {t.To.replace('_', ' ')}{t.Sensitive && <Badge tone="warn">approval</Badge>}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {actions && actions.allowed_actions.length > 0 && (
-            <>
-              <div className="divider" />
-              <div className="h-sec">What a {currentStatus} member can do</div>
-              <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
-                {actions.allowed_actions.map((a) => (
-                  <Badge key={a.action} tone={a.allowed ? 'pos' : 'neutral'}>
-                    {a.allowed ? '✓' : '×'} {a.action.replace(/_/g, ' ')}
-                  </Badge>
-                ))}
+          <AsyncPanel
+            fetcher={fetchActions}
+            deps={[memberId, currentStatus, reloadNonce]}
+            isEmpty={(a) => a.transitions.length === 0}
+            empty={(
+              <div className="muted tiny">
+                No outbound transitions from <strong>{currentStatus}</strong>. This is a terminal state.
               </div>
-            </>
-          )}
+            )}
+            errorTitle="Couldn't load status actions"
+            errorMessage={(err) => isTimeoutError(err)
+              ? "The member service didn't respond in time. Status options will reappear once it's reachable."
+              : "We couldn't reach the member service to fetch the available status changes."}
+            skeleton={<div className="muted tiny" role="status">Loading status options…</div>}
+          >
+            {(actions) => (
+              <>
+                {actions.open_proposals && actions.open_proposals.length > 0 && (
+                  <div className="alert alert-warn" style={{ marginBottom: 10 }}>
+                    <strong>Pending proposals:</strong>{' '}
+                    {actions.open_proposals.map((p) => (
+                      <span key={p.id}>
+                        → {p.proposed_status} ({p.reason_category.replace(/_/g, ' ')}){' '}
+                        · <a href={`/approvals?wf=${p.workflow_instance_id}`} style={{ color: 'var(--accent)' }}>
+                          open in approvals →
+                        </a>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="fchips">
+                  {actions.transitions.map((t) => (
+                    <button
+                      key={t.To}
+                      type="button"
+                      className="fchip"
+                      onClick={() => setChoosing(t)}
+                      title={t.Note}
+                    >
+                      → {t.To.replace('_', ' ')}{t.Sensitive && <Badge tone="warn">approval</Badge>}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="muted tiny" style={{ marginTop: 8 }}>
+                  Visibility: <strong>{actions.visibility}</strong> · {actions.system_behavior}
+                </div>
+
+                {actions.allowed_actions.length > 0 && (
+                  <>
+                    <div className="divider" />
+                    <div className="h-sec">What a {currentStatus} member can do</div>
+                    <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+                      {actions.allowed_actions.map((a) => (
+                        <Badge key={a.action} tone={a.allowed ? 'pos' : 'neutral'}>
+                          {a.allowed ? '✓' : '×'} {a.action.replace(/_/g, ' ')}
+                        </Badge>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+          </AsyncPanel>
         </div>
       </div>
 
-      <StatusHistoryCard history={history} />
+      <StatusHistoryCard fetcher={fetchHistory} deps={[memberId, currentStatus, reloadNonce]} />
 
       {choosing && (
         <ChangeModal
@@ -140,7 +145,7 @@ export function MemberStatusCard({ memberId, currentStatus, onChanged }: {
           onClose={() => setChoosing(null)}
           onApplied={async () => {
             setChoosing(null);
-            await reload();
+            bumpReload();
             await onChanged();
           }}
         />
@@ -149,38 +154,55 @@ export function MemberStatusCard({ memberId, currentStatus, onChanged }: {
   );
 }
 
-function StatusHistoryCard({ history }: { history: MemberStatusChange[] | null }) {
+function StatusHistoryCard({
+  fetcher,
+  deps,
+}: {
+  fetcher: () => Promise<MemberStatusChange[]>;
+  deps: unknown[];
+}) {
   return (
     <div className="card" style={{ marginTop: 14 }}>
       <div className="card-hd">
         <h3>Status history</h3>
-        <span className="card-sub">{history?.length ?? 0} change{history?.length === 1 ? '' : 's'} on record</span>
       </div>
       <div className="card-body">
-        {history === null ? (
-          <div className="muted tiny">Loading…</div>
-        ) : history.length === 0 ? (
-          <div className="empty">No status changes recorded yet.</div>
-        ) : (
-          <ol className="tl" style={{ listStyle: 'none', margin: 0 }}>
-            {history.map((c) => (
-              <li key={c.id} className="tl-item" data-tone={historyTone(c.to_status)}>
-                <div className="tl-action">
-                  {c.from_status ? <>{c.from_status.replace('_', ' ')} → </> : null}
-                  <strong>{c.to_status.replace('_', ' ')}</strong>
-                  {c.workflow_instance_id && <Badge tone="accent">via approval</Badge>}
-                </div>
-                <div className="tl-meta">
-                  <time>{new Date(c.changed_at).toISOString().replace('T', ' ').slice(0, 19)}</time>
-                  {' · '}
-                  <span className="mono">{c.reason_category.replace(/_/g, ' ')}</span>
-                  {c.reason_note && <span> · {c.reason_note}</span>}
-                  {c.has_supporting_doc && <span> · <Icon name="arrow_dn" size={11} /> doc on file</span>}
-                </div>
-              </li>
-            ))}
-          </ol>
-        )}
+        <AsyncPanel
+          fetcher={fetcher}
+          deps={deps}
+          isEmpty={(h) => h.length === 0}
+          empty={(
+            <div className="empty">
+              No status changes recorded yet — this member has been in their current state since onboarding.
+            </div>
+          )}
+          errorTitle="Couldn't load status history"
+          errorMessage={(err) => isTimeoutError(err)
+            ? 'The audit lookup timed out. The history is still on file; try again in a moment.'
+            : "We couldn't fetch the change log for this member."}
+          skeleton={<div className="muted tiny" role="status">Loading history…</div>}
+        >
+          {(history) => (
+            <ol className="tl" style={{ listStyle: 'none', margin: 0 }}>
+              {history.map((c) => (
+                <li key={c.id} className="tl-item" data-tone={historyTone(c.to_status)}>
+                  <div className="tl-action">
+                    {c.from_status ? <>{c.from_status.replace('_', ' ')} → </> : null}
+                    <strong>{c.to_status.replace('_', ' ')}</strong>
+                    {c.workflow_instance_id && <Badge tone="accent">via approval</Badge>}
+                  </div>
+                  <div className="tl-meta">
+                    <time>{new Date(c.changed_at).toISOString().replace('T', ' ').slice(0, 19)}</time>
+                    {' · '}
+                    <span className="mono">{c.reason_category.replace(/_/g, ' ')}</span>
+                    {c.reason_note && <span> · {c.reason_note}</span>}
+                    {c.has_supporting_doc && <span> · <Icon name="arrow_dn" size={11} /> doc on file</span>}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </AsyncPanel>
       </div>
     </div>
   );
