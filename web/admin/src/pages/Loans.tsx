@@ -95,7 +95,9 @@ function ListsView() {
       <ArrearsWidget />
 
       <div className="row" style={{ gap: 4, marginBottom: 14 }}>
-        <button className="btn btn-sm" data-active={tab === 'apps' || undefined} onClick={() => setTab('apps')}>Applications</button>
+        {/* "Loan applications" — explicit so the label can't be confused
+            with the membership-onboarding queue at /applications. */}
+        <button className="btn btn-sm" data-active={tab === 'apps' || undefined} onClick={() => setTab('apps')}>Loan applications</button>
         <button className="btn btn-sm" data-active={tab === 'loans' || undefined} onClick={() => setTab('loans')}>Loans</button>
       </div>
 

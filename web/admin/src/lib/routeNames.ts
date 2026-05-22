@@ -34,10 +34,13 @@ export const ROUTES: ReadonlyArray<StaticRoute | DynamicRoute> = [
   { kind: 'static', path: '/',                              trail: ['Home'] },
 
   // ─── Servicing ───
-  { kind: 'static', path: '/applications',                  trail: ['Applications'] },
-  { kind: 'static', path: '/applications/new',              trail: ['Applications', 'New'] },
+  // Membership / member-onboarding queue (the people-applying-to-join
+  // surface). Loan applications live under /loans and have their own
+  // crumb trail — see the Lending block below.
+  { kind: 'static', path: '/applications',                  trail: ['Member onboarding'] },
+  { kind: 'static', path: '/applications/new',              trail: ['Member onboarding', 'New'] },
   { kind: 'dynamic', match: (p) => /^\/applications\/[^/]+/.test(p),
-    baseTrail: ['Applications'], fallbackSuffix: 'Application' },
+    baseTrail: ['Member onboarding'], fallbackSuffix: 'Application' },
 
   { kind: 'static', path: '/members',                       trail: ['Members'] },
   { kind: 'static', path: '/members/new',                   trail: ['Members', 'New'] },

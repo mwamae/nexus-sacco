@@ -75,14 +75,15 @@ export default function ApplicationsQueuePage() {
     <div className="page">
       <div className="page-hd">
         <div>
-          <div className="eyebrow">{tenant?.name} · Members · Applications</div>
-          <h1>Membership applications</h1>
+          <div className="eyebrow">{tenant?.name} · Member onboarding</div>
+          <h1>Member onboarding</h1>
           <div className="page-sub">
-            Unified queue for both individual and institutional applicants. Officers capture
-            applications here, reviewers walk the checklist, and approvers finalise.
+            Unified queue for individual + institutional membership applications. Officers
+            capture applications here, reviewers walk the checklist, approvers finalise.
+            Loan applications live under <a href="/loans" style={{ color: 'var(--accent)' }}>Lending</a>.
           </div>
         </div>
-        <a className="btn btn-primary" href="/applications/new">+ New application</a>
+        <a className="btn btn-primary" href="/applications/new">+ New onboarding</a>
       </div>
 
       {err && <div className="alert alert-error" style={{ marginTop: 12 }}>{err}</div>}

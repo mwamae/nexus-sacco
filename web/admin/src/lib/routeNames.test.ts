@@ -118,7 +118,7 @@ describe('routeNames registry', () => {
     expect(trailFor('/members/abc-123', 'Jane Doe')).toEqual(['Members', 'Jane Doe']);
     expect(trailFor('/orgs/x', 'Acme SACCO')).toEqual(['Organisations', 'Acme SACCO']);
     expect(trailFor('/applications/x', 'APP-2026-000004 · Smoke Test')).toEqual(
-      ['Applications', 'APP-2026-000004 · Smoke Test'],
+      ['Member onboarding', 'APP-2026-000004 · Smoke Test'],
     );
   });
 
