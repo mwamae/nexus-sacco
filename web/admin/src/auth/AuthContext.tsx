@@ -11,6 +11,7 @@ import {
   loadTokens,
   clearTokens,
   isMFARequired,
+  isAuthDeadError,
   type ApiTenant,
   type ApiUser,
   type MeResponse,
@@ -68,8 +69,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const me = await fetchMe();
       applyMe(me);
-    } catch {
-      clearTokens();
+    } catch (err) {
+      // Only clear tokens when the refresh endpoint itself rejected us
+      // (isAuthDeadError === true). A transient network / 5xx on
+      // /auth/me must not nuke the stored refresh token — the next
+      // navigation can try again. Without this guard, a flaky backend
+      // during page load would silently sign the user out.
+      if (isAuthDeadError(err)) {
+        clearTokens();
+      }
       setState({ ...initial, status: 'anonymous' });
     }
   }, [applyMe]);

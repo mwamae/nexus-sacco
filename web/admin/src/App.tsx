@@ -1,5 +1,6 @@
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import AppShell from './components/AppShell';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Tweaks } from './components/Tweaks';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
@@ -102,7 +103,23 @@ function Gate() {
   else if (path === '/collections' || path.startsWith('/collections/')) page = <CollectionsPage />;
   else if (path === '/loan-reports' || path.startsWith('/loan-reports/')) page = <LoanReportsPage />;
   else if (path === '/cash-approvals' || path.startsWith('/cash-approvals/')) page = <CashApprovalsPage />;
-  else if (path === '/notifications' || path.startsWith('/notifications/')) page = <NotificationsPage />;
+  else if (path === '/notifications' || path.startsWith('/notifications/')) {
+    page = (
+      <ErrorBoundary
+        fallback={(_err, retry) => (
+          <div className="page">
+            <div className="page-hd"><h1>Notifications</h1></div>
+            <div className="alert alert-error" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              <span>Couldn't load notifications.</span>
+              <button className="btn btn-sm" onClick={retry}>Retry</button>
+            </div>
+          </div>
+        )}
+      >
+        <NotificationsPage />
+      </ErrorBoundary>
+    );
+  }
   else if (path === '/campaigns' || path.startsWith('/campaigns/')) page = <CampaignsPage />;
   else if (path === '/scheduled-jobs' || path.startsWith('/scheduled-jobs/')) page = <ScheduledJobsPage />;
   else if (path === '/notification-templates' || path.startsWith('/notification-templates/')) page = <NotificationTemplatesPage />;

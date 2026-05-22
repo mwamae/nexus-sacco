@@ -18,6 +18,18 @@ import {
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 
+// Classify load failures so the page can render a clear, non-scary
+// message instead of leaking raw axios error text. A 401 here means the
+// backend said no on a specific endpoint — NOT that the session is
+// dead (that case is handled centrally in api/client.ts).
+function describeLoadError(e: unknown): string {
+  const status = (e as { response?: { status?: number } })?.response?.status;
+  if (status === 401 || status === 403) {
+    return "You don't have access to this resource.";
+  }
+  return e instanceof Error ? e.message : 'Failed to load notifications.';
+}
+
 type Tab = 'inbox' | 'log';
 
 const TABS: Array<{ id: Tab; label: string; hint: string }> = [
@@ -79,7 +91,7 @@ function InboxTab() {
       const r = await getNotificationFeed(unreadOnly, 100);
       setItems(r.items);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'failed to load notifications');
+      setErr(describeLoadError(e));
     }
   }
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [unreadOnly]);
@@ -163,7 +175,7 @@ function LogTab() {
   useEffect(() => {
     getNotificationLog(50, 0)
       .then((r) => { setItems(r.items); setTotal(r.total); })
-      .catch((e) => setErr(e instanceof Error ? e.message : 'failed'));
+      .catch((e) => setErr(describeLoadError(e)));
   }, []);
   if (err) return <div className="alert alert-error">{err}</div>;
   if (items === null) return <div className="empty">Loading…</div>;

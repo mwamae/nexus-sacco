@@ -15,7 +15,14 @@ type NavItem = {
   href: string;
   label: string;
   icon: IconName;
+  // show=true → render as a normal link.
+  // show=false + lockedHint set → render disabled, with a lock icon and
+  //   tooltip explaining the missing permission. Use this for items
+  //   where it's better for the user to know the feature exists than to
+  //   silently hide it.
+  // show=false + no lockedHint → omit from the nav entirely (default).
   show: boolean;
+  lockedHint?: string;
 };
 
 type NavGroup = {
@@ -144,14 +151,33 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
         <nav className="sb-nav">
           {groups.map((g) => {
-            const visible = g.items.filter((i) => i.show);
-            if (visible.length === 0) return null;
+            // Render an item if it's visible OR if it's locked-with-hint.
+            // Plain hidden items (show=false, no hint) are filtered out.
+            const renderable = g.items.filter((i) => i.show || i.lockedHint);
+            if (renderable.length === 0) return null;
             return (
               <Fragment key={g.section}>
                 <div className="sb-section">{g.section}</div>
-                {visible.map((item) => {
+                {renderable.map((item) => {
                   const active =
                     item.href === '/' ? path === '/' : path === item.href || path.startsWith(item.href + '/');
+                  if (!item.show && item.lockedHint) {
+                    return (
+                      <span
+                        key={item.href}
+                        className="sb-item"
+                        title={item.lockedHint}
+                        aria-disabled="true"
+                        style={{ opacity: 0.55, cursor: 'not-allowed' }}
+                      >
+                        <span className="sb-item-ico"><Icon name={item.icon} size={14} /></span>
+                        <span>{item.label}</span>
+                        <span className="sb-item-ico" style={{ marginLeft: 'auto' }}>
+                          <Icon name="key" size={12} />
+                        </span>
+                      </span>
+                    );
+                  }
                   return (
                     <a
                       key={item.href}

@@ -47,14 +47,32 @@ api.interceptors.request.use((cfg: InternalAxiosRequestConfig) => {
   return cfg;
 });
 
-// Single in-flight refresh so a burst of 401s doesn't hammer /auth/refresh.
-let refreshing: Promise<Tokens | null> | null = null;
+// Distinguishes the two refresh-failure modes the response interceptor cares
+// about. authFailed === true means the refresh endpoint specifically rejected
+// our refresh token (401/403) — the session really is dead, tokens have been
+// cleared. authFailed === false means refresh couldn't complete for a
+// transient reason (network, 5xx, timeout); the existing tokens are
+// preserved so a later attempt can still succeed.
+type RefreshFailure = { kind: 'failed'; authFailed: boolean };
+type RefreshOutcome = Tokens | RefreshFailure;
 
-async function refreshOnce(): Promise<Tokens | null> {
-  if (refreshing) return refreshing;
-  refreshing = (async () => {
+function isAuthDead(o: RefreshOutcome): boolean {
+  return (o as RefreshFailure).kind === 'failed' && (o as RefreshFailure).authFailed;
+}
+
+function isFailure(o: RefreshOutcome): o is RefreshFailure {
+  return (o as RefreshFailure).kind === 'failed';
+}
+
+let refreshingOutcome: Promise<RefreshOutcome> | null = null;
+
+export async function refreshOnce(): Promise<RefreshOutcome> {
+  if (refreshingOutcome) return refreshingOutcome;
+  refreshingOutcome = (async (): Promise<RefreshOutcome> => {
     const t = loadTokens();
-    if (!t?.refreshToken) return null;
+    if (!t?.refreshToken) {
+      return { kind: 'failed', authFailed: true };
+    }
     try {
       const resp = await axios.post(
         `${apiBase}/v1/auth/refresh`,
@@ -69,14 +87,24 @@ async function refreshOnce(): Promise<Tokens | null> {
       };
       saveTokens(next);
       return next;
-    } catch {
-      clearTokens();
-      return null;
+    } catch (err) {
+      // Only treat the session as dead if the refresh endpoint itself
+      // rejected our refresh token. Network / 5xx / timeout leaves the
+      // stored tokens alone so the next page navigation can retry.
+      const status = (err as AxiosError)?.response?.status;
+      const authFailed = status === 401 || status === 403;
+      if (authFailed) {
+        clearTokens();
+      }
+      return { kind: 'failed', authFailed };
     } finally {
-      refreshing = null;
+      // Release the in-flight slot in a microtask, after callers awaiting
+      // the current promise have resolved. We set it to null synchronously
+      // on the next tick so a subsequent 401 starts a fresh refresh.
+      queueMicrotask(() => { refreshingOutcome = null; });
     }
   })();
-  return refreshing;
+  return refreshingOutcome;
 }
 
 api.interceptors.response.use(
@@ -85,16 +113,29 @@ api.interceptors.response.use(
     const cfg = err.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined;
     if (err.response?.status === 401 && cfg && !cfg._retried && !cfg.url?.includes('/auth/login')) {
       cfg._retried = true;
-      const next = await refreshOnce();
-      if (next) {
+      const outcome = await refreshOnce();
+      if (!isFailure(outcome)) {
         cfg.headers = cfg.headers ?? {};
-        cfg.headers.Authorization = `Bearer ${next.accessToken}`;
+        cfg.headers.Authorization = `Bearer ${outcome.accessToken}`;
         return api.request(cfg);
       }
+      // Tag the rejection so callers (AuthContext, error boundaries) can
+      // tell "session is genuinely dead" apart from "this one endpoint
+      // returned 401 / refresh was temporarily unavailable". Without this
+      // signal a transient 401 on any endpoint used to silently nuke the
+      // session via clearTokens().
+      (err as AxiosError & { authDead?: boolean }).authDead = isAuthDead(outcome);
     }
     return Promise.reject(err);
   },
 );
+
+// Public helper for callers that need the same auth-dead signal the
+// interceptor attaches (e.g. AuthContext deciding whether to drop to
+// anonymous state on mount-time fetch failure).
+export function isAuthDeadError(err: unknown): boolean {
+  return (err as { authDead?: boolean })?.authDead === true;
+}
 
 // ─── Typed endpoints ───
 
