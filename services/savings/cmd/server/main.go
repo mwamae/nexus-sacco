@@ -202,6 +202,12 @@ func main() {
 		Statements: memberStmtStore,
 		Logger:     logger,
 	}
+	memberLedgerStore := store.NewMemberLedgerStore(pool.Pool)
+	memberLedgerH := &handler.MemberLedgerHandler{
+		DB:     pool,
+		Ledger: memberLedgerStore,
+		Logger: logger,
+	}
 	approvalsH := &handler.PendingApprovalsHandler{
 		DB:          pool,
 		Approvals:   approvalsStore,
@@ -294,6 +300,7 @@ func main() {
 		LoanReports:  loanReportsH,
 		Provisioning: provisioningH,
 		MemberStmt:   memberStmtH,
+		MemberLedger: memberLedgerH,
 		Approvals:    approvalsH,
 		TenantStore:  tenants,
 		Issuer:      issuer,

@@ -412,6 +412,10 @@ function SharesDetail({
           {canTransfer && <button className="btn btn-sm" disabled={a.shares_available === 0} onClick={() => onOpenModal({ kind: 'shareTransfer' })}>Transfer</button>}
           {canAdjust && <button className="btn btn-sm" onClick={() => onOpenModal({ kind: 'shareAdjust' })}>Adjust</button>}
           {canLien && <button className="btn btn-sm" onClick={() => onOpenModal({ kind: 'shareLien' })}>+ Lien</button>}
+          {/* Symmetric with the Loans tab's "View in lending →" — drops the
+              officer into the full /shares workflow for cases where they
+              need transaction history or the certificate detail view. */}
+          <a className="btn btn-sm" href={`/shares?member=${memberId}`}>View in shares →</a>
         </div>
       </div>
 
@@ -532,6 +536,10 @@ function DepositDetail({
           {canTransact && <button className="btn btn-sm" disabled={!activeOrMatured} onClick={() => onOpenModal({ kind: 'depWithdraw', accountId: a.id })}>Withdraw</button>}
           {canTransact && otherAccounts.length > 0 && <button className="btn btn-sm" disabled={a.status !== 'active'} onClick={() => onOpenModal({ kind: 'depTransfer', accountId: a.id })}>Transfer</button>}
           {hasPermission('savings:approve') && <button className="btn btn-sm" onClick={() => onOpenModal({ kind: 'depAdjust', accountId: a.id })}>Adjust</button>}
+          {/* Symmetric with the Loans tab's "View in lending →" — drops the
+              officer into the full /deposits workflow for cases where they
+              need the long-form ledger or interest run history. */}
+          <a className="btn btn-sm" href={`/deposits?member=${memberId}&account=${a.id}`}>View in savings →</a>
         </div>
       </div>
 

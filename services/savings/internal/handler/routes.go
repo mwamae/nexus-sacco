@@ -25,6 +25,7 @@ type Deps struct {
 	LoanReports *LoanReportsHandler
 	Provisioning *ProvisioningHandler
 	MemberStmt   *MemberStatementHandler
+	MemberLedger *MemberLedgerHandler
 	Approvals   *PendingApprovalsHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
@@ -209,6 +210,12 @@ func Routes(d Deps) http.Handler {
 			// Path uses /member-statements/ rather than /members/{id}/statement
 			// because the latter prefix is proxied to the member service.
 			r.With(middleware.RequirePermission("members:view")).Get("/member-statements/{member_id}", d.MemberStmt.Get)
+			// Unified ledger — UNION ALL across deposit / loan / share
+			// transactions for this member, cursor-paginated by posted_at.
+			// Named member-ledger (not /members/{id}/ledger) to keep the
+			// /v1/members/* prefix routable to the member service while
+			// this lives on savings.
+			r.With(middleware.RequirePermission("members:view")).Get("/member-ledger/{member_id}", d.MemberLedger.Get)
 
 			// ─────────── Loan loss provisioning (Phase 11/3) ───────────
 			r.With(middleware.RequirePermission("loans:view")).Get("/provisioning/runs", d.Provisioning.List)

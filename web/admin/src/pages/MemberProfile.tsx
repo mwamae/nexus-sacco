@@ -30,10 +30,12 @@ import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
 import { MemberStatusCard } from '../components/MemberStatusCard';
 import { MemberAccountsPanel } from '../components/MemberAccountsPanel';
+import { MemberLedgerPanel } from '../components/MemberLedgerPanel';
 import { Icon, type IconName } from '../components/Icon';
 import { AsyncPanel, isTimeoutError } from '../components/AsyncPanel';
 import { Tabs } from '../components/Tabs';
 import { usePageCrumb } from '../lib/pageCrumb';
+import { CLASS_TONE } from './Loans';
 
 const DOC_LABELS: Record<DocumentKind, string> = {
   signature: 'Signature',
@@ -608,14 +610,14 @@ function BeneficiariesCard({ beneficiaries }: { beneficiaries: ApiRelation[] }) 
 function AccountsTab({ currency, memberId }: { currency: string; memberId: string }) {
   return (
     <>
+      {/* MemberAccountsPanel renders the per-account editor view —
+          shares + every deposit account with balances, KPIs, and the
+          per-account transaction history. This serves as the
+          "Accounts" section requested in the spec; loans live in
+          their own tab. */}
       <MemberAccountsPanel memberId={memberId} currency={currency} />
-      <div className="grid-2" style={{ marginTop: 14 }}>
-        <ComingSoonCard
-          title="Transactions"
-          sub="Unified ledger view across savings, loans, shares, fees."
-          body="A single timeline of debits and credits across all account types will appear here. For now, transaction history is available inside each account on the tab above."
-        />
-      </div>
+      {/* Below: the unified ledger across all three modules. */}
+      <MemberLedgerPanel memberId={memberId} currency={currency} />
     </>
   );
 }
@@ -629,7 +631,33 @@ function LoansTab({ memberId }: { memberId: string }) {
     getMemberLoanHistory(memberId).then(setData).catch((e) => setErr(extractError(e)));
   }, [memberId]);
   if (err) return <div className="alert alert-error">{err}</div>;
-  if (!data) return <div className="muted">Loading…</div>;
+  if (!data) return <div className="muted" role="status">Loading loans…</div>;
+
+  // Primary action — kicks off a new application pre-filled for this
+  // member. There is no dedicated /loans/applications/new route today;
+  // the global /loans page hosts the new-app form, so we deep-link with
+  // the member already selected.
+  const newAppHref = `/loans?member=${memberId}&new=1`;
+  // Secondary — drops the officer into the full lending workflow with
+  // the same member filter applied. Wired in Loans.tsx via the `member`
+  // URL param it now reads.
+  const lendingHref = `/loans?member=${memberId}`;
+
+  if (data.loans.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-body">
+          <div className="empty" style={{ padding: 24, textAlign: 'center' }}>
+            <p style={{ margin: '0 0 12px' }}>No loans yet for this member.</p>
+            <a href={newAppHref} className="btn btn-primary">
+              <Icon name="plus" size={12} /> New loan application →
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="kpi-grid" style={{ marginBottom: 14 }}>
@@ -641,19 +669,25 @@ function LoansTab({ memberId }: { memberId: string }) {
       <div className="card">
         <div className="card-hd">
           <h3>Loan history</h3>
-          <span className="card-sub">All loans for this member</span>
+          <span className="card-sub">{data.loans.length} loan{data.loans.length === 1 ? '' : 's'} for this member</span>
+          <div className="card-hd-actions">
+            <a href={lendingHref} className="btn btn-sm">View in lending →</a>
+            <a href={newAppHref} className="btn btn-sm btn-primary">
+              <Icon name="plus" size={12} /> New loan application
+            </a>
+          </div>
         </div>
         <div className="card-body flush">
           <table className="tbl">
             <thead>
               <tr>
-                <th>Loan</th>
+                <th>Loan #</th>
                 <th>Product</th>
-                <th>Status</th>
                 <th className="r">Principal</th>
                 <th className="r">Outstanding</th>
-                <th className="r">DPD</th>
-                <th>Disbursed</th>
+                <th>Status</th>
+                <th>Next due</th>
+                <th>Classification</th>
               </tr>
             </thead>
             <tbody>
@@ -665,19 +699,30 @@ function LoansTab({ memberId }: { memberId: string }) {
                 ).toFixed(2);
                 return (
                   <tr key={l.id}>
-                    <td><a href={`/loans/${l.id}`} className="mono">{l.loan_no}</a></td>
-                    <td><span className="mono">{row.product_code}</span> · {row.product_name}</td>
-                    <td><StatusBadge status={l.status} /></td>
+                    <td className="tiny-mono">
+                      <a href={`/loans/${l.id}`} className="tbl-link">{l.loan_no}</a>
+                    </td>
+                    <td>
+                      <div>{row.product_name}</div>
+                      <div className="muted tiny mono">{row.product_code}</div>
+                    </td>
                     <td className="r mono">{fmtMoney(l.principal)}</td>
                     <td className="r mono">{fmtMoney(outstanding)}</td>
-                    <td className="r mono">{l.days_past_due}</td>
-                    <td className="mono">{l.disbursed_at?.slice(0, 10) ?? '—'}</td>
+                    <td><StatusBadge status={l.status} /></td>
+                    <td className="tiny-mono">
+                      {l.next_installment_due_at ? l.next_installment_due_at.slice(0, 10) : '—'}
+                      {l.days_past_due > 0 && (
+                        <> · <Badge tone="neg">{l.days_past_due}d</Badge></>
+                      )}
+                    </td>
+                    <td>
+                      <Badge tone={CLASS_TONE[l.arrears_classification] ?? 'neutral'}>
+                        {l.arrears_classification.replace(/_/g, ' ')}
+                      </Badge>
+                    </td>
                   </tr>
                 );
               })}
-              {data.loans.length === 0 && (
-                <tr><td colSpan={7} className="muted center">No loans on file</td></tr>
-              )}
             </tbody>
           </table>
         </div>

@@ -3603,6 +3603,59 @@ export async function getMemberLoanHistory(memberId: string): Promise<MemberLoan
   return r.data.data;
 }
 
+// ─── Unified member ledger ───
+//
+// Returned by GET /v1/members/{id}/ledger — a single timeline UNION-
+// ALL'd across the three transaction tables (deposit / loan / share)
+// for cases where staff need a "all the money this member moved"
+// view without flipping between three module screens.
+
+export type LedgerSource = 'deposit' | 'loan' | 'share';
+
+export type LedgerRow = {
+  source: LedgerSource;
+  txn_id: string;
+  txn_no: string;
+  posted_at: string;
+  value_date?: string | null;
+  // Per-source txn_type values — see the SQL in
+  // services/savings/internal/store/member_ledger_store.go for the
+  // full enum lists. Frontend renders this via a chip mapping.
+  txn_type: string;
+  account_id: string;
+  // account_no for deposit / share rows; loan_no for loan rows.
+  account_label: string;
+  narration?: string | null;
+  // Both are non-negative decimal strings. Exactly one is non-zero on
+  // cash-flow rows; both are zero on info-only rows (e.g. an interest
+  // accrual on a loan, which adds to outstanding but is not a cash
+  // movement).
+  debit: string;
+  credit: string;
+  // Source-account balance immediately after this row. For deposits
+  // this is deposit_accounts.balance_after; for loans the loan's
+  // principal_balance; for shares the share account amount value.
+  balance_after: string;
+};
+
+export type LedgerPage = {
+  rows: LedgerRow[];
+  next_cursor?: string;
+  has_more: boolean;
+};
+
+export async function getMemberLedger(
+  memberId: string,
+  opts: { limit?: number; before?: string } = {},
+): Promise<LedgerPage> {
+  const q = new URLSearchParams();
+  if (opts.limit) q.set('limit', String(opts.limit));
+  if (opts.before) q.set('before', opts.before);
+  const path = `/v1/member-ledger/${memberId}${q.toString() ? '?' + q.toString() : ''}`;
+  const r = await api.get(path);
+  return r.data.data;
+}
+
 // ───────────────────────────── Maker-checker (Phase 7b) ─────────────────────────────
 
 export type ApprovalKind =

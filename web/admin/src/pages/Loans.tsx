@@ -211,15 +211,30 @@ function LoanList() {
   const [total, setTotal] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [status, setStatus] = useState('');
+  // Optional ?member=<id> filter. Set by the Member Profile → Loans tab
+  // "View in lending →" link so the officer lands here already scoped.
+  const memberFilter = useMemo(() => {
+    return new URLSearchParams(window.location.search).get('member') || '';
+  }, []);
 
   async function reload() {
     setErr(null);
     try {
-      const r = await listLoans({ status: status || undefined, limit: 100 });
+      const r = await listLoans({
+        status: status || undefined,
+        member_id: memberFilter || undefined,
+        limit: 100,
+      });
       setItems(r.items); setTotal(r.total);
     } catch (e) { setErr(extractError(e)); }
   }
-  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [status]);
+  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [status, memberFilter]);
+
+  function clearMemberFilter() {
+    const u = new URL(window.location.href);
+    u.searchParams.delete('member');
+    window.location.assign(u.pathname + (u.search || ''));
+  }
 
   // Per-status counts of the rows currently in view. Used by the filter
   // chip strip so the user can see "0 active · 1 settled · 2 written-off"
@@ -250,6 +265,14 @@ function LoanList() {
           </select>
         </div>
       </div>
+      {memberFilter && (
+        <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)' }}>
+          <span className="muted tiny">Filtered to member </span>
+          <a href={`/members/${memberFilter}`} className="tbl-link tiny-mono">{memberFilter.slice(0, 8)}…</a>
+          {' · '}
+          <button className="btn btn-sm" onClick={clearMemberFilter}>Clear member filter</button>
+        </div>
+      )}
       {!status && items.length > 0 && (
         <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <button className="btn btn-sm" data-active onClick={filterStatus('')}>All · {items.length}</button>
@@ -1161,7 +1184,9 @@ function fmt(s: string | number | undefined): string {
 
 // ─────────── Arrears widget (Phase 6d) ───────────
 
-const CLASS_TONE: Record<string, 'pos' | 'neg' | 'warn' | 'accent' | 'neutral'> = {
+// Exported so the Member Profile → Loans tab can reuse the same
+// badge palette as the global /loans page.
+export const CLASS_TONE: Record<string, 'pos' | 'neg' | 'warn' | 'accent' | 'neutral'> = {
   performing: 'pos',
   watch: 'accent',
   substandard: 'warn',

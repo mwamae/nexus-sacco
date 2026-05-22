@@ -136,6 +136,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        '/api/v1/member-ledger': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/provisioning': {
           target: savingsTarget,
           changeOrigin: false,
