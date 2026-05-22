@@ -414,16 +414,31 @@ func (s *ApplicationStore) AppendCorrectionTx(ctx context.Context, tx pgx.Tx,
 // ─────────── Activation ───────────
 
 // ActivationResult — the artefacts produced when an application is
-// approved. All three are created inside the same tx so a halfway
-// failure (e.g. share-account insert fails) rolls back the status flip
-// and the application stays at reviewed_pending_approval for a retry.
+// approved. Created in the same tx as the status flip so a halfway
+// failure rolls everything back.
+//
+// Individual applications produce: MemberID + share account
+// (mandatory) + deposit account (if default product configured).
+//
+// Institutional applications produce: OrgID only. Share and deposit
+// auto-open are intentionally skipped — those tables FK to members.id
+// (NOT NULL today). The org's first share / deposit accounts will be
+// opened explicitly by an officer via the org-banking workflow once
+// counterparty_id becomes the load-bearing FK in a follow-up PR.
+//
+// The XOR (Member vs Org) is the discriminator: exactly one of
+// {MemberID, OrgID} is set on any successful activation.
 type ActivationResult struct {
-	MemberID         uuid.UUID
+	// Individual path
+	MemberID         uuid.UUID  // uuid.Nil for institutional apps
 	MemberNo         string
 	ShareAccountID   uuid.UUID
 	ShareAccountNo   string
-	DepositAccountID *uuid.UUID // nil if no default product configured
+	DepositAccountID *uuid.UUID
 	DepositAccountNo *string
+	// Institutional path
+	OrgID uuid.UUID // uuid.Nil for individual apps
+	OrgNo string
 }
 
 // nextSavingsSeq replicates the savings service's per-tenant number
@@ -448,10 +463,35 @@ func nextSavingsSeq(ctx context.Context, tx pgx.Tx, kind, prefix string) (string
 
 // ActivateApplicationTx is the in-tx half of the approval pipeline.
 // Should be called immediately AFTER transitioning the application to
-// approved_active and inside the same tx. Materialises the member row
-// + share account + (optionally) deposit account; stamps the
-// application's materialized_* columns.
+// approved_active and inside the same tx. Dispatches on kind: an
+// individual application materialises into `members` + a share /
+// deposit account; an institutional application materialises into
+// `org_members` (no auto-opened accounts — see ActivationResult).
+//
+// `orgs` may be nil when the caller knows the application is
+// individual; passing nil for an institutional application returns
+// an error rather than risking an unhelpful nil-pointer panic.
 func (s *ApplicationStore) ActivateApplicationTx(
+	ctx context.Context, tx pgx.Tx,
+	app *domain.MembershipApplication,
+	members *MemberStore,
+	orgs *OrgMemberStore,
+	defaultDepositProductID *uuid.UUID,
+	sharePolicyParValue decimal.Decimal,
+	actorID uuid.UUID,
+) (*ActivationResult, error) {
+	if app.Kind == domain.ApplicationKindInstitutional {
+		if orgs == nil {
+			return nil, fmt.Errorf("activate institutional application: OrgMemberStore required")
+		}
+		return s.activateInstitutionalTx(ctx, tx, app, orgs, actorID)
+	}
+	return s.activateIndividualTx(ctx, tx, app, members, defaultDepositProductID, sharePolicyParValue, actorID)
+}
+
+// activateIndividualTx — the original (member + share + deposit)
+// pipeline, unchanged except for the function rename.
+func (s *ApplicationStore) activateIndividualTx(
 	ctx context.Context, tx pgx.Tx,
 	app *domain.MembershipApplication,
 	members *MemberStore,
@@ -569,6 +609,132 @@ func (s *ApplicationStore) ActivateApplicationTx(
 	}
 
 	return result, nil
+}
+
+// activateInstitutionalTx — the institutional branch of the
+// approval pipeline. Materialises into org_members (not members),
+// extracting org-shaped fields from the application's free-form
+// applicant_payload. Does NOT auto-open a share or deposit account
+// — those tables FK to members.id; the org's first accounts will be
+// opened explicitly by an officer once the counterparty_id FK
+// migration lands.
+func (s *ApplicationStore) activateInstitutionalTx(
+	ctx context.Context, tx pgx.Tx,
+	app *domain.MembershipApplication,
+	orgs *OrgMemberStore,
+	actorID uuid.UUID,
+) (*ActivationResult, error) {
+	var payload domain.ApplicantPayload
+	if len(app.ApplicantPayload) > 0 {
+		_ = json.Unmarshal(app.ApplicantPayload, &payload)
+	}
+
+	orgNo, err := orgs.NextOrgNoTx(ctx, tx, app.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("allocate org_no: %w", err)
+	}
+
+	// Map the application's free-form payload onto the legacy
+	// org_kind enum so the org_members CHECK constraints pass.
+	// Mirrors handler/guessInstitutionalKind but emits the
+	// org_kind enum values (which are a different set from the
+	// counterparty_kind enum).
+	orgKind := guessOrgKindFromPayload(app.ApplicantName, payload)
+
+	var orgID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		INSERT INTO org_members (
+		  tenant_id, org_no, status, registered_name, trading_name, kind,
+		  registration_no, date_of_registration, date_of_operation,
+		  industry, nature_of_business,
+		  physical_address, postal_address, county, sub_county, ward,
+		  kyc_status, risk_category,
+		  approved_at, approved_by, created_by
+		) VALUES (
+		  current_tenant_id(), $1, 'active'::org_status, $2, $3, $4::org_kind,
+		  $5, $6, $7,
+		  $8, $9,
+		  $10, $11, $12, $13, $14,
+		  'verified'::kyc_review_status, 'medium'::risk_category,
+		  now(), $15, $15
+		)
+		RETURNING id
+	`,
+		orgNo, app.ApplicantName, payload.TradingName, orgKind,
+		valOrEmptyStr(payload.RegistrationNumber), payload.DateOfRegistration, payload.DateOfRegistration,
+		valOrEmptyStr(payload.Industry), valOrEmptyStr(payload.NatureOfBusiness),
+		valOrEmptyStr(payload.PhysicalAddress), valOrEmptyStr(payload.PostalAddress),
+		valOrEmptyStr(payload.County), valOrEmptyStr(payload.SubCounty), valOrEmptyStr(payload.Ward),
+		actorID,
+	).Scan(&orgID)
+	if err != nil {
+		return nil, fmt.Errorf("insert org_member: %w", err)
+	}
+
+	// Stamp the application's materialized_org_id (the org-side
+	// twin of materialized_member_id from migration 0005).
+	if _, err := tx.Exec(ctx, `
+		UPDATE membership_applications
+		   SET materialized_org_id = $2,
+		       materialized_at     = now(),
+		       updated_at          = now()
+		 WHERE id = $1
+	`, app.ID, orgID); err != nil {
+		return nil, fmt.Errorf("update application materialized_org_id: %w", err)
+	}
+
+	return &ActivationResult{OrgID: orgID, OrgNo: orgNo}, nil
+}
+
+// valOrEmptyStr — pgx is happy with empty strings on nullable text
+// columns. Centralises the empty-string convention so the INSERT
+// doesn't drown in NULLIF() noise.
+func valOrEmptyStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// guessOrgKindFromPayload — emit the legacy org_kind enum (NOT the
+// counterparty_kind one). Mirrors the heuristic in
+// handler/guessInstitutionalKind but for the right enum.
+func guessOrgKindFromPayload(name string, p domain.ApplicantPayload) string {
+	hint := name + " " + p.RegisteredName + " " + p.NatureOfBusiness + " " + p.Industry
+	lower := ""
+	for _, r := range hint {
+		if r >= 'A' && r <= 'Z' {
+			lower += string(r + 32)
+		} else {
+			lower += string(r)
+		}
+	}
+	switch {
+	case contains(lower, "chama"):       return "chama"
+	case contains(lower, "group"):       return "group"
+	case contains(lower, "church"):      return "church"
+	case contains(lower, "school"):      return "school"
+	case contains(lower, "academy"):     return "school"
+	case contains(lower, "ngo"):         return "ngo"
+	case contains(lower, "foundation"):  return "ngo"
+	case contains(lower, "sole prop"):   return "sole_prop"
+	case contains(lower, "cooperative"): return "cooperative"
+	case contains(lower, "sacco"):       return "sacco"
+	case contains(lower, "limited"), contains(lower, "ltd"), contains(lower, "company"):
+		return "ltd"
+	default:
+		// 'group' is the broadest non-specific kind in the legacy
+		// enum and matches the spirit of "we don't know yet".
+		return "group"
+	}
+}
+
+func contains(haystack, needle string) bool {
+	if len(needle) > len(haystack) { return false }
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle { return true }
+	}
+	return false
 }
 
 // SetFeeJournalEntryTx records the journal-entry id of the

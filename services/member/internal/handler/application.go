@@ -49,6 +49,7 @@ type ApplicationHandler struct {
 	DB             *db.Pool
 	Applications   *store.ApplicationStore
 	Members        *store.MemberStore
+	Orgs           *store.OrgMemberStore   // required for institutional materialisation
 	Counterparties *store.CounterpartyStore // Phase A dual-target mirror
 	Accounting     *accounting.Client
 	Notifier       *notifier.Client
@@ -442,27 +443,38 @@ func (h *ApplicationHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		}
 		updated = u
 
-		// 2. In-tx materialisation. If any of these fail the whole
-		// approval rolls back.
+		// 2. In-tx materialisation. Dispatches on application kind:
+		// individual → members + share + (optional) deposit;
+		// institutional → org_members only (no auto-opened accounts).
+		// Failure rolls back the status flip.
 		act, err := h.Applications.ActivateApplicationTx(
-			r.Context(), tx, updated, h.Members, defaultDepositProductID, parValue, actorID,
+			r.Context(), tx, updated, h.Members, h.Orgs,
+			defaultDepositProductID, parValue, actorID,
 		)
 		if err != nil {
 			return err
 		}
 		activation = act
 
-		// 2b. Dual-target — mirror the new member into the unified
-		// counterparties register in the same tx so flag-on tenants
-		// see the row immediately, flag-off tenants see it the next
-		// time they hit a Phase B read path. Errors here roll back
-		// the whole approval; the FK fan-out (loans/deposits/shares)
-		// is still on members.id this PR (Phase C concern), so
-		// failure to mirror cannot leave the relational graph in a
-		// stranded state — the legacy row is the source of truth.
+		// 2b. Dual-target — mirror the new legacy row into the
+		// unified counterparties register in the same tx. Direction
+		// follows activation kind. Errors here roll back the whole
+		// approval.
 		if h.Counterparties != nil {
-			if err := h.mirrorMemberToCounterpartyTx(r.Context(), tx, tenantID, act.MemberID, updated, actorID); err != nil {
-				return fmt.Errorf("mirror counterparty: %w", err)
+			if act.OrgID != uuid.Nil {
+				// Institutional path: load the freshly-inserted
+				// org_members row and reuse the shared mirror.
+				freshOrg, gerr := h.Orgs.ByIDTx(r.Context(), tx, act.OrgID)
+				if gerr != nil {
+					return fmt.Errorf("reload org for mirror: %w", gerr)
+				}
+				if err := mirrorOrgCreateToCounterpartyTx(r.Context(), tx, h.Counterparties, tenantID, freshOrg, actorID); err != nil {
+					return fmt.Errorf("mirror counterparty (org): %w", err)
+				}
+			} else {
+				if err := h.mirrorMemberToCounterpartyTx(r.Context(), tx, tenantID, act.MemberID, updated, actorID); err != nil {
+					return fmt.Errorf("mirror counterparty: %w", err)
+				}
 			}
 		}
 		return nil

@@ -118,6 +118,7 @@ func main() {
 	accountingClient := accounting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
 	appH := &handler.ApplicationHandler{
 		DB: pool, Applications: applicationStore, Members: members,
+		Orgs:           orgs,                // institutional materialisation
 		Counterparties: counterpartyStore,
 		Accounting: accountingClient, Notifier: notifyClient,
 		Logger: logger,
