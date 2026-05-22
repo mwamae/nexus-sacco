@@ -36,6 +36,7 @@ import {
 } from '../api/client';
 import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
+import { usePageCrumb } from '../lib/pageCrumb';
 
 type TabId = 'overview' | 'profile' | 'documents' | 'people' | 'banking' | 'activity';
 const TABS: { id: TabId; label: string }[] = [
@@ -117,6 +118,8 @@ export default function OrganizationProfile() {
   const [o, setO] = useState<ApiOrgDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Crumb now reads "Organisations → Acme SACCO" once the org loads.
+  usePageCrumb(o?.registered_name);
 
   function navigateTab(next: TabId) {
     setTab(next);

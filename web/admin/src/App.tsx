@@ -2,6 +2,7 @@ import { AuthProvider, useAuth } from './auth/AuthContext';
 import AppShell from './components/AppShell';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Tweaks } from './components/Tweaks';
+import { PageCrumbProvider } from './lib/pageCrumb';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import ResetPassword from './pages/ResetPassword';
@@ -151,8 +152,10 @@ function Gate() {
 export default function App() {
   return (
     <AuthProvider>
-      <Gate />
-      <Tweaks />
+      <PageCrumbProvider>
+        <Gate />
+        <Tweaks />
+      </PageCrumbProvider>
     </AuthProvider>
   );
 }

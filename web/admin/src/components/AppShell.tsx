@@ -6,6 +6,8 @@ import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { isPlatformHost } from '../auth/tenant';
 import { fetchTenantLogo, getTenantSettings } from '../api/client';
+import { trailFor } from '../lib/routeNames';
+import { usePageCrumbValue } from '../lib/pageCrumb';
 import { Avatar } from './Avatar';
 import { Icon, type IconName } from './Icon';
 import { NotificationBell } from './NotificationBell';
@@ -120,7 +122,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
     });
   }
 
-  const crumbs = breadcrumbs(path, tenant?.name ?? (onPlatform ? 'Platform' : 'Tenant'));
+  const dynamicCrumb = usePageCrumbValue();
+  const crumbs = [
+    tenant?.name ?? (onPlatform ? 'Platform' : 'Tenant'),
+    ...trailFor(path, dynamicCrumb),
+  ];
   const primaryRole = roles.find((r) => r !== 'platform_admin') ?? roles[0] ?? 'staff';
 
   return (
@@ -296,22 +302,7 @@ function useTenantBranding(enabled: boolean): BrandingState {
   return state;
 }
 
-function breadcrumbs(path: string, tenantLabel: string): string[] {
-  const trail: string[] = [tenantLabel];
-  if (path === '/' || path === '') trail.push('Home');
-  else if (path === '/members/new') trail.push('Members', 'New');
-  else if (path === '/members') trail.push('Members');
-  else if (path.startsWith('/members/')) trail.push('Members', 'Profile');
-  else if (path === '/orgs/new') trail.push('Organisations', 'Onboarding');
-  else if (path === '/orgs') trail.push('Organisations');
-  else if (path.startsWith('/orgs/')) trail.push('Organisations', 'Profile');
-  else if (path === '/tenants/new') trail.push('Platform', 'New tenant');
-  else if (path.startsWith('/tenants/')) trail.push('Platform', 'Tenant profile');
-  else if (path === '/settings') trail.push('Administration', 'Settings');
-  else if (path === '/approvals' || path.startsWith('/approvals/')) trail.push('Approvals', 'Inbox');
-  else if (path === '/workflows' || path.startsWith('/workflows/')) trail.push('Approvals', 'Definitions');
-  else if (path.startsWith('/users')) trail.push('Administration', 'Staff');
-  else if (path.startsWith('/roles')) trail.push('Administration', 'Roles & permissions');
-  else trail.push(path);
-  return trail;
-}
+// Breadcrumb resolution now lives in src/lib/routeNames.ts so all
+// routes (sidebar-anchored and dynamic alike) get a sane label —
+// including the ones that used to fall through to `trail.push(path)`
+// and render "/loans" or "/deposits" verbatim in the header.

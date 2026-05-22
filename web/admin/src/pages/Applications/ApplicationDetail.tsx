@@ -28,6 +28,7 @@ import {
   type ChecklistItem,
 } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
+import { usePageCrumb } from '../../lib/pageCrumb';
 
 const STATUS_LABEL: Record<ApplicationStatus, string> = {
   submitted: 'Pending review',
@@ -67,6 +68,11 @@ export default function ApplicationDetailPage() {
   const [declineReason, setDeclineReason] = useState('');
   const [approveConditions, setApproveConditions] = useState('');
   const [withdrawReason, setWithdrawReason] = useState('');
+  // Header now reads "Applications → APP-2026-000004 · Smoke Test Member Two"
+  // once the application loads, instead of the registry fallback "Application".
+  usePageCrumb(data?.application
+    ? `${data.application.application_no} · ${data.application.applicant_name}`
+    : null);
 
   async function load() {
     setErr(null);

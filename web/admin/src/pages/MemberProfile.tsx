@@ -32,6 +32,7 @@ import { MemberStatusCard } from '../components/MemberStatusCard';
 import { MemberAccountsPanel } from '../components/MemberAccountsPanel';
 import { Icon, type IconName } from '../components/Icon';
 import { AsyncPanel, isTimeoutError } from '../components/AsyncPanel';
+import { usePageCrumb } from '../lib/pageCrumb';
 
 const DOC_LABELS: Record<DocumentKind, string> = {
   signature: 'Signature',
@@ -74,6 +75,9 @@ export default function MemberProfile() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [currency, setCurrency] = useState<string>(tenant?.currency_code ?? 'KES');
+  // Make the header crumb say "Members → Jane Doe" instead of the
+  // registry fallback ("Members → Profile") once the member loads.
+  usePageCrumb(m?.full_name);
 
   function navigateTab(next: TabId) {
     setTab(next);
