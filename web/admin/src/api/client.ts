@@ -3023,6 +3023,23 @@ export async function respondToGuarantee(guaranteeId: string, accept: boolean, d
   return r.data.data;
 }
 
+// MemberGuarantorship — a loan-guarantee row joined with the borrower
+// + product so the Member Profile People tab can render a row without
+// follow-up lookups. Returned by /v1/loan-guarantees/by-member/{id}.
+export type MemberGuarantorship = LoanGuarantee & {
+  loan_no: string | null;
+  application_no: string;
+  borrower_member_id: string;
+  borrower_full_name: string;
+  product_code: string;
+  product_name: string;
+};
+
+export async function listGuaranteesByMember(memberId: string): Promise<MemberGuarantorship[]> {
+  const r = await api.get(`/v1/loan-guarantees/by-member/${memberId}`);
+  return r.data.data ?? [];
+}
+
 export async function sendLoanOffer(appId: string, input: { expires_at?: string; letter_path?: string } = {}): Promise<LoanApplication> {
   const r = await api.post(`/v1/loan-applications/${appId}/send-offer`, input);
   return r.data.data;

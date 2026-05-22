@@ -158,6 +158,9 @@ func Routes(d Deps) http.Handler {
 
 			// Guarantor consent
 			r.With(middleware.RequirePermission("loans:guarantee")).Post("/loan-guarantees/{guarantee_id}/respond", d.LoanApp.GuaranteeRespond)
+			// Member-scoped — every loan this member guarantees, joined
+			// with borrower + loan number for the Member Profile People tab.
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-guarantees/by-member/{member_id}", d.LoanApp.ListByGuarantor)
 
 			// ─────────── Loan offer + acceptance + disbursement ───────────
 			r.With(middleware.RequirePermission("loans:offer")).Post("/loan-applications/{app_id}/send-offer", d.Loan.SendOffer)

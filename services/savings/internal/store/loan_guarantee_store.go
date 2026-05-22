@@ -109,6 +109,65 @@ func (s *LoanGuaranteeStore) RespondTx(
 	return &g, err
 }
 
+// GuarantorshipRow joins a loan_guarantees row with the borrower's
+// name + loan number for the Member Profile → People tab. Lives at
+// this level so callers don't have to issue follow-up queries to
+// resolve the foreign keys.
+type GuarantorshipRow struct {
+	domain.LoanGuarantee
+	LoanNo         *string `json:"loan_no"`
+	ApplicationNo  string  `json:"application_no"`
+	BorrowerID     uuid.UUID `json:"borrower_member_id"`
+	BorrowerName   string  `json:"borrower_full_name"`
+	ProductCode    string  `json:"product_code"`
+	ProductName    string  `json:"product_name"`
+}
+
+// ByGuarantorMemberTx returns every loan-guarantee this member is on,
+// joined with the borrower's identity + loan reference. Sorted newest
+// first. Empty slice (nil error) if the member is not guaranteeing
+// anyone, so the caller can render a "no guarantorships on record"
+// empty state without distinguishing the no-rows case at the SQL
+// level.
+func (s *LoanGuaranteeStore) ByGuarantorMemberTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) ([]GuarantorshipRow, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT g.id, g.tenant_id, g.application_id, g.loan_id, g.guarantor_member_id,
+		       g.amount_guaranteed, g.status, g.requested_at, g.requested_by,
+		       g.responded_at, g.released_at, g.called_upon_at, g.decline_reason, g.notes,
+		       l.loan_no,
+		       a.application_no,
+		       a.member_id        AS borrower_member_id,
+		       m.full_name        AS borrower_full_name,
+		       p.code             AS product_code,
+		       p.name             AS product_name
+		  FROM loan_guarantees g
+		  JOIN loan_applications a ON a.id = g.application_id
+		  JOIN members          m ON m.id = a.member_id
+		  JOIN loan_products    p ON p.id = a.product_id
+		  LEFT JOIN loans       l ON l.id = g.loan_id
+		 WHERE g.guarantor_member_id = $1
+		 ORDER BY g.requested_at DESC
+	`, memberID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GuarantorshipRow
+	for rows.Next() {
+		var r GuarantorshipRow
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.ApplicationID, &r.LoanID, &r.GuarantorMemberID,
+			&r.AmountGuaranteed, &r.Status, &r.RequestedAt, &r.RequestedBy,
+			&r.RespondedAt, &r.ReleasedAt, &r.CalledUponAt, &r.DeclineReason, &r.Notes,
+			&r.LoanNo, &r.ApplicationNo, &r.BorrowerID, &r.BorrowerName, &r.ProductCode, &r.ProductName,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ExposureForMemberTx returns the total amount this member is currently
 // guaranteeing across all active/pending guarantees. Used to check
 // over-exposure when registering a new guarantee.

@@ -742,6 +742,34 @@ type guaranteeRespondReq struct {
 	DeclineReason *string `json:"decline_reason,omitempty"`
 }
 
+// ListByGuarantor — Member Profile → People tab. Returns every
+// loan-guarantee this member is on, with the borrower's name + loan
+// reference resolved. The frontend renders this as the
+// "Guarantorships" card; empty array → "no guarantorships on record"
+// empty state.
+func (h *LoanApplicationHandler) ListByGuarantor(w http.ResponseWriter, r *http.Request) {
+	memberID, err := parseUUIDParam(r, "member_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var rows []store.GuarantorshipRow
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		var lerr error
+		rows, lerr = h.Guarantees.ByGuarantorMemberTx(r.Context(), tx, memberID)
+		return lerr
+	})
+	if err != nil {
+		writeLoanAppErr(w, r, err)
+		return
+	}
+	if rows == nil {
+		rows = []store.GuarantorshipRow{}
+	}
+	httpx.OK(w, rows)
+}
+
 func (h *LoanApplicationHandler) GuaranteeRespond(w http.ResponseWriter, r *http.Request) {
 	gID, err := parseUUIDParam(r, "guarantee_id")
 	if err != nil {

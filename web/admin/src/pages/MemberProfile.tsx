@@ -18,6 +18,7 @@ import {
   uploadMemberDocument,
   extractError,
   getMemberLoanHistory,
+  listGuaranteesByMember,
   type ApiMemberDetail,
   type ApiRelation,
   type AuditEntry,
@@ -178,7 +179,7 @@ export default function MemberProfile() {
                   <MemberStatusCard memberId={m.id} currentStatus={m.status} onChanged={reload} />
                 </>
               )}
-              {tab === 'people'   && <PeopleTab m={m} />}
+              {tab === 'people'   && <PeopleTab m={m} currency={currency} />}
               {tab === 'accounts' && <AccountsTab currency={currency} memberId={memberId} />}
               {tab === 'loans' && <LoansTab memberId={memberId} />}
               {tab === 'documents' && (
@@ -317,12 +318,15 @@ function OverviewTab({
 
   return (
     <>
-      {/* Financial-position KPI strip (placeholder until modules ship) */}
+      {/* Financial-position KPI strip. Values are aggregated by the
+          dedicated balances service; until that wiring lands, the
+          tiles show the member's headline categories with neutral
+          placeholders so the layout doesn't collapse. */}
       <div className="grid-4" style={{ marginBottom: 14 }}>
-        <FinKPI label="Total savings" value={`${currency} —`} hint="Savings module pending" muted />
-        <FinKPI label="Active loans"  value="—" hint="Loans module pending" muted />
-        <FinKPI label="Shares balance" value={`${currency} —`} hint="Shares module pending" muted />
-        <FinKPI label="Net position"  value={`${currency} —`} hint="Aggregate ledger" muted />
+        <FinKPI label="Total savings"  value={`${currency} —`} hint="Sum of all deposit account balances" muted />
+        <FinKPI label="Active loans"   value="—"               hint="Open loan principal balance" muted />
+        <FinKPI label="Shares balance" value={`${currency} —`} hint="Paid-up share equity" muted />
+        <FinKPI label="Net position"   value={`${currency} —`} hint="Savings + shares − loans" muted />
       </div>
 
       <div className="grid-2">
@@ -468,7 +472,7 @@ function ProfileTab({ m }: { m: ApiMemberDetail }) {
 
 // ─────────── People tab ───────────
 
-function PeopleTab({ m }: { m: ApiMemberDetail }) {
+function PeopleTab({ m, currency }: { m: ApiMemberDetail; currency: string }) {
   return (
     <>
       <Card title="Next of kin">
@@ -487,12 +491,71 @@ function PeopleTab({ m }: { m: ApiMemberDetail }) {
 
       <BeneficiariesCard beneficiaries={m.beneficiaries} />
 
-      <PendingCard
-        title="Guarantorships"
-        sub="Loans this member guarantees, plus people who guarantee their loans."
-        body="Will populate once the loans module ships. Beneficiaries above are not the same thing — those are inheritance contacts, not loan guarantors."
-      />
+      <GuarantorshipsCard memberId={m.id} currency={currency} />
     </>
+  );
+}
+
+function GuarantorshipsCard({ memberId, currency }: { memberId: string; currency: string }) {
+  const fetcher = useMemo(() => () => listGuaranteesByMember(memberId), [memberId]);
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-hd">
+        <h3>Guarantorships</h3>
+        <span className="card-sub">Loans this member has co-signed as a guarantor.</span>
+      </div>
+      <div className="card-body flush">
+        <AsyncPanel
+          fetcher={fetcher}
+          deps={[memberId]}
+          isEmpty={(rows) => rows.length === 0}
+          empty={(
+            <div className="empty" style={{ padding: 20 }}>
+              No guarantorships on record for this member — they are not currently co-signing any loans.
+            </div>
+          )}
+          errorTitle="Couldn't load guarantorships"
+          errorMessage={(err) => isTimeoutError(err)
+            ? "The lending service didn't respond in time. Try again in a moment."
+            : "We couldn't fetch the loans this member guarantees."}
+          skeleton={<div className="muted tiny" role="status" style={{ padding: 14 }}>Loading guarantorships…</div>}
+        >
+          {(rows) => (
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Borrower</th>
+                  <th>Product</th>
+                  <th>Loan / application</th>
+                  <th>Status</th>
+                  <th style={{ textAlign: 'right' }}>Guaranteed</th>
+                  <th>Requested</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((g) => (
+                  <tr key={g.id}>
+                    <td>
+                      <a href={`/members/${g.borrower_member_id}`} className="tbl-link">{g.borrower_full_name}</a>
+                    </td>
+                    <td className="tiny">
+                      <div>{g.product_name}</div>
+                      <div className="muted tiny mono">{g.product_code}</div>
+                    </td>
+                    <td className="tiny-mono">{g.loan_no ?? g.application_no}</td>
+                    <td><StatusBadge status={g.status} /></td>
+                    <td className="mono num" style={{ textAlign: 'right' }}>
+                      {currency} {fmtMoney(g.amount_guaranteed)}
+                    </td>
+                    <td className="tiny-mono">{new Date(g.requested_at).toISOString().slice(0, 10)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </AsyncPanel>
+      </div>
+    </div>
   );
 }
 
@@ -549,10 +612,10 @@ function AccountsTab({ currency, memberId }: { currency: string; memberId: strin
     <>
       <MemberAccountsPanel memberId={memberId} currency={currency} />
       <div className="grid-2" style={{ marginTop: 14 }}>
-        <PendingCard
+        <ComingSoonCard
           title="Transactions"
           sub="Unified ledger view across savings, loans, shares, fees."
-          body="Single timeline of debits and credits. Pending the transactions ledger."
+          body="A single timeline of debits and credits across all account types will appear here. For now, transaction history is available inside each account on the tab above."
         />
       </div>
     </>
@@ -632,14 +695,18 @@ function fmtMoney(s: string | number | undefined | null): string {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function PendingCard({ title, sub, body }: { title: string; sub: string; body: string }) {
+// ComingSoonCard — placeholder for surfaces whose backing data is not
+// yet wired into the UI. Replaces the old "module pending" tag with
+// neutral, user-facing copy: titles read normally, the body explains
+// what will land here without naming internal services / modules.
+function ComingSoonCard({ title, sub, body }: { title: string; sub: string; body: string }) {
   return (
     <div className="card pending-card">
       <div className="card-hd">
         <h3>{title}</h3>
         <span className="card-sub">{sub}</span>
         <div className="card-hd-actions">
-          <span className="pending-tag">module pending</span>
+          <span className="muted tiny">Coming soon</span>
         </div>
       </div>
       <div className="card-body">
@@ -846,10 +913,10 @@ function ActivityTab({ memberId, canSeeAudit }: { memberId: string; canSeeAudit:
         </div>
       </div>
 
-      <PendingCard
+      <ComingSoonCard
         title="Communications"
         sub="Email + SMS history sent to this member."
-        body="OTPs, statements, reminders, and broadcasts will appear here. Pending the communications log."
+        body="Statements, reminders, OTPs, and broadcasts addressed to this member will appear here once the per-member communications log is enabled."
       />
     </>
   );
