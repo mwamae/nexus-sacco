@@ -89,6 +89,7 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:edit")).Post("/members/{id}/status-supporting-doc", d.Status.UploadSupportingDoc)
 			r.With(middleware.RequirePermission("members:view")).Get("/members/{id}/status-history/{change_id}/doc", d.Status.DownloadSupportingDoc)
 			r.With(middleware.RequirePermission("members:view")).Get("/members/status/summary", d.Status.Summary)
+			r.With(middleware.RequirePermission("members:view")).Get("/members/status/counts", d.Status.Counts)
 			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/preview", d.Status.DormancyPreview)
 			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/run", d.Status.DormancyRun)
 

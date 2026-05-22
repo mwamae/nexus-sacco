@@ -326,24 +326,69 @@ func (s *StatusChangeStore) DormancyPipelineTx(ctx context.Context, tx pgx.Tx, t
 	return out, rows.Err()
 }
 
-// ─────────── Status summary for the dashboard ───────────
+// ─────────── Member roll-call counts (canonical) ───────────
+//
+// MemberStatusCounts is the canonical roll-call shape returned by the
+// member_status_counts(tenant_id) Postgres function. Every UI that
+// shows "members on the register" or "active members" MUST consume
+// this struct so the dashboard widget and the Members page KPI strip
+// can never disagree. See migration 0006 for bucket semantics.
 
-func (s *StatusChangeStore) StatusSummaryTx(ctx context.Context, tx pgx.Tx) (map[domain.MemberStatus]int, error) {
-	rows, err := tx.Query(ctx, `SELECT status::text, count(*) FROM members GROUP BY status`)
+type MemberStatusCounts struct {
+	Active               int `json:"active"`
+	Dormant              int `json:"dormant"`
+	Pending              int `json:"pending"`
+	Suspended            int `json:"suspended"`
+	Blacklisted          int `json:"blacklisted"`
+	Exited               int `json:"exited"`
+	Deceased             int `json:"deceased"`
+	Rejected             int `json:"rejected"`
+	TotalOnRegister      int `json:"total_on_register"`
+	TotalActiveServicing int `json:"total_active_servicing"`
+}
+
+func (s *StatusChangeStore) MemberStatusCountsTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) (*MemberStatusCounts, error) {
+	var c MemberStatusCounts
+	err := tx.QueryRow(ctx, `
+		SELECT active, dormant, pending, suspended, blacklisted, exited, deceased, rejected,
+		       total_on_register, total_active_servicing
+		  FROM member_status_counts($1)
+	`, tenantID).Scan(
+		&c.Active, &c.Dormant, &c.Pending, &c.Suspended, &c.Blacklisted,
+		&c.Exited, &c.Deceased, &c.Rejected,
+		&c.TotalOnRegister, &c.TotalActiveServicing,
+	)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[domain.MemberStatus]int{}
-	for rows.Next() {
-		var s string
-		var c int
-		if err := rows.Scan(&s, &c); err != nil {
-			return nil, err
-		}
-		out[domain.MemberStatus(s)] = c
+	return &c, nil
+}
+
+// ByStatus exposes the per-bucket counts as a map for backwards-compatible
+// callers (the existing /v1/members/status/summary response shape).
+func (c *MemberStatusCounts) ByStatus() map[domain.MemberStatus]int {
+	return map[domain.MemberStatus]int{
+		domain.StatusActive:      c.Active,
+		domain.StatusDormant:     c.Dormant,
+		domain.StatusPending:     c.Pending,
+		domain.StatusSuspended:   c.Suspended,
+		domain.StatusBlacklisted: c.Blacklisted,
+		domain.StatusExited:      c.Exited,
+		domain.StatusDeceased:    c.Deceased,
+		domain.StatusRejected:    c.Rejected,
 	}
-	return out, rows.Err()
+}
+
+// StatusSummaryTx is retained for callers that still want the legacy
+// map shape. It now delegates to MemberStatusCountsTx so the bucket
+// semantics live in exactly one place (the SQL function). The caller
+// MUST already be inside a tenant-scoped tx.
+func (s *StatusChangeStore) StatusSummaryTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) (map[domain.MemberStatus]int, error) {
+	counts, err := s.MemberStatusCountsTx(ctx, tx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return counts.ByStatus(), nil
 }
 
 // RecentChangesTx returns the most recent status changes across the

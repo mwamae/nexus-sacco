@@ -1,15 +1,17 @@
 // Members list — pending review queue + active register, with approve /
 // reject inline actions. "Onboard member" link routes to the wizard.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import {
   approveMember,
+  getMemberStatusCounts,
   listMembers,
   rejectMember,
   extractError,
   type ApiMember,
   type MemberStatus,
+  type MemberStatusCounts,
 } from '../api/client';
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
@@ -27,17 +29,28 @@ export default function Members() {
   const [filter, setFilter] = useState<Filter>('all');
   const [q, setQ] = useState('');
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  // Canonical KPI numbers — fetched from /v1/members/status/counts so
+  // they match the dashboard widget exactly. The previous implementation
+  // computed these client-side from the loaded page of members, which
+  // (a) skewed under pagination and (b) silently absorbed members in
+  // "off-bucket" statuses (blacklisted / dormant / etc.) into a
+  // mis-labelled "total" line.
+  const [counts, setCounts] = useState<MemberStatusCounts | null>(null);
 
   async function reload() {
     setLoadErr(null);
     try {
-      const r = await listMembers({
-        status: filter === 'all' ? undefined : filter,
-        q: q || undefined,
-        limit: 100,
-      });
+      const [r, c] = await Promise.all([
+        listMembers({
+          status: filter === 'all' ? undefined : filter,
+          q: q || undefined,
+          limit: 100,
+        }),
+        getMemberStatusCounts(),
+      ]);
       setMembers(r.members);
       setTotal(r.total);
+      setCounts(c);
     } catch (e) {
       setLoadErr(extractError(e));
     }
@@ -66,17 +79,6 @@ export default function Members() {
     }
   }
 
-  const tally = useMemo(() => {
-    const acc = { total: 0, active: 0, pending: 0, rejected: 0, suspended: 0 };
-    for (const m of members ?? []) {
-      acc.total++;
-      if (m.status === 'active') acc.active++;
-      else if (m.status === 'pending') acc.pending++;
-      else if (m.status === 'rejected') acc.rejected++;
-      else if (m.status === 'suspended') acc.suspended++;
-    }
-    return acc;
-  }, [members]);
 
   return (
     <div className="page">
@@ -100,12 +102,7 @@ export default function Members() {
 
       {loadErr && <div className="alert alert-error">{loadErr}</div>}
 
-      <div className="grid-4" style={{ marginBottom: 14 }}>
-        <KPICard label="On register" value={tally.total} />
-        <KPICard label="Active" value={tally.active} tone="pos" />
-        <KPICard label="Pending review" value={tally.pending} tone="warn" />
-        <KPICard label="Rejected" value={tally.rejected} tone="neg" />
-      </div>
+      <MemberRollCallKPIs counts={counts} />
 
       <div className="card">
         <div className="card-hd">
@@ -230,6 +227,22 @@ export default function Members() {
           Pending members need approval from a user with the <Badge tone="accent">members:approve</Badge> permission.
         </p>
       )}
+    </div>
+  );
+}
+
+// MemberRollCallKPIs renders the four canonical roll-call numbers from
+// member_status_counts(tenant_id). The dashboard widget consumes the
+// same underlying fields, so the two views display identical numbers
+// for the same fixture by construction. See AsyncPanel-style discipline
+// note in api/client.ts MemberStatusCounts.
+export function MemberRollCallKPIs({ counts }: { counts: MemberStatusCounts | null }) {
+  return (
+    <div className="grid-4" style={{ marginBottom: 14 }}>
+      <KPICard label="On register"    value={counts?.total_on_register ?? 0} />
+      <KPICard label="Active"         value={counts?.total_active_servicing ?? 0} tone="pos" />
+      <KPICard label="Pending review" value={counts?.pending ?? 0} tone="warn" />
+      <KPICard label="Rejected"       value={counts?.rejected ?? 0} tone="neg" />
     </div>
   );
 }

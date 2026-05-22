@@ -27,7 +27,19 @@ export default function TenantDashboard() {
 
   useEffect(() => {
     if (!canViewMembers) return;
-    void getMemberStatusSummary().then(setStatusSummary).catch(() => {});
+    const load = () => { void getMemberStatusSummary().then(setStatusSummary).catch(() => {}); };
+    load();
+    // Refetch when the tab regains focus / becomes visible. Without this,
+    // a snapshot taken on mount drifts whenever members are created or
+    // approved in another tab — the source of the "dashboard says 7,
+    // Members page says 8" divergence the bug report flagged.
+    const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+    window.addEventListener('focus', load);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', load);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [canViewMembers]);
 
   async function onRunDormancy() {
@@ -167,20 +179,23 @@ const STATUS_ORDER: MemberStatus[] = [
   'blacklisted', 'exited', 'deceased', 'rejected',
 ];
 
-function MemberStatusPanel({ summary, canRun, busy, onRun }: {
+export function MemberStatusPanel({ summary, canRun, busy, onRun }: {
   summary: MemberStatusSummary;
   canRun: boolean;
   busy: boolean;
   onRun: () => void | Promise<void>;
 }) {
-  const total = Object.values(summary.by_status).reduce((acc, n) => acc + (n ?? 0), 0);
+  // total_on_register comes from member_status_counts(tenant_id), the
+  // single source of truth shared with the Members page KPI strip.
+  // It deliberately excludes exited / deceased / rejected.
+  const total = summary.total_on_register;
   const pipelineCount = summary.dormancy_pipeline.length;
   return (
     <>
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-hd">
           <h3>Members — status overview</h3>
-          <span className="card-sub">{total} on register</span>
+          <span className="card-sub">{total} on register · {summary.total_active_servicing} servicing</span>
           <div className="card-hd-actions">
             <a className="btn btn-sm" href="/members">Open register →</a>
             {canRun && (

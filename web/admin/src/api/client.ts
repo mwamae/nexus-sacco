@@ -1535,8 +1535,32 @@ export type RecentStatusChange = MemberStatusChange & {
   full_name: string;
 };
 
+// MemberStatusCounts mirrors the Postgres function
+// member_status_counts(tenant_id) — the canonical roll-call source of
+// truth. Both the admin dashboard widget and the Members page KPI
+// strip MUST consume these numbers (not a client-side tally) so the
+// two views can never disagree. See member migration 0006 for full
+// bucket-semantic documentation.
+export type MemberStatusCounts = {
+  active: number;
+  dormant: number;
+  pending: number;
+  suspended: number;
+  blacklisted: number;
+  exited: number;
+  deceased: number;
+  rejected: number;
+  // active + dormant + pending + suspended + blacklisted
+  // (excludes exited / deceased / rejected)
+  total_on_register: number;
+  // active + dormant (dormant rolled into active for reporting)
+  total_active_servicing: number;
+};
+
 export type MemberStatusSummary = {
   by_status: Partial<Record<MemberStatus, number>>;
+  total_on_register: number;
+  total_active_servicing: number;
   dormancy_pipeline: DormancyCandidate[];
   recent_changes: RecentStatusChange[];
   dormancy_threshold_days: number;
@@ -1575,6 +1599,15 @@ export async function uploadStatusSupportingDoc(memberId: string, file: Blob): P
 
 export async function getMemberStatusSummary(): Promise<MemberStatusSummary> {
   const r = await api.get('/v1/members/status/summary');
+  return r.data.data;
+}
+
+// Leaner endpoint for views that just need the roll-call numbers (e.g.
+// the Members page KPI strip), so we don't ship the dormancy pipeline
+// + recent-changes panels on every navigation. Same underlying source
+// function as getMemberStatusSummary.
+export async function getMemberStatusCounts(): Promise<MemberStatusCounts> {
+  const r = await api.get('/v1/members/status/counts');
   return r.data.data;
 }
 
