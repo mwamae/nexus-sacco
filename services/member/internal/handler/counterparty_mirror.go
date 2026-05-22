@@ -1,14 +1,19 @@
-// Counterparty mirror writers — keep counterparties in sync with the
-// legacy members + org_members tables during Phase A/B.
+// Counterparty co-creators — the post-Phase D primary write path.
 //
-// Two end-user paths create rows in `members`:
+// During Phase A/B these were "mirror writes" — secondary copies of
+// rows whose source-of-truth lived in members / org_members. After
+// the Phase D drop of the unified_counterparties feature flag the
+// model inverts: counterparties is the register of record, and the
+// matching members / org_members row lives only because the savings
+// service still keys its FKs off members.id (until a deeper Phase D+
+// promotes counterparty_id to load-bearing on those tables).
+//
+// Three call sites create both rows together inside one tx:
 //   1. POST /v1/members (admin direct create) — MemberHandler.Create
-//   2. Application approval — ApplicationHandler.Approve
-// Both call the matching mirror function below inside the same tx as
-// the legacy insert, so the bridge counterparty_id is stamped before
-// commit. The existing application-side mirror in application.go
-// already calls into the CounterpartyStore directly; this file
-// centralises the shape so the two paths emit identical rows.
+//   2. POST /v1/orgs    (admin direct create) — OrgHandler.Create
+//   3. Application approval — ApplicationHandler.Approve
+// Each helper returns the new counterparty id so the caller can
+// stamp it on whatever row needs the bridge (application.materialized_counterparty_id, etc.).
 
 package handler
 
@@ -24,18 +29,19 @@ import (
 	"github.com/nexussacco/member/internal/store"
 )
 
-// mirrorMemberCreateToCounterpartyTx mirrors a freshly-created
-// `members` row into counterparties. Caller is responsible for the
-// tx + tenant scoping; the function only emits one CounterpartyStore
-// create + one bridge UPDATE.
-func mirrorMemberCreateToCounterpartyTx(
+// createCounterpartyForMemberTx — creates a counterparty row that
+// shadows the freshly-inserted members row + stamps the bridge
+// FK on the members row. Returns the new counterparty id so the
+// caller can carry it forward (e.g. for stamping on the matching
+// application row).
+func createCounterpartyForMemberTx(
 	ctx context.Context,
 	tx pgx.Tx,
 	cps *store.CounterpartyStore,
 	tenantID uuid.UUID,
 	m *domain.Member,
 	actorID uuid.UUID,
-) error {
+) (uuid.UUID, error) {
 	individual, _ := json.Marshal(map[string]any{
 		"gender":            m.Gender,
 		"date_of_birth":     m.DateOfBirth,
@@ -68,20 +74,24 @@ func mirrorMemberCreateToCounterpartyTx(
 		CreatedBy:   ptrIfSet(actorID),
 	})
 	if err != nil {
-		return fmt.Errorf("counterparty insert: %w", err)
+		return uuid.Nil, fmt.Errorf("counterparty insert: %w", err)
 	}
-	return cps.SetCounterpartyOnMemberTx(ctx, tx, m.ID, cp.ID)
+	if err := cps.SetCounterpartyOnMemberTx(ctx, tx, m.ID, cp.ID); err != nil {
+		return uuid.Nil, err
+	}
+	return cp.ID, nil
 }
 
-// mirrorOrgCreateToCounterpartyTx — same shape, the org side.
-func mirrorOrgCreateToCounterpartyTx(
+// createCounterpartyForOrgTx — same shape, the org side. Returns the
+// new counterparty id so the caller can carry it forward.
+func createCounterpartyForOrgTx(
 	ctx context.Context,
 	tx pgx.Tx,
 	cps *store.CounterpartyStore,
 	tenantID uuid.UUID,
 	o *domain.Org,
 	actorID uuid.UUID,
-) error {
+) (uuid.UUID, error) {
 	institution, _ := json.Marshal(map[string]any{
 		"legacy_org_kind":      string(o.Kind),
 		"registration_no":      o.RegistrationNo,
@@ -129,9 +139,12 @@ func mirrorOrgCreateToCounterpartyTx(
 		CreatedBy:      ptrIfSet(actorID),
 	})
 	if err != nil {
-		return fmt.Errorf("counterparty insert: %w", err)
+		return uuid.Nil, fmt.Errorf("counterparty insert: %w", err)
 	}
-	return cps.SetCounterpartyOnOrgTx(ctx, tx, o.ID, cp.ID)
+	if err := cps.SetCounterpartyOnOrgTx(ctx, tx, o.ID, cp.ID); err != nil {
+		return uuid.Nil, err
+	}
+	return cp.ID, nil
 }
 
 // ─── enum mappers — identical to the SQL backfill in migration 0008 ───

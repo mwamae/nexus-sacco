@@ -15,7 +15,10 @@ import Members from './pages/Members';
 // for both individual and institutional applicants. /members/new
 // and /orgs/new still resolve as 301-style redirects so any
 // in-the-wild bookmarks land in the right place.
-import MemberProfile from './pages/MemberProfile';
+//
+// MemberProfile + OrganizationProfile + Organizations list pages
+// were deleted in the Phase D destructive drop — CounterpartyProfile
+// is the only detail page; Members.tsx is the only register.
 import CounterpartyProfile from './pages/CounterpartyProfile';
 import ApplicationsQueuePage from './pages/Applications/ApplicationsQueue';
 import NewApplicationPage from './pages/Applications/NewApplication';
@@ -23,8 +26,6 @@ import ApplicationDetailPage from './pages/Applications/ApplicationDetail';
 import TenantOnboarding from './pages/TenantOnboarding';
 import TenantProfile from './pages/TenantProfile';
 import TenantSettings from './pages/TenantSettings';
-import Organizations from './pages/Organizations';
-import OrganizationProfile from './pages/OrganizationProfile';
 import ApprovalsInbox from './pages/ApprovalsInbox';
 import WorkflowDefinitions from './pages/WorkflowDefinitions';
 import Shares from './pages/Shares';
@@ -64,12 +65,8 @@ import MemberStatementPage from './pages/Members/MemberStatement';
 import ProvisioningPage from './pages/Loans/Provisioning';
 
 function Gate() {
-  const { status, featureFlags } = useAuth();
+  const { status } = useAuth();
   const path = window.location.pathname;
-  // When the unified counterparties flag is on, both /members/:id
-  // and /orgs/:id route through the merged CounterpartyProfile.
-  // Flag-off tenants stay on the legacy split detail pages.
-  const unifiedOn = featureFlags.unified_counterparties === true;
 
   // Anonymous pages — live outside the auth gate.
   if (path === '/reset') return <ResetPassword />;
@@ -98,7 +95,7 @@ function Gate() {
   }
   else if (path === '/members') page = <Members />;
   else if (path.match(/^\/members\/[^/]+\/statement$/)) page = <MemberStatementPage />;
-  else if (path.startsWith('/members/')) page = unifiedOn ? <CounterpartyProfile /> : <MemberProfile />;
+  else if (path.startsWith('/members/')) page = <CounterpartyProfile />;
   else if (path === '/tenants/new') page = <TenantOnboarding />;
   else if (path.startsWith('/tenants/')) page = <TenantProfile />;
   else if (path === '/settings') page = <TenantSettings />;
@@ -106,8 +103,14 @@ function Gate() {
     window.location.replace('/applications/new?kind=institutional');
     page = null;
   }
-  else if (path === '/orgs') page = <Organizations />;
-  else if (path.startsWith('/orgs/')) page = unifiedOn ? <CounterpartyProfile /> : <OrganizationProfile />;
+  // /orgs (list) is a saved filter over /members; redirect rather
+  // than render a separate page. /orgs/:id (detail) routes to the
+  // unified CounterpartyProfile.
+  else if (path === '/orgs') {
+    window.location.replace('/members?kind=institutional');
+    page = null;
+  }
+  else if (path.startsWith('/orgs/')) page = <CounterpartyProfile />;
   else if (path === '/approvals' || path.startsWith('/approvals/')) page = <ApprovalsInbox />;
   else if (path === '/workflows' || path.startsWith('/workflows/')) page = <WorkflowDefinitions />;
   else if (path === '/shares' || path.startsWith('/shares/')) page = <Shares />;

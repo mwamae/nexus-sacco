@@ -229,20 +229,15 @@ export function isMFARequired(r: LoginResult): r is MFARequiredResponse {
   return (r as MFARequiredResponse).mfa_required === true;
 }
 
-// FeatureFlags is the per-tenant flag bag the identity service emits
-// on /v1/auth/me. Keys are snake_case mirrors of the DB columns on
-// tenant_operations. Add a new key here when adding a new flag in
-// the backend; everything else is automatic.
-export type FeatureFlags = {
-  unified_counterparties?: boolean;
-};
-
+// FeatureFlags + the feature_flags field on MeResponse were removed
+// in the Phase D drop alongside the unified_counterparties flag —
+// the unified register is now the only path. If a future flag is
+// needed, reintroduce the bag here.
 export type MeResponse = {
   user: ApiUser;
   tenant?: ApiTenant;
   roles: string[];
   permissions: string[];
-  feature_flags?: FeatureFlags;
 };
 
 export async function login(email: string, password: string): Promise<LoginResult> {

@@ -33,14 +33,13 @@ type NavGroup = {
 };
 
 export default function AppShell({ children }: { children: ReactNode }) {
-  const { user, tenant, logout, hasPermission, roles, featureFlags } = useAuth();
+  const { user, tenant, logout, hasPermission, roles } = useAuth();
   const path = window.location.pathname;
   const onPlatform = isPlatformHost();
-  // With the unified register live, the Organisations sidebar item
-  // is a saved-filter shortcut over the merged /members register.
-  // Flag-off tenants keep the legacy /orgs route.
-  const unifiedOn = featureFlags.unified_counterparties === true;
-  const orgsHref = unifiedOn ? '/members?kind=institutional' : '/orgs';
+  // Organisations is a saved-filter shortcut over the unified
+  // /members register (Phase D — the flag-off split register was
+  // removed alongside the legacy detail pages).
+  const orgsHref = '/members?kind=institutional';
 
   const branding = useTenantBranding(!onPlatform && hasPermission('tenant:settings:view'));
 

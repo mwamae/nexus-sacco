@@ -208,16 +208,16 @@ func (h *MemberHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		created = m
 
-		// Dual-target mirror — direct admin POST /v1/members path.
-		// Mirrors the new row into counterparties so the unified
-		// register stays in sync. Application-approval has its own
-		// mirror in ApplicationHandler.Approve; this is the second
-		// of the two end-user paths that mints a member row.
+		// Counterparty co-create — direct admin POST /v1/members
+		// path. Creates the matching counterparty row + stamps the
+		// bridge inside the same tx so the unified register sees
+		// the new entity immediately. Application-approval has its
+		// own co-create in ApplicationHandler.Approve.
 		if h.Counterparties != nil {
-			if err := mirrorMemberCreateToCounterpartyTx(
+			if _, err := createCounterpartyForMemberTx(
 				r.Context(), tx, h.Counterparties, tenantID, m, actorID,
 			); err != nil {
-				return fmt.Errorf("mirror counterparty: %w", err)
+				return fmt.Errorf("create counterparty: %w", err)
 			}
 		}
 		return nil

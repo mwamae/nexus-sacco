@@ -260,12 +260,12 @@ func (h *OrgHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 		created = o
 
-		// Dual-target mirror — same shape as MemberHandler.Create.
+		// Counterparty co-create — same shape as MemberHandler.Create.
 		if h.Counterparties != nil {
-			if err := mirrorOrgCreateToCounterpartyTx(
+			if _, err := createCounterpartyForOrgTx(
 				r.Context(), tx, h.Counterparties, tenantID, o, actorID,
 			); err != nil {
-				return fmt.Errorf("mirror counterparty: %w", err)
+				return fmt.Errorf("create counterparty: %w", err)
 			}
 		}
 		return nil

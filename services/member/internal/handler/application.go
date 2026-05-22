@@ -456,25 +456,37 @@ func (h *ApplicationHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		}
 		activation = act
 
-		// 2b. Dual-target — mirror the new legacy row into the
-		// unified counterparties register in the same tx. Direction
-		// follows activation kind. Errors here roll back the whole
-		// approval.
+		// 2b. Create the counterparty for the freshly-materialised
+		// legacy row + stamp the application's
+		// materialized_counterparty_id bridge. Direction follows
+		// activation kind. Errors here roll back the whole approval.
 		if h.Counterparties != nil {
+			var newCPID uuid.UUID
 			if act.OrgID != uuid.Nil {
-				// Institutional path: load the freshly-inserted
-				// org_members row and reuse the shared mirror.
 				freshOrg, gerr := h.Orgs.ByIDTx(r.Context(), tx, act.OrgID)
 				if gerr != nil {
-					return fmt.Errorf("reload org for mirror: %w", gerr)
+					return fmt.Errorf("reload org for counterparty co-create: %w", gerr)
 				}
-				if err := mirrorOrgCreateToCounterpartyTx(r.Context(), tx, h.Counterparties, tenantID, freshOrg, actorID); err != nil {
-					return fmt.Errorf("mirror counterparty (org): %w", err)
+				cpID, cerr := createCounterpartyForOrgTx(r.Context(), tx, h.Counterparties, tenantID, freshOrg, actorID)
+				if cerr != nil {
+					return fmt.Errorf("create counterparty (org): %w", cerr)
 				}
+				newCPID = cpID
 			} else {
-				if err := h.mirrorMemberToCounterpartyTx(r.Context(), tx, tenantID, act.MemberID, updated, actorID); err != nil {
-					return fmt.Errorf("mirror counterparty: %w", err)
+				cpID, cerr := h.createCounterpartyFromApplicationTx(r.Context(), tx, tenantID, act.MemberID, updated, actorID)
+				if cerr != nil {
+					return fmt.Errorf("create counterparty (individual): %w", cerr)
 				}
+				newCPID = cpID
+			}
+			// Stamp the bridge on the application row so future
+			// reads can resolve materialized → counterparty without
+			// going through the kind-specific legacy column.
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE membership_applications SET materialized_counterparty_id = $2 WHERE id = $1`,
+				updated.ID, newCPID,
+			); err != nil {
+				return fmt.Errorf("stamp materialized_counterparty_id: %w", err)
 			}
 		}
 		return nil
@@ -779,21 +791,23 @@ func strPtr(s string) *string {
 	return &s
 }
 
-// mirrorMemberToCounterpartyTx runs inside the Approve transaction.
-// Creates a counterparty (kind=individual) that mirrors the freshly-
-// materialised member row, then stamps members.counterparty_id with
-// the new id so the bridge is wired before commit. The
-// `applicant_payload` JSONB on the application is the source of
-// truth for the individual{...} bag — everything we wrote into the
-// member row came from that payload, so reusing it here keeps a
-// single canonical shape.
-func (h *ApplicationHandler) mirrorMemberToCounterpartyTx(
+// createCounterpartyFromApplicationTx runs inside the Approve
+// transaction. Creates a counterparty (kind=individual) that
+// shadows the freshly-materialised member row, then stamps
+// members.counterparty_id with the new id so the bridge is wired
+// before commit. The `applicant_payload` JSONB on the application
+// is the source of truth for the individual{...} bag — everything
+// we wrote into the member row came from that payload, so reusing
+// it here keeps a single canonical shape. Returns the new
+// counterparty id so the caller can stamp
+// membership_applications.materialized_counterparty_id.
+func (h *ApplicationHandler) createCounterpartyFromApplicationTx(
 	ctx context.Context,
 	tx pgx.Tx,
 	tenantID, memberID uuid.UUID,
 	app *domain.MembershipApplication,
 	actorID uuid.UUID,
-) error {
+) (uuid.UUID, error) {
 	// MembershipApplication.ApplicantPayload is already json.RawMessage
 	// (free-form bag the FE captured at submission). We pass it through
 	// as either the individual or institution slot depending on kind —
@@ -833,9 +847,12 @@ func (h *ApplicationHandler) mirrorMemberToCounterpartyTx(
 		CreatedBy:   ptrUUIDLocal(actorID),
 	})
 	if err != nil {
-		return err
+		return uuid.Nil, err
 	}
-	return h.Counterparties.SetCounterpartyOnMemberTx(ctx, tx, memberID, cp.ID)
+	if err := h.Counterparties.SetCounterpartyOnMemberTx(ctx, tx, memberID, cp.ID); err != nil {
+		return uuid.Nil, err
+	}
+	return cp.ID, nil
 }
 
 func valOrEmpty(p *string) string {

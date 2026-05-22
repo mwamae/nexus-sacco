@@ -1,17 +1,16 @@
-// Members list — pending review queue + active register, with approve /
-// reject inline actions. "Onboard member" link routes to the wizard.
+// Members — the unified counterparty register. Reads exclusively
+// from /v1/counterparties (the dual-mode legacy listMembers branch
+// was removed in the Phase D drop). Kind filter (all / individual /
+// institutional) is driven by the URL's ?kind= param so /orgs can
+// deep-link via /members?kind=institutional.
 
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import {
-  approveMember,
   getMemberStatusCounts,
-  listMembers,
   listCounterparties,
-  rejectMember,
   extractError,
   INSTITUTIONAL_KINDS,
-  type ApiMember,
   type Counterparty,
   type CounterpartyKind,
   type MemberStatus,
@@ -22,24 +21,15 @@ import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
 
 type Filter = 'all' | MemberStatus;
-
-// KindFilter is a wider lens than Filter: lets the user pre-scope the
-// register to individuals, institutionals, or all. Driven by the URL's
-// ?kind= param so /orgs can deep-link via /members?kind=institutional.
 type KindFilter = 'all' | 'individual' | 'institutional';
 
-// RegisterRow normalises the two backend shapes (ApiMember vs
-// Counterparty) so the table renderer doesn't have to branch. When
-// the unified flag is OFF, the legacy ApiMember is mapped into this
-// shape; when ON, Counterparty is.
+// RegisterRow is the post-mapping shape the table renders. The
+// dual-mode shape from earlier (where legacy ApiMember could also
+// produce a row) was collapsed alongside the listMembers fallback.
 type RegisterRow = {
-  // detailHref — the URL each row links to. Computed per-shape:
-  //   * legacy ApiMember → `/members/<member.id>`
-  //   * Counterparty kind=individual → `/members/<legacy_target_id>`
-  //   * Counterparty institutional   → `/orgs/<legacy_target_id>`
-  // This is the one piece of bookkeeping that makes the unified
-  // register's row clicks land in the correct legacy detail page
-  // until the detail pages are formally merged in a future PR.
+  // detailHref — kind-aware destination URL. Routes to /members/<id>
+  // for individuals and /orgs/<id> for institutions so the unified
+  // CounterpartyProfile can pick the right legacy-target lookup.
   id: string;          // table key only — NEVER linked to directly
   detailHref: string;
   displayName: string;
@@ -55,10 +45,8 @@ type RegisterRow = {
 };
 
 export default function Members() {
-  const { hasPermission, featureFlags } = useAuth();
+  const { hasPermission } = useAuth();
   const canCreate = hasPermission('members:create');
-  const canApprove = hasPermission('members:approve');
-  const unifiedOn = featureFlags.unified_counterparties === true;
 
   // Initial kind filter — pre-applied via ?kind= so /orgs can deep-link.
   const initialKind = useMemo<KindFilter>(() => {
@@ -74,53 +62,34 @@ export default function Members() {
   const [q, setQ] = useState('');
   const [loadErr, setLoadErr] = useState<string | null>(null);
   // Canonical KPI numbers — fetched from /v1/members/status/counts so
-  // they match the dashboard widget exactly. The previous implementation
-  // computed these client-side from the loaded page of members, which
-  // (a) skewed under pagination and (b) silently absorbed members in
-  // "off-bucket" statuses (blacklisted / dormant / etc.) into a
-  // mis-labelled "total" line.
+  // they match the dashboard widget exactly.
   const [counts, setCounts] = useState<MemberStatusCounts | null>(null);
 
   async function reload() {
     setLoadErr(null);
     try {
-      let rowsOut: RegisterRow[] = [];
-      let totalOut = 0;
-      if (unifiedOn) {
-        // Phase B read path — single query against the unified
-        // counterparties register. Kind filter maps onto the
-        // backend's kind-array param.
-        const kinds: CounterpartyKind[] | undefined =
-          kindFilter === 'individual'    ? ['individual'] :
-          kindFilter === 'institutional' ? INSTITUTIONAL_KINDS :
-          undefined;
-        const r = await listCounterparties({
+      const kinds: CounterpartyKind[] | undefined =
+        kindFilter === 'individual'    ? ['individual'] :
+        kindFilter === 'institutional' ? INSTITUTIONAL_KINDS :
+        undefined;
+      const [r, c] = await Promise.all([
+        listCounterparties({
           kind: kinds,
           status: filter === 'all' ? undefined : (filter as Counterparty['status']),
           q: q || undefined,
           limit: 100,
-        });
-        rowsOut = r.counterparties.map(cpToRow);
-        totalOut = r.total;
-      } else {
-        const r = await listMembers({
-          status: filter === 'all' ? undefined : filter,
-          q: q || undefined,
-          limit: 100,
-        });
-        rowsOut = r.members.map(memberToRow);
-        totalOut = r.total;
-      }
-      const c = await getMemberStatusCounts();
-      setRows(rowsOut);
-      setTotal(totalOut);
+        }),
+        getMemberStatusCounts(),
+      ]);
+      setRows(r.counterparties.map(cpToRow));
+      setTotal(r.total);
       setCounts(c);
     } catch (e) {
       setLoadErr(extractError(e));
     }
   }
 
-  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter, kindFilter, unifiedOn]);
+  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter, kindFilter]);
 
   // Keep the URL in sync with the kind chip so a copied link
   // reproduces the user's view.
@@ -130,29 +99,6 @@ export default function Members() {
     else url.searchParams.set('kind', kindFilter);
     window.history.replaceState({}, '', url);
   }, [kindFilter]);
-
-  // Approve / reject only fire in the legacy (flag-off) path —
-  // counterparties has its own status-change pipeline (prompt #3).
-  async function onApproveRow(row: RegisterRow) {
-    if (!confirm(`Approve ${row.displayName} (${row.legacyId ?? row.cpNumber ?? ''})?`)) return;
-    try {
-      await approveMember(row.id);
-      await reload();
-    } catch (e) {
-      alert(extractError(e));
-    }
-  }
-
-  async function onRejectRow(row: RegisterRow) {
-    const reason = prompt(`Reject ${row.displayName}. Reason?`);
-    if (!reason) return;
-    try {
-      await rejectMember(row.id, reason);
-      await reload();
-    } catch (e) {
-      alert(extractError(e));
-    }
-  }
 
 
   return (
@@ -184,7 +130,7 @@ export default function Members() {
           <h3>Register</h3>
           <span className="card-sub">
             {rows?.length ?? 0} shown
-            {unifiedOn && kindFilter !== 'all' && (
+            {kindFilter !== 'all' && (
               <> · scope: <strong>{kindFilter === 'individual' ? 'individuals' : 'organisations'}</strong>
                 <button
                   className="btn btn-sm"
@@ -196,24 +142,21 @@ export default function Members() {
             )}
           </span>
           <div className="card-hd-actions">
-            {/* Kind chip strip — only when the unified flag is on, so
-                flag-off tenants don't see a control with no backing
-                data. Drives ?kind=… on the URL. */}
-            {unifiedOn && (
-              <div className="fchips">
-                {(['all', 'individual', 'institutional'] as KindFilter[]).map((k) => (
-                  <button
-                    key={k}
-                    type="button"
-                    className="fchip"
-                    data-active={kindFilter === k || undefined}
-                    onClick={() => setKindFilter(k)}
-                  >
-                    {k === 'all' ? 'all kinds' : k}
-                  </button>
-                ))}
-              </div>
-            )}
+            {/* Kind chip strip — drives ?kind=… on the URL so /orgs
+                and /members?kind=… both reproduce the user's view. */}
+            <div className="fchips">
+              {(['all', 'individual', 'institutional'] as KindFilter[]).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  className="fchip"
+                  data-active={kindFilter === k || undefined}
+                  onClick={() => setKindFilter(k)}
+                >
+                  {k === 'all' ? 'all kinds' : k}
+                </button>
+              ))}
+            </div>
             <div className="fchips">
               {(['all', 'pending', 'active', 'dormant', 'suspended', 'blacklisted', 'exited', 'deceased', 'rejected'] as Filter[]).map((f) => (
                 <button
@@ -234,7 +177,7 @@ export default function Members() {
               <input
                 className="input"
                 style={{ height: 26, fontSize: 12, width: 200 }}
-                placeholder={unifiedOn ? 'Search name / CP# / legacy #' : 'Search name / member #'}
+                placeholder="Search name / CP# / legacy #"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
               />
@@ -258,9 +201,8 @@ export default function Members() {
                 <tr>
                   <th style={{ width: 44 }}></th>
                   <th>Name</th>
-                  {/* Kind column lands between Name and Status per the spec. */}
-                  {unifiedOn && <th>Kind</th>}
-                  <th>{unifiedOn ? 'CP # / Legacy' : 'ID / KRA PIN'}</th>
+                  <th>Kind</th>
+                  <th>CP # / Legacy</th>
                   <th>Contact</th>
                   <th>Status</th>
                   <th>Joined</th>
@@ -275,23 +217,11 @@ export default function Members() {
                       <div style={{ fontWeight: 500 }}>
                         <a href={m.detailHref} className="tbl-link">{m.displayName}</a>
                       </div>
-                      {!unifiedOn && m.legacyId && <div className="tiny-mono">{m.legacyId}</div>}
                     </td>
-                    {unifiedOn && (
-                      <td><KindBadge kind={m.kind} /></td>
-                    )}
+                    <td><KindBadge kind={m.kind} /></td>
                     <td>
-                      {unifiedOn ? (
-                        <>
-                          {m.cpNumber && <div className="tiny-mono">{m.cpNumber}</div>}
-                          {m.legacyId && <div className="muted tiny mono">{m.legacyId}</div>}
-                        </>
-                      ) : (
-                        <>
-                          {m.idDocNumber && <div className="tiny-mono">{m.idDocNumber}</div>}
-                          {m.kraPIN && <div className="muted tiny mono">{m.kraPIN}</div>}
-                        </>
-                      )}
+                      {m.cpNumber && <div className="tiny-mono">{m.cpNumber}</div>}
+                      {m.legacyId && <div className="muted tiny mono">{m.legacyId}</div>}
                     </td>
                     <td>
                       {m.phone && <div className="tiny-mono">{m.phone}</div>}
@@ -303,9 +233,8 @@ export default function Members() {
                     <td className="tiny-mono">{m.joinedAt.slice(0, 10)}</td>
                     <td>
                       <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
-                        {canApprove && m.status === 'pending' && !unifiedOn && (
-                          <RowActions row={m} onApprove={onApproveRow} onReject={onRejectRow} />
-                        )}
+                        {/* Approve/reject row actions moved to the
+                            CounterpartyProfile status workflow card. */}
                         <a className="btn btn-sm" href={m.detailHref} title="View">
                           <Icon name="eye" size={12} />
                         </a>
@@ -359,24 +288,7 @@ function KPICard({ label, value, tone }: { label: string; value: number; tone?: 
   );
 }
 
-// ─────────── Row mappers + helpers ───────────
-
-function memberToRow(m: ApiMember): RegisterRow {
-  return {
-    id: m.id,
-    detailHref: `/members/${m.id}`,
-    displayName: m.full_name,
-    kind: 'individual',
-    status: m.status,
-    cpNumber: null,
-    legacyId: m.member_no,
-    phone: m.phone ?? null,
-    email: m.email ?? null,
-    idDocNumber: m.id_doc_number ?? null,
-    kraPIN: m.kra_pin ?? null,
-    joinedAt: m.created_at,
-  };
-}
+// ─────────── Row mapper + helpers ───────────
 
 function cpToRow(c: Counterparty): RegisterRow {
   const ind = (c.individual ?? {}) as Record<string, unknown>;
@@ -384,9 +296,7 @@ function cpToRow(c: Counterparty): RegisterRow {
   const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
   // Route via the bridge id, not the counterparty id. Individuals
   // land in /members/<member.id>; institutions in /orgs/<org.id>.
-  // Falls back to the counterparty id only as a debugging breadcrumb
-  // — that path will 404 today but at least surfaces a stable id in
-  // the URL so a screenshot is reproducible.
+  // Both paths render through CounterpartyProfile.
   const target = c.legacy_target_id ?? c.id;
   const detailHref =
     c.kind === 'individual' ? `/members/${target}` : `/orgs/${target}`;
@@ -406,7 +316,7 @@ function cpToRow(c: Counterparty): RegisterRow {
   };
 }
 
-// Kind label/tone for the new column. Individual gets a neutral
+// Kind label/tone for the kind column. Individual gets a neutral
 // pill; institutional kinds use the accent palette so the eye picks
 // them out in a mixed register.
 function KindBadge({ kind }: { kind: CounterpartyKind }) {
@@ -418,33 +328,4 @@ function KindBadge({ kind }: { kind: CounterpartyKind }) {
     church: 'Church', school: 'School', other: 'Org',
   };
   return <Badge tone="accent">{labels[kind]}</Badge>;
-}
-
-function RowActions({
-  row, onApprove, onReject,
-}: {
-  row: RegisterRow;
-  onApprove: (r: RegisterRow) => void | Promise<void>;
-  onReject: (r: RegisterRow) => void | Promise<void>;
-}) {
-  return (
-    <>
-      <button
-        className="btn btn-sm"
-        style={{ color: 'var(--pos)' }}
-        title="Approve"
-        onClick={() => void onApprove(row)}
-      >
-        <Icon name="check" size={12} />
-      </button>
-      <button
-        className="btn btn-sm"
-        style={{ color: 'var(--neg)' }}
-        title="Reject"
-        onClick={() => void onReject(row)}
-      >
-        <Icon name="x" size={12} />
-      </button>
-    </>
-  );
 }

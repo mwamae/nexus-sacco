@@ -76,8 +76,8 @@ func TestCounterpartyMirrorAndCPMonotonic(t *testing.T) {
 	// ─── 1. Direct member create → counterparty mirror ───
 	uniq := time.Now().UnixNano()
 	memberA := makeMemberRow(ctx, t, tx, tenantID, fmt.Sprintf("M-TEST-%d", uniq), "Mirror Test Member A")
-	if err := mirrorMemberCreateToCounterpartyTx(ctx, tx, cps, tenantID, memberA, uuid.Nil); err != nil {
-		t.Fatalf("mirror member A: %v", err)
+	if _, err := createCounterpartyForMemberTx(ctx, tx, cps, tenantID, memberA, uuid.Nil); err != nil {
+		t.Fatalf("create counterparty for member A: %v", err)
 	}
 
 	var cpA store.CPListResult
@@ -114,8 +114,8 @@ func TestCounterpartyMirrorAndCPMonotonic(t *testing.T) {
 
 	// ─── 2. Direct org create → counterparty mirror ───
 	orgA := makeOrgRow(ctx, t, tx, tenantID, fmt.Sprintf("ORG-TEST-%d", uniq), "Mirror Test Chama A")
-	if err := mirrorOrgCreateToCounterpartyTx(ctx, tx, cps, tenantID, orgA, uuid.Nil); err != nil {
-		t.Fatalf("mirror org A: %v", err)
+	if _, err := createCounterpartyForOrgTx(ctx, tx, cps, tenantID, orgA, uuid.Nil); err != nil {
+		t.Fatalf("create counterparty for org A: %v", err)
 	}
 	var cpB store.CPListResult
 	{
