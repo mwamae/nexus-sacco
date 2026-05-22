@@ -15,8 +15,9 @@ type Deps struct {
 	Member       *MemberHandler
 	Org          *OrgHandler
 	Status       *StatusHandler
-	Applications *ApplicationHandler
-	TenantStore  *store.TenantStore
+	Applications  *ApplicationHandler
+	Counterparties *CounterpartyHandler
+	TenantStore   *store.TenantStore
 	Issuer       *auth.TokenIssuer
 	AppDomain    string
 	Logger       *slog.Logger
@@ -90,6 +91,12 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:view")).Get("/members/{id}/status-history/{change_id}/doc", d.Status.DownloadSupportingDoc)
 			r.With(middleware.RequirePermission("members:view")).Get("/members/status/summary", d.Status.Summary)
 			r.With(middleware.RequirePermission("members:view")).Get("/members/status/counts", d.Status.Counts)
+
+			// ─────────── Unified counterparty register (Phase B) ───────────
+			r.With(middleware.RequirePermission("members:view")).Get("/counterparties", d.Counterparties.List)
+			r.With(middleware.RequirePermission("members:view")).Get("/counterparties/{id}", d.Counterparties.Get)
+			r.With(middleware.RequirePermission("members:create")).Post("/counterparties", d.Counterparties.Create)
+			r.With(middleware.RequirePermission("members:edit")).Patch("/counterparties/{id}", d.Counterparties.Patch)
 			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/preview", d.Status.DormancyPreview)
 			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/run", d.Status.DormancyRun)
 

@@ -87,18 +87,21 @@ func main() {
 	contacts := store.NewOrgContactStore(pool.Pool)
 	statusStore := store.NewStatusChangeStore(pool.Pool)
 	applicationStore := store.NewApplicationStore(pool.Pool)
+	counterpartyStore := store.NewCounterpartyStore(pool.Pool)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 	notifyClient := notifier.New(cfg.NotificationURL, cfg.NotificationInternalToken, logger)
 
 	memH := &handler.MemberHandler{
 		DB: pool, Members: members, Relations: rels, Documents: docs, Audit: auditStore,
+		Counterparties: counterpartyStore,
 		Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
 		Notifier: notifyClient,
 	}
 	orgH := &handler.OrgHandler{
 		DB: pool, Orgs: orgs, Documents: orgDocs, Officials: officials,
 		Signatories: signatories, Banking: banking, Contacts: contacts,
+		Counterparties: counterpartyStore,
 		Audit: auditStore, Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
 		Notifier: notifyClient,
 	}
@@ -115,8 +118,12 @@ func main() {
 	accountingClient := accounting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
 	appH := &handler.ApplicationHandler{
 		DB: pool, Applications: applicationStore, Members: members,
+		Counterparties: counterpartyStore,
 		Accounting: accountingClient, Notifier: notifyClient,
 		Logger: logger,
+	}
+	cpH := &handler.CounterpartyHandler{
+		DB: pool, Counterparties: counterpartyStore, Logger: logger,
 	}
 
 	// CLI: run the dormancy detector for a single tenant and exit.
@@ -139,7 +146,8 @@ func main() {
 
 	router := handler.Routes(handler.Deps{
 		Member: memH, Org: orgH, Status: statusH, Applications: appH,
-		TenantStore: tenants, Issuer: issuer,
+		Counterparties: cpH,
+		TenantStore:    tenants, Issuer: issuer,
 		AppDomain: cfg.AppDomain, Logger: logger,
 	})
 

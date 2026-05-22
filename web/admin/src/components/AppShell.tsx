@@ -33,9 +33,14 @@ type NavGroup = {
 };
 
 export default function AppShell({ children }: { children: ReactNode }) {
-  const { user, tenant, logout, hasPermission, roles } = useAuth();
+  const { user, tenant, logout, hasPermission, roles, featureFlags } = useAuth();
   const path = window.location.pathname;
   const onPlatform = isPlatformHost();
+  // With the unified register live, the Organisations sidebar item
+  // is a saved-filter shortcut over the merged /members register.
+  // Flag-off tenants keep the legacy /orgs route.
+  const unifiedOn = featureFlags.unified_counterparties === true;
+  const orgsHref = unifiedOn ? '/members?kind=institutional' : '/orgs';
 
   const branding = useTenantBranding(!onPlatform && hasPermission('tenant:settings:view'));
 
@@ -51,7 +56,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       items: [
         { href: '/applications', label: 'Member onboarding', icon: 'user', show: hasPermission('members:view') && !onPlatform },
         { href: '/members', label: 'Members', icon: 'user', show: hasPermission('members:view') && !onPlatform },
-        { href: '/orgs', label: 'Organisations', icon: 'building', show: hasPermission('members:view') && !onPlatform },
+        { href: orgsHref, label: 'Organisations', icon: 'building', show: hasPermission('members:view') && !onPlatform },
         { href: '/shares', label: 'Shares', icon: 'bank', show: hasPermission('shares:view') && !onPlatform },
         { href: '/deposits', label: 'Deposits', icon: 'bank', show: hasPermission('savings:view') && !onPlatform },
         { href: '/loans', label: 'Loans', icon: 'bank', show: hasPermission('loans:view') && !onPlatform },

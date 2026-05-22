@@ -249,7 +249,14 @@ function HeaderCard({
             <div className="muted tiny">t/a {o.trading_name}</div>
           )}
           <div className="m360-hd-meta">
-            <span className="mono">{o.org_no}</span>
+            {o.cp_number ? (
+              <>
+                <span className="mono">{o.cp_number}</span>
+                <span className="muted tiny mono">Legacy: {o.org_no}</span>
+              </>
+            ) : (
+              <span className="mono">{o.org_no}</span>
+            )}
             <Badge tone="neutral">{KIND_LABEL[o.kind]}</Badge>
             <StatusBadge status={o.status} />
             <Badge tone={KYC_TONE[o.kyc_status]}>KYC: {o.kyc_status.replace('_', ' ')}</Badge>

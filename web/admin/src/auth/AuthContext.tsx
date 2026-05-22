@@ -14,6 +14,7 @@ import {
   isAuthDeadError,
   type ApiTenant,
   type ApiUser,
+  type FeatureFlags,
   type MeResponse,
   type MFARequiredResponse,
 } from '../api/client';
@@ -24,6 +25,10 @@ type AuthState = {
   tenant: ApiTenant | null;
   roles: string[];
   permissions: string[];
+  // Per-tenant flag bag from /auth/me. Always defined so consumers
+  // can read `featureFlags.unified_counterparties ?? false` without
+  // a separate undefined check.
+  featureFlags: FeatureFlags;
 };
 
 type LoginOutcome =
@@ -44,6 +49,7 @@ const initial: AuthState = {
   tenant: null,
   roles: [],
   permissions: [],
+  featureFlags: {},
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -58,6 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       tenant: me.tenant ?? null,
       roles: me.roles ?? [],
       permissions: me.permissions ?? [],
+      featureFlags: me.feature_flags ?? {},
     });
   }, []);
 

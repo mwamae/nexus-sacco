@@ -21,7 +21,10 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -43,12 +46,13 @@ import (
 )
 
 type ApplicationHandler struct {
-	DB           *db.Pool
-	Applications *store.ApplicationStore
-	Members      *store.MemberStore
-	Accounting   *accounting.Client
-	Notifier     *notifier.Client
-	Logger       *slog.Logger
+	DB             *db.Pool
+	Applications   *store.ApplicationStore
+	Members        *store.MemberStore
+	Counterparties *store.CounterpartyStore // Phase A dual-target mirror
+	Accounting     *accounting.Client
+	Notifier       *notifier.Client
+	Logger         *slog.Logger
 }
 
 // ─────────── Create ───────────
@@ -447,6 +451,20 @@ func (h *ApplicationHandler) Approve(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		activation = act
+
+		// 2b. Dual-target — mirror the new member into the unified
+		// counterparties register in the same tx so flag-on tenants
+		// see the row immediately, flag-off tenants see it the next
+		// time they hit a Phase B read path. Errors here roll back
+		// the whole approval; the FK fan-out (loans/deposits/shares)
+		// is still on members.id this PR (Phase C concern), so
+		// failure to mirror cannot leave the relational graph in a
+		// stranded state — the legacy row is the source of truth.
+		if h.Counterparties != nil {
+			if err := h.mirrorMemberToCounterpartyTx(r.Context(), tx, tenantID, act.MemberID, updated, actorID); err != nil {
+				return fmt.Errorf("mirror counterparty: %w", err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -747,4 +765,105 @@ func strPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// mirrorMemberToCounterpartyTx runs inside the Approve transaction.
+// Creates a counterparty (kind=individual) that mirrors the freshly-
+// materialised member row, then stamps members.counterparty_id with
+// the new id so the bridge is wired before commit. The
+// `applicant_payload` JSONB on the application is the source of
+// truth for the individual{...} bag — everything we wrote into the
+// member row came from that payload, so reusing it here keeps a
+// single canonical shape.
+func (h *ApplicationHandler) mirrorMemberToCounterpartyTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	tenantID, memberID uuid.UUID,
+	app *domain.MembershipApplication,
+	actorID uuid.UUID,
+) error {
+	// MembershipApplication.ApplicantPayload is already json.RawMessage
+	// (free-form bag the FE captured at submission). We pass it through
+	// as either the individual or institution slot depending on kind —
+	// the same bag, the application-side schema (domain.ApplicantPayload)
+	// is the documented decoder.
+	payload := app.ApplicantPayload
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+
+	// Build a minimal contact bag from the application-level fields
+	// the materialise step already considered authoritative.
+	contactBytes, _ := json.Marshal(map[string]any{
+		"phone": valOrEmpty(app.PrimaryPhone),
+		"email": valOrEmpty(app.PrimaryEmail),
+	})
+
+	// Kind: 'individual' or — for institutional apps — a best-effort
+	// guess from the application's free-form payload. Default 'other'.
+	kind := domain.CounterpartyIndividual
+	if app.Kind == domain.ApplicationKindInstitutional {
+		kind = guessInstitutionalKind(app.ApplicantName, payload)
+	}
+
+	legacyNo := app.ApplicationNo
+	cp, err := h.Counterparties.CreateTx(ctx, tx, store.CreateInput{
+		TenantID:    tenantID,
+		LegacyID:    &legacyNo,
+		Kind:        kind,
+		DisplayName: app.ApplicantName,
+		Status:      domain.CPStatusActive,
+		KYCState:    domain.CPKYCVerified,
+		RiskBand:    domain.CPRiskNA,
+		Individual:  payloadIfIndividual(kind, payload),
+		Institution: payloadIfInstitutional(kind, payload),
+		Contact:     contactBytes,
+		CreatedBy:   ptrUUIDLocal(actorID),
+	})
+	if err != nil {
+		return err
+	}
+	return h.Counterparties.SetCounterpartyOnMemberTx(ctx, tx, memberID, cp.ID)
+}
+
+func valOrEmpty(p *string) string {
+	if p == nil { return "" }
+	return *p
+}
+
+func ptrUUIDLocal(u uuid.UUID) *uuid.UUID {
+	if u == uuid.Nil { return nil }
+	return &u
+}
+
+func payloadIfIndividual(k domain.CounterpartyKind, raw json.RawMessage) json.RawMessage {
+	if k == domain.CounterpartyIndividual { return raw }
+	return nil
+}
+
+func payloadIfInstitutional(k domain.CounterpartyKind, raw json.RawMessage) json.RawMessage {
+	if k != domain.CounterpartyIndividual { return raw }
+	return nil
+}
+
+// guessInstitutionalKind picks a counterparty_kind for an
+// institutional application by sniffing the display name + payload
+// JSON for shape hints. Defaults to 'other' so the CHECK constraint
+// passes; a tenant can refine via PATCH after the fact.
+func guessInstitutionalKind(name string, payload json.RawMessage) domain.CounterpartyKind {
+	hint := strings.ToLower(name + " " + string(payload))
+	switch {
+	case strings.Contains(hint, "chama") || strings.Contains(hint, " group"):
+		return domain.CounterpartyChama
+	case strings.Contains(hint, "church") || strings.Contains(hint, "parish"):
+		return domain.CounterpartyChurch
+	case strings.Contains(hint, "school") || strings.Contains(hint, "academy"):
+		return domain.CounterpartySchool
+	case strings.Contains(hint, "ngo") || strings.Contains(hint, "foundation"):
+		return domain.CounterpartyNGO
+	case strings.Contains(hint, "limited") || strings.Contains(hint, "ltd") || strings.Contains(hint, "company"):
+		return domain.CounterpartyCompany
+	default:
+		return domain.CounterpartyOther
+	}
 }

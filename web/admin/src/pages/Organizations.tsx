@@ -32,9 +32,22 @@ const KYC_TONE: Record<string, 'neutral' | 'warn' | 'pos' | 'neg'> = {
 };
 
 export default function Organizations() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, featureFlags } = useAuth();
   const canCreate = hasPermission('members:create');
   const canApprove = hasPermission('members:approve');
+
+  // When the unified register is on, /orgs renders the merged
+  // /members page pre-filtered to the institutional kinds. Done via
+  // a redirect rather than a wrapper component so the URL the user
+  // sees matches the source of truth.
+  useEffect(() => {
+    if (featureFlags.unified_counterparties === true) {
+      const url = new URL(window.location.href);
+      url.pathname = '/members';
+      url.searchParams.set('kind', 'institutional');
+      window.location.replace(url.toString());
+    }
+  }, [featureFlags.unified_counterparties]);
 
   const [orgs, setOrgs] = useState<ApiOrg[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -93,7 +106,7 @@ export default function Organizations() {
         </div>
         <div className="page-hd-actions">
           {canCreate && (
-            <a href="/orgs/new" className="btn btn-sm btn-accent">
+            <a href="/applications/new?kind=institutional" className="btn btn-sm btn-accent">
               <Icon name="plus" size={13} /> Onboard organisation
             </a>
           )}
@@ -139,7 +152,7 @@ export default function Organizations() {
             <div className="empty">
               {filter === 'all' ? 'No organisations yet. ' : `No organisations with status "${filter}". `}
               {canCreate && filter === 'all' && (
-                <a href="/orgs/new" style={{ color: 'var(--accent)' }}>Onboard the first one →</a>
+                <a href="/applications/new?kind=institutional" style={{ color: 'var(--accent)' }}>Onboard the first one →</a>
               )}
             </div>
           )}

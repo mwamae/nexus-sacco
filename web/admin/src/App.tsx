@@ -10,7 +10,11 @@ import AcceptInvite from './pages/AcceptInvite';
 import Roles from './pages/Roles';
 import Users from './pages/Users';
 import Members from './pages/Members';
-import MemberOnboarding from './pages/MemberOnboarding';
+// MemberOnboarding + OrganizationOnboarding pages were deleted in
+// Phase C — /applications/new is the single onboarding entry point
+// for both individual and institutional applicants. /members/new
+// and /orgs/new still resolve as 301-style redirects so any
+// in-the-wild bookmarks land in the right place.
 import MemberProfile from './pages/MemberProfile';
 import ApplicationsQueuePage from './pages/Applications/ApplicationsQueue';
 import NewApplicationPage from './pages/Applications/NewApplication';
@@ -19,7 +23,6 @@ import TenantOnboarding from './pages/TenantOnboarding';
 import TenantProfile from './pages/TenantProfile';
 import TenantSettings from './pages/TenantSettings';
 import Organizations from './pages/Organizations';
-import OrganizationOnboarding from './pages/OrganizationOnboarding';
 import OrganizationProfile from './pages/OrganizationProfile';
 import ApprovalsInbox from './pages/ApprovalsInbox';
 import WorkflowDefinitions from './pages/WorkflowDefinitions';
@@ -82,14 +85,22 @@ function Gate() {
   else if (path === '/applications') page = <ApplicationsQueuePage />;
   else if (path === '/applications/new') page = <NewApplicationPage />;
   else if (path.startsWith('/applications/')) page = <ApplicationDetailPage />;
-  else if (path === '/members/new') page = <MemberOnboarding />;
+  else if (path === '/members/new') {
+    // Deleted in Phase C. Redirect via window.location.replace so
+    // back-button history doesn't trap the user on a dead URL.
+    window.location.replace('/applications/new');
+    page = null;
+  }
   else if (path === '/members') page = <Members />;
   else if (path.match(/^\/members\/[^/]+\/statement$/)) page = <MemberStatementPage />;
   else if (path.startsWith('/members/')) page = <MemberProfile />;
   else if (path === '/tenants/new') page = <TenantOnboarding />;
   else if (path.startsWith('/tenants/')) page = <TenantProfile />;
   else if (path === '/settings') page = <TenantSettings />;
-  else if (path === '/orgs/new') page = <OrganizationOnboarding />;
+  else if (path === '/orgs/new') {
+    window.location.replace('/applications/new?kind=institutional');
+    page = null;
+  }
   else if (path === '/orgs') page = <Organizations />;
   else if (path.startsWith('/orgs/')) page = <OrganizationProfile />;
   else if (path === '/approvals' || path.startsWith('/approvals/')) page = <ApprovalsInbox />;

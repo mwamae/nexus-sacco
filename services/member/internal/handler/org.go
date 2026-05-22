@@ -8,6 +8,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -29,17 +30,18 @@ import (
 )
 
 type OrgHandler struct {
-	DB          *db.Pool
-	Orgs        *store.OrgMemberStore
-	Documents   *store.OrgDocumentStore
-	Officials   *store.OrgOfficialStore
-	Signatories *store.OrgSignatoryStore
-	Banking     *store.OrgBankingStore
-	Contacts    *store.OrgContactStore
-	Audit       *store.AuditStore
-	Storage     storage.Storage
-	MaxUpload   int64
-	Logger      *slog.Logger
+	DB             *db.Pool
+	Orgs           *store.OrgMemberStore
+	Documents      *store.OrgDocumentStore
+	Officials      *store.OrgOfficialStore
+	Signatories    *store.OrgSignatoryStore
+	Banking        *store.OrgBankingStore
+	Contacts       *store.OrgContactStore
+	Audit          *store.AuditStore
+	Counterparties *store.CounterpartyStore // Phase A dual-target mirror
+	Storage        storage.Storage
+	MaxUpload      int64
+	Logger         *slog.Logger
 	Notifier    *notifier.Client
 }
 
@@ -257,6 +259,15 @@ func (h *OrgHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 
 		created = o
+
+		// Dual-target mirror — same shape as MemberHandler.Create.
+		if h.Counterparties != nil {
+			if err := mirrorOrgCreateToCounterpartyTx(
+				r.Context(), tx, h.Counterparties, tenantID, o, actorID,
+			); err != nil {
+				return fmt.Errorf("mirror counterparty: %w", err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -349,6 +360,11 @@ type orgDetail struct {
 	Mandate     *domain.Mandate       `json:"mandate,omitempty"`
 	Banking     *domain.Banking       `json:"banking,omitempty"`
 	Contacts    []*domain.Contact     `json:"contacts"`
+	// Phase B bridge fields. Same shape as memberDetail's so the FE
+	// can render the CP-* + legacy id header consistently across the
+	// individual + institutional detail pages.
+	CPNumber       *string `json:"cp_number,omitempty"`
+	CounterpartyID *string `json:"counterparty_id,omitempty"`
 }
 
 func (h *OrgHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -383,6 +399,16 @@ func (h *OrgHandler) Get(w http.ResponseWriter, r *http.Request) {
 		if out.Contacts, err = h.Contacts.ListForOrgTx(r.Context(), tx, id); err != nil {
 			return err
 		}
+		// Same bridge LEFT JOIN as memberDetail.
+		var cpID, cpNo *string
+		_ = tx.QueryRow(r.Context(), `
+			SELECT c.id::text, c.cp_number
+			  FROM counterparties c
+			  JOIN org_members o ON o.counterparty_id = c.id
+			 WHERE o.id = $1
+		`, id).Scan(&cpID, &cpNo)
+		out.CounterpartyID = cpID
+		out.CPNumber = cpNo
 		return nil
 	})
 	if err != nil {

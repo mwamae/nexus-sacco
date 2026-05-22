@@ -43,6 +43,9 @@ export const ROUTES: ReadonlyArray<StaticRoute | DynamicRoute> = [
     baseTrail: ['Member onboarding'], fallbackSuffix: 'Application' },
 
   { kind: 'static', path: '/members',                       trail: ['Members'] },
+  // /members/new redirects to /applications/new (Phase C deletion of
+  // the legacy onboarding wizard). Kept here so the redirect screen's
+  // breadcrumb shows something meaningful for the split-second it's up.
   { kind: 'static', path: '/members/new',                   trail: ['Members', 'New'] },
   { kind: 'dynamic', match: (p) => /^\/members\/[^/]+\/statement$/.test(p),
     baseTrail: ['Members'], fallbackSuffix: 'Statement' },

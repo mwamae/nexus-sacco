@@ -229,11 +229,20 @@ export function isMFARequired(r: LoginResult): r is MFARequiredResponse {
   return (r as MFARequiredResponse).mfa_required === true;
 }
 
+// FeatureFlags is the per-tenant flag bag the identity service emits
+// on /v1/auth/me. Keys are snake_case mirrors of the DB columns on
+// tenant_operations. Add a new key here when adding a new flag in
+// the backend; everything else is automatic.
+export type FeatureFlags = {
+  unified_counterparties?: boolean;
+};
+
 export type MeResponse = {
   user: ApiUser;
   tenant?: ApiTenant;
   roles: string[];
   permissions: string[];
+  feature_flags?: FeatureFlags;
 };
 
 export async function login(email: string, password: string): Promise<LoginResult> {
@@ -1011,6 +1020,9 @@ export type ApiOrgDetail = ApiOrg & {
   mandate?: ApiMandate;
   banking?: ApiBanking;
   contacts: ApiOrgContact[];
+  // Phase B bridge — present once migration 0008 has run.
+  cp_number?: string | null;
+  counterparty_id?: string | null;
 };
 
 export type OfficialInput = {
@@ -1398,6 +1410,9 @@ export type ApiMemberDetail = ApiMember & {
   // Backend may legitimately serialise this as null when the member has
   // no documents on file. Callers must coalesce before iterating.
   documents: ApiDocument[] | null;
+  // Phase B bridge — present once migration 0008 has run.
+  cp_number?: string | null;
+  counterparty_id?: string | null;
 };
 
 export type RelationInput = {
@@ -1610,6 +1625,87 @@ export async function getMemberStatusCounts(): Promise<MemberStatusCounts> {
   const r = await api.get('/v1/members/status/counts');
   return r.data.data;
 }
+
+// ─── Unified counterparties register (Phase B) ───
+//
+// Reads from the new counterparties table that merges members +
+// org_members. Existing /v1/members + /v1/orgs endpoints remain alive
+// throughout Phase A/B. Gated client-side on
+// tenant.feature_flags.unified_counterparties (defaults off).
+
+export type CounterpartyKind =
+  | 'individual' | 'chama' | 'company' | 'ngo' | 'church' | 'school' | 'other';
+
+export type CounterpartyStatus =
+  | 'pending' | 'active' | 'dormant' | 'suspended'
+  | 'blacklisted' | 'exited' | 'deceased' | 'rejected';
+
+export type CounterpartyKYCState = 'not_started' | 'in_review' | 'verified' | 'rejected';
+
+export type Counterparty = {
+  id: string;
+  tenant_id: string;
+  cp_number: string;
+  legacy_id?: string | null;
+  kind: CounterpartyKind;
+  display_name: string;
+  trading_as?: string | null;
+  status: CounterpartyStatus;
+  kyc_state: CounterpartyKYCState;
+  risk_band: 'low' | 'medium' | 'high' | 'n_a';
+  registration_no?: string | null;
+  // JSON bags — exactly one is populated, never both. See migration 0007.
+  individual?: Record<string, unknown> | null;
+  institution?: Record<string, unknown> | null;
+  contact: Record<string, unknown>;
+  joined_at: string;
+  closed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  // The id of the linked legacy row (`members.id` when kind=individual,
+  // `org_members.id` otherwise). Populated by backend SELECTs only.
+  // Used by Members.tsx to route a unified row to the correct detail
+  // page until the detail pages themselves are merged.
+  legacy_target_id?: string | null;
+};
+
+export type ListCounterpartiesParams = {
+  q?: string;
+  kind?: CounterpartyKind | CounterpartyKind[];
+  status?: CounterpartyStatus | CounterpartyStatus[];
+  limit?: number;
+  offset?: number;
+};
+
+export async function listCounterparties(p: ListCounterpartiesParams = {}): Promise<{
+  counterparties: Counterparty[]; total: number; limit: number; offset: number;
+}> {
+  const q = new URLSearchParams();
+  if (p.q) q.set('q', p.q);
+  if (p.kind) {
+    const ks = Array.isArray(p.kind) ? p.kind : [p.kind];
+    for (const k of ks) q.append('kind', k);
+  }
+  if (p.status) {
+    const ss = Array.isArray(p.status) ? p.status : [p.status];
+    for (const s of ss) q.append('status', s);
+  }
+  if (p.limit !== undefined) q.set('limit', String(p.limit));
+  if (p.offset !== undefined) q.set('offset', String(p.offset));
+  const path = '/v1/counterparties' + (q.toString() ? '?' + q.toString() : '');
+  const r = await api.get(path);
+  return r.data.data;
+}
+
+export async function getCounterparty(id: string): Promise<Counterparty> {
+  const r = await api.get(`/v1/counterparties/${id}`);
+  return r.data.data;
+}
+
+// Static helper — institutional kinds in one place so filter chips
+// and route guards don't drift.
+export const INSTITUTIONAL_KINDS: CounterpartyKind[] =
+  ['chama', 'company', 'ngo', 'church', 'school', 'other'];
 
 export async function previewDormancyRun(): Promise<{ threshold_days: number; candidates: DormancyCandidate[] }> {
   const r = await api.post('/v1/members/dormancy/preview');

@@ -219,7 +219,17 @@ function HeaderCard({
         <div>
           <div style={{ fontSize: 18, fontWeight: 600 }}>{m.full_name}</div>
           <div className="m360-hd-meta">
-            <span className="mono">{m.member_no}</span>
+            {/* CP# is the canonical identifier; legacy member_no is
+                muted underneath. With the flag off, m.cp_number is
+                absent and we render the legacy number alone. */}
+            {m.cp_number ? (
+              <>
+                <span className="mono">{m.cp_number}</span>
+                <span className="muted tiny mono">Legacy: {m.member_no}</span>
+              </>
+            ) : (
+              <span className="mono">{m.member_no}</span>
+            )}
             <StatusBadge status={m.status} />
             {m.gender !== 'undisclosed' && <Badge tone="neutral">{m.gender}</Badge>}
             <span className="muted">·</span>

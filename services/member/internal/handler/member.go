@@ -4,6 +4,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -25,15 +26,16 @@ import (
 )
 
 type MemberHandler struct {
-	DB         *db.Pool
-	Members    *store.MemberStore
-	Relations  *store.RelationStore
-	Documents  *store.DocumentStore
-	Audit      *store.AuditStore
-	Storage    storage.Storage
-	MaxUpload  int64
-	Logger     *slog.Logger
-	Notifier   *notifier.Client
+	DB             *db.Pool
+	Members        *store.MemberStore
+	Relations      *store.RelationStore
+	Documents      *store.DocumentStore
+	Audit          *store.AuditStore
+	Counterparties *store.CounterpartyStore // Phase A dual-target mirror
+	Storage        storage.Storage
+	MaxUpload      int64
+	Logger         *slog.Logger
+	Notifier       *notifier.Client
 }
 
 func (h *MemberHandler) audit(r *http.Request, tenantID uuid.UUID, memberID uuid.UUID, action string, meta map[string]any) {
@@ -205,6 +207,19 @@ func (h *MemberHandler) Create(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		created = m
+
+		// Dual-target mirror — direct admin POST /v1/members path.
+		// Mirrors the new row into counterparties so the unified
+		// register stays in sync. Application-approval has its own
+		// mirror in ApplicationHandler.Approve; this is the second
+		// of the two end-user paths that mints a member row.
+		if h.Counterparties != nil {
+			if err := mirrorMemberCreateToCounterpartyTx(
+				r.Context(), tx, h.Counterparties, tenantID, m, actorID,
+			); err != nil {
+				return fmt.Errorf("mirror counterparty: %w", err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -294,6 +309,12 @@ type memberDetail struct {
 	NextOfKin     *domain.Relation   `json:"next_of_kin"`
 	Beneficiaries []*domain.Relation `json:"beneficiaries"`
 	Documents     []*domain.Document `json:"documents"`
+	// Phase B — the bridge values. Populated when the member row has
+	// been backfilled (which is every row in any tenant that ran
+	// migration 0008). Frontend uses this to render the CP-* number
+	// alongside the legacy M-* without a second round-trip.
+	CPNumber       *string `json:"cp_number,omitempty"`
+	CounterpartyID *string `json:"counterparty_id,omitempty"`
 }
 
 func (h *MemberHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -328,6 +349,19 @@ func (h *MemberHandler) Get(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		out.Documents = docs
+
+		// Bridge to the unified register. Single LEFT JOIN so that a
+		// member created before the backfill (unlikely; backfill
+		// catches everything) doesn't blow up the response.
+		var cpID, cpNo *string
+		_ = tx.QueryRow(r.Context(), `
+			SELECT c.id::text, c.cp_number
+			  FROM counterparties c
+			  JOIN members m ON m.counterparty_id = c.id
+			 WHERE m.id = $1
+		`, id).Scan(&cpID, &cpNo)
+		out.CounterpartyID = cpID
+		out.CPNumber = cpNo
 		return nil
 	})
 	if err != nil {

@@ -641,10 +641,16 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 // ─────────── GET /v1/auth/me ───────────
 
 type meResponse struct {
-	User        *domain.User   `json:"user"`
-	Tenant      *domain.Tenant `json:"tenant,omitempty"`
-	Roles       []string       `json:"roles"`
-	Permissions []string       `json:"permissions"`
+	User         *domain.User      `json:"user"`
+	Tenant       *domain.Tenant    `json:"tenant,omitempty"`
+	Roles        []string          `json:"roles"`
+	Permissions  []string          `json:"permissions"`
+	// FeatureFlags — per-tenant feature toggles surfaced to the
+	// frontend. Read from tenant_operations on each /auth/me; cheap
+	// because /auth/me already runs a tenant-scoped tx for roles +
+	// perms. Keyed by snake_case flag name to match the Go field +
+	// the DB column verbatim.
+	FeatureFlags map[string]bool   `json:"feature_flags,omitempty"`
 }
 
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
@@ -694,7 +700,18 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		if claims.IsPlatformAdmin && platformContext {
 			respTenant = nil
 		}
-		resp = meResponse{User: user, Tenant: respTenant, Roles: roles, Permissions: perms}
+		// Pull feature flags. Single-column read today; if more flags
+		// land we'll fold them into one struct rather than one column
+		// each.
+		flags := map[string]bool{}
+		var unifiedCP bool
+		if err := tx.QueryRow(r.Context(),
+			`SELECT COALESCE(unified_counterparties, false) FROM tenant_operations WHERE tenant_id = $1`,
+			tenant.ID,
+		).Scan(&unifiedCP); err == nil {
+			flags["unified_counterparties"] = unifiedCP
+		}
+		resp = meResponse{User: user, Tenant: respTenant, Roles: roles, Permissions: perms, FeatureFlags: flags}
 		return nil
 	})
 	if err != nil {
