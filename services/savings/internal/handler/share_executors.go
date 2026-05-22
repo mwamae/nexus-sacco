@@ -1,9 +1,11 @@
 // Maker-checker executors for share actions (stage 2).
 //
 // Each executor takes a typed payload + maker user id, performs the
-// same validations and ledger writes as the original Purchase/Redeem/
-// Transfer/BonusIssue/PlaceLien inline path, and returns the resulting
-// transaction id (or, for bonus issue, a count of impacted accounts).
+// same validations and ledger writes as the original Purchase /
+// Transfer / BonusIssue / PlaceLien inline path, and returns the
+// resulting transaction id (or, for bonus issue, a count of impacted
+// accounts). Share redemption is not a supported operation in this
+// SACCO and has no executor — see share.go for the rationale.
 //
 // Handlers call MaybeQueue / Execute via the gate; the approval
 // dispatcher in pending_approvals.go also calls these executors when
@@ -30,16 +32,6 @@ type SharePurchasePayload struct {
 	PaymentChannel domain.PaymentChannel `json:"payment_channel"`
 	PaymentRef     string                `json:"payment_ref"`
 	Narration      string                `json:"narration"`
-}
-
-type ShareRedeemPayload struct {
-	MemberID                uuid.UUID             `json:"member_id"`
-	Shares                  int                   `json:"shares"`
-	Reason                  string                `json:"reason"`
-	Narration               string                `json:"narration"`
-	PaymentRef              string                `json:"payment_ref"`
-	PaymentChannel          domain.PaymentChannel `json:"payment_channel"`
-	AcknowledgeBelowMinimum bool                  `json:"acknowledge_below_minimum"`
 }
 
 type ShareTransferPayload struct {
@@ -142,62 +134,9 @@ func (h *ShareHandler) ExecuteSharePurchaseTx(
 	return &SharePostResult{Transaction: *txn, Account: *updated, Certificate: cert}, nil
 }
 
-func (h *ShareHandler) ExecuteShareRedeemTx(
-	ctx context.Context, tx pgx.Tx,
-	p ShareRedeemPayload, makerID uuid.UUID,
-) (*SharePostResult, error) {
-	policy, member, acct, err := h.loadContext(ctx, tx, p.MemberID, false)
-	if err != nil {
-		return nil, err
-	}
-	if err := requireWriteEligible(member, "redeem"); err != nil {
-		return nil, err
-	}
-	if domain.AvailableShares(acct) < p.Shares {
-		if acct.SharesPledged > 0 {
-			return nil, domain.ErrLienBlocksAction
-		}
-		return nil, domain.ErrInsufficientShares
-	}
-	if acct.SharesHeld-p.Shares < policy.MinSharesRequired && !p.AcknowledgeBelowMinimum {
-		return nil, domain.ErrBelowMinHolding
-	}
-	var chPtr *domain.PaymentChannel
-	if p.PaymentChannel != "" {
-		ch := p.PaymentChannel
-		chPtr = &ch
-	} else {
-		internal := domain.ChannelInternal
-		chPtr = &internal
-	}
-	reason := p.Reason
-	txn, err := h.Shares.PostTxnTx(ctx, tx, store.PostInput{
-		Account:             acct,
-		TxnType:             domain.TxnRedemption,
-		SharesDelta:         -p.Shares,
-		ParValueAtTxn:       policy.ParValue,
-		PaymentChannel:      chPtr,
-		PaymentRef:          strNilIfEmpty(p.PaymentRef),
-		Narration:           strNilIfEmpty(p.Narration),
-		InitiatedBy:         makerID,
-		AuthorizedBy:        &makerID,
-		AuthorizationReason: &reason,
-	})
-	if err != nil {
-		return nil, err
-	}
-	updated, err := h.Shares.GetAccountTx(ctx, tx, acct.ID)
-	if err != nil {
-		return nil, err
-	}
-	cert, err := h.Shares.IssueCertificateTx(ctx, tx, acct.ID, member.ID, makerID,
-		updated.SharesHeld, policy.ParValue, policy.CertificatePrefix)
-	if err != nil {
-		return nil, err
-	}
-	_ = h.Members.TouchActivityTx(ctx, tx, p.MemberID)
-	return &SharePostResult{Transaction: *txn, Account: *updated, Certificate: cert}, nil
-}
+// (Redeem executor removed — see comment in share.go: share capital
+// cannot be redeemed; exiting members must transfer their shares to
+// another active member via the Transfer executor below.)
 
 func (h *ShareHandler) ExecuteShareTransferTx(
 	ctx context.Context, tx pgx.Tx,

@@ -27,7 +27,6 @@ const KIND_LABEL: Record<string, string> = {
   withdrawal: 'Withdrawal',
   deposit_transfer: 'Account transfer',
   share_purchase: 'Share purchase',
-  share_redeem: 'Share redeem',
   share_transfer: 'Share transfer',
   share_bonus: 'Bonus shares',
   loan_disbursement: 'Loan disbursement',

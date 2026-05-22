@@ -7,7 +7,9 @@ import {
   clearLogo,
   fetchTenantLogo,
   getTenantSettings,
+  listDepositProducts,
   updateBranding,
+  updateMembership,
   updateOperations,
   updateRegion,
   uploadLogo,
@@ -22,6 +24,7 @@ import {
   type DividendFrequency,
   type InterestMethod,
   type TenantBranding,
+  type TenantMembership,
   type TenantOperations,
   type TenantRegion,
   type TenantSettings,
@@ -29,11 +32,12 @@ import {
 import { Badge } from '../components/Badge';
 import { Icon } from '../components/Icon';
 
-type Tab = 'branding' | 'region' | 'operations' | 'approvals' | 'notifications';
+type Tab = 'branding' | 'region' | 'operations' | 'membership' | 'approvals' | 'notifications';
 const TABS: { id: Tab; label: string; hint: string }[] = [
   { id: 'branding',      label: 'Branding',      hint: 'Logo, colors, typography, channel sender IDs' },
   { id: 'region',        label: 'Region',        hint: 'Timezone, language, regulator, tax rates' },
   { id: 'operations',    label: 'Operations',    hint: 'Lending, savings, dividends, penalties, approval thresholds' },
+  { id: 'membership',    label: 'Membership',    hint: 'Registration fee and onboarding policy applied to every new applicant.' },
   { id: 'approvals',     label: 'Approvals',     hint: 'Per-kind maker-checker toggles for cash actions' },
   { id: 'notifications', label: 'Notifications', hint: 'OTP / 2FA policy. SMS + email providers are managed by the platform — see the Credits page for balance + usage.' },
 ];
@@ -109,6 +113,9 @@ export default function TenantSettings() {
           {s && tab === 'operations' && (
             <OperationsTab operations={s.operations} currency={s.tenant.currency_code} canEdit={canEdit} onSaved={reload} />
           )}
+          {s && tab === 'membership' && (
+            <MembershipTab membership={s.membership} currency={s.tenant.currency_code} canEdit={canEdit} onSaved={reload} />
+          )}
           {s && tab === 'approvals' && (
             <ApprovalsTab canEdit={canEdit} />
           )}
@@ -178,8 +185,7 @@ function ApprovalsTab({ canEdit }: { canEdit: boolean }) {
   ];
   const SHARE_KINDS: Array<{ key: keyof ApprovalToggles; label: string; hint: string }> = [
     { key: 'share_purchase', label: 'Share purchases', hint: 'Members buying shares (any payment channel).' },
-    { key: 'share_redeem',   label: 'Share redemptions', hint: 'Members cashing out shares — including exit redemptions below the minimum holding.' },
-    { key: 'share_transfer', label: 'Share transfers', hint: 'Member-to-member share transfers.' },
+    { key: 'share_transfer', label: 'Share transfers', hint: 'Member-to-member share transfers. Used during member exit since share capital cannot be redeemed.' },
     { key: 'share_bonus',    label: 'Bonus share issues', hint: 'Tenant-wide AGM-driven bonus issue. Affects every active account.' },
     { key: 'share_lien',     label: 'Share liens', hint: 'Pledging shares (e.g. as loan collateral).' },
   ];
@@ -538,6 +544,138 @@ function RegionTab({ region, canEdit, onSaved }: {
           <input className="input mono" type="number" step="0.01" min={0} max={100} disabled={!canEdit || busy} value={r.withholding_tax_rate} onChange={(e) => setR({ ...r, withholding_tax_rate: Number(e.target.value) })} />
         </Field>
       </div>
+      {canEdit && <SaveBar disabled={!isDirty} busy={busy} onSave={save} />}
+    </>
+  );
+}
+
+// ─────────── Membership ───────────
+
+const REGISTRATION_CHANNELS: Array<{ v: string; label: string; hint: string }> = [
+  { v: 'mpesa',         label: 'M-Pesa',         hint: 'Paybill / Till confirmation code' },
+  { v: 'airtel_money',  label: 'Airtel Money',   hint: 'Airtel transaction reference' },
+  { v: 'bank_transfer', label: 'Bank transfer',  hint: 'EFT / RTGS / cheque deposit slip' },
+  { v: 'cash',          label: 'Cash (teller)',  hint: 'Teller receipt number' },
+  { v: 'cheque',        label: 'Cheque',         hint: 'Cheque number + drawer bank' },
+];
+
+function MembershipTab({ membership, currency, canEdit, onSaved }: {
+  membership: TenantMembership; currency: string; canEdit: boolean; onSaved: () => void | Promise<void>;
+}) {
+  const [m, setM] = useState(membership);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [products, setProducts] = useState<Array<{ id: string; name: string; code: string }>>([]);
+  useEffect(() => setM(membership), [membership]);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const ps = await listDepositProducts(false);
+        setProducts(ps.map((p) => ({ id: p.id, name: p.name, code: p.code })));
+      } catch { /* products are optional for the form */ }
+    })();
+  }, []);
+
+  const isDirty = useMemo(() => JSON.stringify(m) !== JSON.stringify(membership), [m, membership]);
+
+  async function save() {
+    setErr(null); setBusy(true);
+    try { await updateMembership(m); await onSaved(); }
+    catch (e) { setErr(extractError(e)); }
+    finally { setBusy(false); }
+  }
+
+  function toggleChannel(v: string, on: boolean) {
+    const next = on
+      ? Array.from(new Set([...m.accepted_payment_channels, v]))
+      : m.accepted_payment_channels.filter((c) => c !== v);
+    setM({ ...m, accepted_payment_channels: next });
+  }
+
+  const disabled = !m.collect_registration_fee;
+
+  return (
+    <>
+      {err && <div className="alert alert-error">{err}</div>}
+
+      <Field label="Collect registration fee" hint="When off, the registration-fee step is hidden from the onboarding workflow entirely.">
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: canEdit ? 'pointer' : 'default' }}>
+          <input
+            type="checkbox"
+            checked={m.collect_registration_fee}
+            onChange={(e) => setM({ ...m, collect_registration_fee: e.target.checked })}
+            disabled={!canEdit || busy}
+          />
+          <span>{m.collect_registration_fee ? 'Yes — fee captured on every application' : 'No — onboarding skips the fee step'}</span>
+        </label>
+      </Field>
+
+      <div className="grid-2">
+        <Field label={`Fee — Individual (${currency})`} hint="Charged to natural persons. Must be ≥ 0.">
+          <input
+            className="input mono"
+            type="number" step="0.01" min={0}
+            value={m.registration_fee_individual}
+            onChange={(e) => setM({ ...m, registration_fee_individual: Number(e.target.value) })}
+            disabled={!canEdit || busy || disabled}
+          />
+        </Field>
+        <Field label={`Fee — Institutional (${currency})`} hint="Charged to businesses, groups, chamas, companies, NGOs, etc.">
+          <input
+            className="input mono"
+            type="number" step="0.01" min={0}
+            value={m.registration_fee_institutional}
+            onChange={(e) => setM({ ...m, registration_fee_institutional: Number(e.target.value) })}
+            disabled={!canEdit || busy || disabled}
+          />
+        </Field>
+      </div>
+
+      <Field label="Accepted payment channels" hint="The officer captures one of these as proof of payment.">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+          {REGISTRATION_CHANNELS.map((c) => (
+            <label key={c.v} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: canEdit ? 'pointer' : 'default' }}>
+              <input
+                type="checkbox"
+                checked={m.accepted_payment_channels.includes(c.v)}
+                onChange={(e) => toggleChannel(c.v, e.target.checked)}
+                disabled={!canEdit || busy || disabled}
+              />
+              <div>
+                <div style={{ fontWeight: 600 }}>{c.label}</div>
+                <div className="muted tiny">{c.hint}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Fee is refundable on rejection" hint="When on, declining a paid application prompts an officer to post the refund leg to the GL. When off, the fee is retained as SACCO income.">
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: canEdit ? 'pointer' : 'default' }}>
+          <input
+            type="checkbox"
+            checked={m.fee_refundable_on_rejection}
+            onChange={(e) => setM({ ...m, fee_refundable_on_rejection: e.target.checked })}
+            disabled={!canEdit || busy || disabled}
+          />
+          <span>{m.fee_refundable_on_rejection ? 'Refundable — declined applications trigger a refund' : 'Non-refundable — declined applications retain the fee'}</span>
+        </label>
+      </Field>
+
+      <Field label="Default deposit product for new members" hint="When set, the approval pipeline auto-opens a zero-balance savings account in this product for every newly-activated member. When unset, only the share account is opened — the operator opens deposit accounts manually later.">
+        <select
+          className="select"
+          value={m.default_deposit_product_id ?? ''}
+          onChange={(e) => setM({ ...m, default_deposit_product_id: e.target.value || null })}
+          disabled={!canEdit || busy}
+        >
+          <option value="">— None (skip auto-open) —</option>
+          {products.map((p) => (
+            <option key={p.id} value={p.id}>{p.code} · {p.name}</option>
+          ))}
+        </select>
+      </Field>
+
       {canEdit && <SaveBar disabled={!isDirty} busy={busy} onSave={save} />}
     </>
   );

@@ -14,18 +14,28 @@ import (
 
 type ShareTxnType string
 
+// Share transaction kinds. Note: 'redemption' is intentionally NOT a
+// legal operation in this SACCO — share capital is equity that
+// remains in the cooperative; a member exiting must transfer their
+// shares to another active member rather than redeem them for cash.
+// The string is kept reachable as a constant only so historic ledger
+// rows that already used the value (under earlier versions) still
+// scan cleanly; new code paths must not produce it.
 const (
 	TxnPurchase    ShareTxnType = "purchase"
 	TxnTransferIn  ShareTxnType = "transfer_in"
 	TxnTransferOut ShareTxnType = "transfer_out"
-	TxnRedemption  ShareTxnType = "redemption"
 	TxnAdjustment  ShareTxnType = "adjustment"
 	TxnBonusIssue  ShareTxnType = "bonus_issue"
+
+	// TxnRedemption — historic only. The validator below rejects it
+	// so new transactions cannot be created with this type.
+	TxnRedemption ShareTxnType = "redemption"
 )
 
 func (t ShareTxnType) Valid() bool {
 	switch t {
-	case TxnPurchase, TxnTransferIn, TxnTransferOut, TxnRedemption, TxnAdjustment, TxnBonusIssue:
+	case TxnPurchase, TxnTransferIn, TxnTransferOut, TxnAdjustment, TxnBonusIssue:
 		return true
 	}
 	return false
@@ -36,7 +46,7 @@ func (t ShareTxnType) Sign() int {
 	switch t {
 	case TxnPurchase, TxnTransferIn, TxnBonusIssue:
 		return +1
-	case TxnTransferOut, TxnRedemption:
+	case TxnTransferOut:
 		return -1
 	default:
 		return 0 // adjustment: caller supplies signed shares_delta

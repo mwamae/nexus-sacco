@@ -22,7 +22,6 @@ import {
   postDeposit,
   postWithdrawal,
   purchaseShares,
-  redeemShares,
   releaseShareLien,
   reverseDeposit,
   transferBetweenOwn,
@@ -381,7 +380,6 @@ function SharesDetail({
   useEffect(() => { void loadHistory(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [memberId, a.id]);
 
   const canBuy = hasPermission('shares:buy');
-  const canRedeem = hasPermission('shares:redeem');
   const canTransfer = hasPermission('shares:transfer');
   const canAdjust = hasPermission('shares:adjust');
   const canLien = hasPermission('shares:lien');
@@ -396,7 +394,6 @@ function SharesDetail({
         </div>
         <div className="row" style={{ gap: 6 }}>
           {canBuy && <button className="btn btn-sm btn-accent" onClick={() => onOpenModal({ kind: 'shareBuy' })}>Buy</button>}
-          {canRedeem && <button className="btn btn-sm" disabled={a.shares_held === 0} onClick={() => onOpenModal({ kind: 'shareRedeem' })}>Redeem</button>}
           {canTransfer && <button className="btn btn-sm" disabled={a.shares_available === 0} onClick={() => onOpenModal({ kind: 'shareTransfer' })}>Transfer</button>}
           {canAdjust && <button className="btn btn-sm" onClick={() => onOpenModal({ kind: 'shareAdjust' })}>Adjust</button>}
           {canLien && <button className="btn btn-sm" onClick={() => onOpenModal({ kind: 'shareLien' })}>+ Lien</button>}
@@ -709,7 +706,6 @@ type ModalState =
   | { kind: null }
   | { kind: 'open' }
   | { kind: 'shareBuy' }
-  | { kind: 'shareRedeem' }
   | { kind: 'shareTransfer' }
   | { kind: 'shareAdjust' }
   | { kind: 'shareLien' }
@@ -737,9 +733,6 @@ function Modals({
   }
   if (modal.kind === 'shareBuy' && shares) {
     return <ShareBuyModal memberId={memberId} onClose={onClose} onSaved={onChanged} />;
-  }
-  if (modal.kind === 'shareRedeem' && shares) {
-    return <ShareRedeemModal memberId={memberId} max={shares.account.shares_available} held={shares.account.shares_held} minRequired={shares.policy.min_shares_required} onClose={onClose} onSaved={onChanged} />;
   }
   if (modal.kind === 'shareTransfer' && shares) {
     return <ShareTransferModal memberId={memberId} max={shares.account.shares_available} onClose={onClose} onSaved={onChanged} />;
@@ -836,54 +829,9 @@ function ShareBuyModal({ memberId, onClose, onSaved }: { memberId: string; onClo
   );
 }
 
-function ShareRedeemModal({ memberId, max, held, minRequired, onClose, onSaved }: {
-  memberId: string; max: number; held: number; minRequired: number;
-  onClose: () => void; onSaved: () => Promise<void> | void;
-}) {
-  const [shares, setShares] = useState(1);
-  const [reason, setReason] = useState('');
-  const [channel, setChannel] = useState<SharePaymentChannel>('mpesa');
-  const [ref, setRef] = useState('');
-  const wouldBeBelowMin = (held - shares) < minRequired;
-  const [ack, setAck] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  return (
-    <ModalShell title="Redeem shares" busy={busy} onClose={onClose} submitLabel="Redeem"
-      disabled={shares <= 0 || shares > max || !reason.trim() || (wouldBeBelowMin && !ack)}
-      onSubmit={async () => {
-        setErr(null); setBusy(true);
-        try {
-          const r = await redeemShares(memberId, {
-            shares, reason, payment_channel: channel, payment_ref: ref || undefined,
-            acknowledge_below_minimum: wouldBeBelowMin ? ack : undefined,
-          });
-          if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
-          await onSaved();
-        } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
-      }}>
-      {err && <div className="alert alert-error">{err}</div>}
-      <Field label={`Shares (max available: ${max})`}><input className="input" type="number" min={1} max={max} value={shares} onChange={(e) => setShares(parseInt(e.target.value, 10) || 0)} /></Field>
-      <Field label="Reason (required — audit)"><textarea className="input" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
-      <Field label="Payout channel">
-        <select className="input" value={channel} onChange={(e) => setChannel(e.target.value as SharePaymentChannel)}>
-          {(['mpesa', 'airtel_money', 'bank_transfer', 'cash', 'internal'] as SharePaymentChannel[]).map((c) => (
-            <option key={c} value={c}>{SHARE_CHANNEL_LABELS[c]}</option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Payout reference (optional)"><input className="input" value={ref} onChange={(e) => setRef(e.target.value)} /></Field>
-      {wouldBeBelowMin && (
-        <div className="alert alert-warn">
-          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-            <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
-            <span>This redemption drops the member below the {minRequired}-share minimum. Confirm only if board-authorised (e.g. exit).</span>
-          </label>
-        </div>
-      )}
-    </ModalShell>
-  );
-}
+// ShareRedeemModal removed — share capital is equity in this SACCO
+// and cannot be redeemed. Exiting members use ShareTransferModal to
+// move their shares to another active member instead.
 
 function ShareTransferModal({ memberId, max, onClose, onSaved }: {
   memberId: string; max: number; onClose: () => void; onSaved: () => Promise<void> | void;

@@ -40,6 +40,11 @@ type Config struct {
 	// Notification integration (Stage 8) — central notification service.
 	NotificationURL           string
 	NotificationInternalToken string
+
+	// Accounting integration (Phase 12/D) — used by the activation
+	// pipeline to post the registration-fee journal entry.
+	AccountingURL           string
+	AccountingInternalToken string
 }
 
 func Load() (*Config, error) {
@@ -82,6 +87,9 @@ func Load() (*Config, error) {
 
 	cfg.NotificationURL = getEnv("NOTIFICATION_SERVICE_URL", "http://localhost:8085")
 	cfg.NotificationInternalToken = getEnv("NOTIFICATION_INTERNAL_TOKEN", "")
+
+	cfg.AccountingURL = getEnv("ACCOUNTING_SERVICE_URL", "http://localhost:8086")
+	cfg.AccountingInternalToken = getEnv("ACCOUNTING_INTERNAL_TOKEN", "")
 	return cfg, nil
 }
 

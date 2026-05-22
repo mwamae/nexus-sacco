@@ -164,6 +164,21 @@ type TenantOperations struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// TenantMembership — membership-onboarding settings. Currently only
+// the registration-fee configuration; will grow as later phases ship
+// (welcome-letter template, default deposit product for new members,
+// member-number format, etc.).
+type TenantMembership struct {
+	TenantID                       uuid.UUID  `json:"tenant_id"`
+	CollectRegistrationFee         bool       `json:"collect_registration_fee"`
+	RegistrationFeeIndividual      float64    `json:"registration_fee_individual"`
+	RegistrationFeeInstitutional   float64    `json:"registration_fee_institutional"`
+	AcceptedPaymentChannels        []string   `json:"accepted_payment_channels"`
+	FeeRefundableOnRejection       bool       `json:"fee_refundable_on_rejection"`
+	DefaultDepositProductID        *uuid.UUID `json:"default_deposit_product_id,omitempty"`
+	UpdatedAt                      time.Time  `json:"updated_at"`
+}
+
 type UserStatus string
 
 const (

@@ -24,7 +24,6 @@ const (
 	// Future stages — listed here so the dispatcher fails closed rather
 	// than silently allowing an unknown kind. Wired in stages 2-3.
 	ApprovalKindSharePurchase          ApprovalKind = "share_purchase"
-	ApprovalKindShareRedeem            ApprovalKind = "share_redeem"
 	ApprovalKindShareTransfer          ApprovalKind = "share_transfer"
 	ApprovalKindShareBonus             ApprovalKind = "share_bonus"
 	ApprovalKindShareLien              ApprovalKind = "share_lien"
@@ -41,7 +40,7 @@ const (
 func (k ApprovalKind) Valid() bool {
 	switch k {
 	case ApprovalKindDeposit, ApprovalKindWithdrawal, ApprovalKindDepositTransfer,
-		ApprovalKindSharePurchase, ApprovalKindShareRedeem, ApprovalKindShareTransfer, ApprovalKindShareBonus, ApprovalKindShareLien,
+		ApprovalKindSharePurchase, ApprovalKindShareTransfer, ApprovalKindShareBonus, ApprovalKindShareLien,
 		ApprovalKindLoanDisbursement, ApprovalKindLoanRepayment, ApprovalKindLoanSettle, ApprovalKindLoanReverse,
 		ApprovalKindLoanWriteoff, ApprovalKindLoanReschedule, ApprovalKindLoanMoratorium,
 		ApprovalKindLoanSettlementDiscount:

@@ -307,7 +307,6 @@ type updateTogglesReq struct {
 	Withdrawal             *bool `json:"withdrawal,omitempty"`
 	DepositTransfer        *bool `json:"deposit_transfer,omitempty"`
 	SharePurchase          *bool `json:"share_purchase,omitempty"`
-	ShareRedeem            *bool `json:"share_redeem,omitempty"`
 	ShareTransfer          *bool `json:"share_transfer,omitempty"`
 	ShareBonus             *bool `json:"share_bonus,omitempty"`
 	ShareLien              *bool `json:"share_lien,omitempty"`
@@ -337,7 +336,6 @@ func (h *PendingApprovalsHandler) UpdateSettings(w http.ResponseWriter, r *http.
 			Withdrawal:             in.Withdrawal,
 			DepositTransfer:        in.DepositTransfer,
 			SharePurchase:          in.SharePurchase,
-			ShareRedeem:            in.ShareRedeem,
 			ShareTransfer:          in.ShareTransfer,
 			ShareBonus:             in.ShareBonus,
 			ShareLien:              in.ShareLien,
@@ -425,21 +423,6 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 			return nil, nil, err
 		}
 		res, err := h.Share.ExecuteSharePurchaseTx(ctx, tx, p, makerID)
-		if err != nil {
-			return nil, nil, err
-		}
-		txnID := res.Transaction.ID
-		return res, &txnID, nil
-
-	case domain.ApprovalKindShareRedeem:
-		if h.Share == nil {
-			return nil, nil, errors.New("share handler is not wired")
-		}
-		p, err := store.UnmarshalPayload[ShareRedeemPayload](pa.Payload)
-		if err != nil {
-			return nil, nil, err
-		}
-		res, err := h.Share.ExecuteShareRedeemTx(ctx, tx, p, makerID)
 		if err != nil {
 			return nil, nil, err
 		}

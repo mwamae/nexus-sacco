@@ -79,8 +79,10 @@ func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, memberID uuid
 		return nil, nil, nil, err
 	}
 	// Eligibility gates WRITES only — viewing equity must always work so
-	// admins can see what's there before redeeming on exit. Per-handler
-	// write checks live in requireWriteEligible.
+	// admins can see what's there during the exit workflow (where the
+	// shares must be transferred to another active member before exit
+	// can be finalised). Per-handler write checks live in
+	// requireWriteEligible.
 	var account *domain.ShareAccount
 	if ensure {
 		account, err = h.Shares.EnsureAccountTx(ctx, tx, memberID, policy.ParValue)
@@ -96,14 +98,17 @@ func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, memberID uuid
 	return policy, member, account, nil
 }
 
-// requireWriteEligible returns an error when the member's status forbids
-// the requested operation. Redemption is explicitly allowed for
-// blacklisted/exited members so admins can clear equity on exit.
+// requireWriteEligible returns an error when the member's status
+// forbids the requested operation. Transfer-out is explicitly allowed
+// for blacklisted/exited members so an exiting member can move their
+// shares to another active member before the exit workflow finalises
+// — share capital is equity and cannot be redeemed for cash, so the
+// only legitimate way to clear an exiting balance is via transfer.
 func requireWriteEligible(member *store.MemberLite, op string) error {
 	if memberEligible(member.Status) {
 		return nil
 	}
-	if op == "redeem" {
+	if op == "transfer" {
 		switch member.Status {
 		case "blacklisted", "exited":
 			return nil
@@ -659,101 +664,13 @@ func (h *ShareHandler) emitShareTransfer(r *http.Request, tenantID, actorID uuid
 	}
 }
 
-// ─────────── Redemption ───────────
-
-type redeemReq struct {
-	Shares       int    `json:"shares"`
-	Reason       string `json:"reason"`
-	Narration    string `json:"narration"`
-	PaymentRef   string `json:"payment_ref"`
-	PaymentChan  domain.PaymentChannel `json:"payment_channel"`
-	AuthOverride bool   `json:"acknowledge_below_minimum"` // confirm dropping below min (e.g. on exit)
-}
-
-func (h *ShareHandler) Redeem(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
-	if err != nil {
-		httpx.WriteErr(w, r, err)
-		return
-	}
-	var in redeemReq
-	if err := httpx.DecodeJSON(r, &in); err != nil {
-		httpx.WriteErr(w, r, err)
-		return
-	}
-	if in.Shares <= 0 {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("shares must be a positive integer"))
-		return
-	}
-	if in.Reason == "" {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("reason is required for redemption"))
-		return
-	}
-	if in.PaymentChan != "" && !in.PaymentChan.Valid() {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid payment_channel"))
-		return
-	}
-	userID, _ := middleware.UserIDFrom(r)
-	if userID == uuid.Nil {
-		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
-		return
-	}
-	tid, _ := middleware.TenantIDFrom(r)
-
-	payload := ShareRedeemPayload{
-		MemberID:                memberID,
-		Shares:                  in.Shares,
-		Reason:                  in.Reason,
-		Narration:               in.Narration,
-		PaymentRef:              in.PaymentRef,
-		PaymentChannel:          in.PaymentChan,
-		AcknowledgeBelowMinimum: in.AuthOverride,
-	}
-	var result *SharePostResult
-	var pending *domain.PendingApproval
-	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
-		if err != nil {
-			return err
-		}
-		if toggles.ShareRedeem {
-			policy, err := h.Tenants.SharePolicyTx(r.Context(), tx)
-			if err != nil {
-				return err
-			}
-			amount := policy.ParValue.Mul(decimal.NewFromInt(int64(in.Shares)))
-			m := memberID
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
-				Kind:            domain.ApprovalKindShareRedeem,
-				Title:           fmt.Sprintf("Redeem %d shares", in.Shares),
-				SubjectMemberID: &m,
-				Amount:          &amount,
-				Payload:         payload,
-				MakerUserID:     userID,
-			})
-			if qerr != nil {
-				return qerr
-			}
-			pending = pa
-			return nil
-		}
-		res, err := h.ExecuteShareRedeemTx(r.Context(), tx, payload, userID)
-		if err != nil {
-			return err
-		}
-		result = res
-		return nil
-	})
-	if err != nil {
-		writeBusinessErr(w, r, err)
-		return
-	}
-	if pending != nil {
-		writePendingResponse(w, r, pending)
-		return
-	}
-	httpx.Created(w, result)
-}
+// NOTE: Share redemption is intentionally NOT supported. Share
+// capital is equity per the Cooperative Societies Act + SASRA
+// prudential framework — it cannot be bought back by the SACCO on
+// member demand. An exiting member must transfer their share balance
+// to another active member; see the Transfer handler above and the
+// member-service exit guard which blocks 'exited' status until
+// shares_held = 0.
 
 // ─────────── Adjustment ───────────
 

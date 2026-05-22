@@ -1,0 +1,643 @@
+// Membership-application persistence.
+//
+// Owns the unified application table that backs the onboarding queue
+// for both individual and institutional applicants. The status state
+// machine lives in domain; this store enforces the legal transitions
+// at write time by checking CanTransitionApp before each UPDATE.
+
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
+
+	"github.com/nexussacco/member/internal/domain"
+)
+
+type ApplicationStore struct {
+	pool *pgxpool.Pool
+}
+
+func NewApplicationStore(pool *pgxpool.Pool) *ApplicationStore {
+	return &ApplicationStore{pool: pool}
+}
+
+var (
+	ErrApplicationNotFound = errors.New("application not found")
+)
+
+const appCols = `
+	id, tenant_id, application_no, kind::text, status::text,
+	applicant_name, entity_type, primary_phone, primary_email, branch_id,
+	applicant_payload,
+	fee_required, fee_amount_due, fee_amount_paid,
+	fee_payment_channel, fee_payment_reference, fee_payment_date,
+	fee_proof_doc_path, fee_shortfall_note, fee_status,
+	submitted_at, submitted_by,
+	reviewer_user_id, review_started_at, review_completed_at, review_summary_note,
+	approver_user_id, approved_at, decline_reason, approval_conditions, workflow_instance_id,
+	withdrawn_at, withdrawn_by, withdraw_reason,
+	materialized_member_id, materialized_at, fee_journal_entry_id, fee_refund_journal_entry_id,
+	created_at, updated_at,
+	EXTRACT(EPOCH FROM (now() - submitted_at))::int / 86400 AS days_in_queue
+`
+
+func scanApplication(row pgx.Row) (*domain.MembershipApplication, error) {
+	var a domain.MembershipApplication
+	var kind, status string
+	var payload []byte
+	if err := row.Scan(
+		&a.ID, &a.TenantID, &a.ApplicationNo, &kind, &status,
+		&a.ApplicantName, &a.EntityType, &a.PrimaryPhone, &a.PrimaryEmail, &a.BranchID,
+		&payload,
+		&a.FeeRequired, &a.FeeAmountDue, &a.FeeAmountPaid,
+		&a.FeePaymentChannel, &a.FeePaymentReference, &a.FeePaymentDate,
+		&a.FeeProofDocPath, &a.FeeShortfallNote, &a.FeeStatus,
+		&a.SubmittedAt, &a.SubmittedBy,
+		&a.ReviewerUserID, &a.ReviewStartedAt, &a.ReviewCompletedAt, &a.ReviewSummaryNote,
+		&a.ApproverUserID, &a.ApprovedAt, &a.DeclineReason, &a.ApprovalConditions, &a.WorkflowInstanceID,
+		&a.WithdrawnAt, &a.WithdrawnBy, &a.WithdrawReason,
+		&a.MaterializedMemberID, &a.MaterializedAt, &a.FeeJournalEntryID, &a.FeeRefundJournalEntryID,
+		&a.CreatedAt, &a.UpdatedAt,
+		&a.DaysInQueue,
+	); err != nil {
+		return nil, err
+	}
+	a.Kind = domain.ApplicationKind(kind)
+	a.Status = domain.ApplicationStatus(status)
+	a.ApplicantPayload = json.RawMessage(payload)
+	return &a, nil
+}
+
+// ─────────── Application number sequence ───────────
+
+// NextAppNo returns the next sequential application number for the
+// tenant + current year, formatted APP-YYYY-NNNNNN.
+func (s *ApplicationStore) NextAppNoTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) (string, error) {
+	year := time.Now().UTC().Year()
+	var next int
+	err := tx.QueryRow(ctx, `
+		INSERT INTO membership_application_seq (tenant_id, year, last_no)
+		VALUES ($1, $2, 1)
+		ON CONFLICT (tenant_id) DO UPDATE
+		   SET year    = CASE WHEN membership_application_seq.year = $2 THEN membership_application_seq.year ELSE $2 END,
+		       last_no = CASE WHEN membership_application_seq.year = $2 THEN membership_application_seq.last_no + 1 ELSE 1 END
+		RETURNING last_no
+	`, tenantID, year).Scan(&next)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("APP-%04d-%06d", year, next), nil
+}
+
+// ─────────── Create / submit ───────────
+
+type CreateApplicationInput struct {
+	TenantID            uuid.UUID
+	Kind                domain.ApplicationKind
+	ApplicantName       string
+	EntityType          *string
+	PrimaryPhone        *string
+	PrimaryEmail        *string
+	BranchID            *uuid.UUID
+	Payload             domain.ApplicantPayload
+	FeeRequired         bool
+	FeeAmountDue        decimal.Decimal
+	FeeAmountPaid       decimal.Decimal
+	FeePaymentChannel   *string
+	FeePaymentReference *string
+	FeePaymentDate      *time.Time
+	FeeProofDocPath     *string
+	FeeShortfallNote    *string
+	FeeStatus           string
+	SubmittedBy         uuid.UUID
+}
+
+func (s *ApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateApplicationInput) (*domain.MembershipApplication, error) {
+	if !in.Kind.Valid() {
+		return nil, fmt.Errorf("invalid application kind: %q", in.Kind)
+	}
+	if in.ApplicantName == "" {
+		return nil, errors.New("applicant_name is required")
+	}
+	appNo, err := s.NextAppNoTx(ctx, tx, in.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("allocate application_no: %w", err)
+	}
+	payloadJSON, err := domain.EncodePayload(in.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode payload: %w", err)
+	}
+	id := uuid.New()
+	_, err = tx.Exec(ctx, `
+		INSERT INTO membership_applications (
+		  id, tenant_id, application_no, kind, status,
+		  applicant_name, entity_type, primary_phone, primary_email, branch_id,
+		  applicant_payload,
+		  fee_required, fee_amount_due, fee_amount_paid,
+		  fee_payment_channel, fee_payment_reference, fee_payment_date,
+		  fee_proof_doc_path, fee_shortfall_note, fee_status,
+		  submitted_by
+		) VALUES (
+		  $1, $2, $3, $4::membership_application_kind, 'submitted',
+		  $5, $6, $7, $8, $9,
+		  $10::jsonb,
+		  $11, $12, $13,
+		  $14, $15, $16,
+		  $17, $18, $19,
+		  $20
+		)
+	`, id, in.TenantID, appNo, string(in.Kind),
+		in.ApplicantName, in.EntityType, in.PrimaryPhone, in.PrimaryEmail, in.BranchID,
+		payloadJSON,
+		in.FeeRequired, in.FeeAmountDue, in.FeeAmountPaid,
+		in.FeePaymentChannel, in.FeePaymentReference, in.FeePaymentDate,
+		in.FeeProofDocPath, in.FeeShortfallNote, in.FeeStatus,
+		in.SubmittedBy,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert application: %w", err)
+	}
+	return s.GetTx(ctx, tx, id)
+}
+
+func (s *ApplicationStore) GetTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*domain.MembershipApplication, error) {
+	row := tx.QueryRow(ctx, `SELECT `+appCols+` FROM membership_applications WHERE id = $1`, id)
+	a, err := scanApplication(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrApplicationNotFound
+	}
+	return a, err
+}
+
+// ─────────── Queue list with filters ───────────
+
+type ApplicationListFilter struct {
+	Kind            string // individual | institutional | (empty for both)
+	Status          string
+	BranchID        *uuid.UUID
+	SubmittedBy     *uuid.UUID
+	FeeStatus       string // paid | shortfall | not_paid | not_required | (empty)
+	Unassigned      bool   // reviewer_user_id IS NULL
+	DateFrom        *time.Time
+	DateTo          *time.Time
+	SearchTerm      string // matches application_no, applicant_name, primary_email
+	Limit, Offset   int
+}
+
+func (s *ApplicationStore) ListTx(ctx context.Context, tx pgx.Tx, f ApplicationListFilter) ([]domain.MembershipApplication, int, error) {
+	if f.Limit <= 0 || f.Limit > 500 {
+		f.Limit = 50
+	}
+
+	var wheres []string
+	var args []any
+	pos := 1
+	if f.Kind != "" {
+		wheres = append(wheres, fmt.Sprintf("kind = $%d::membership_application_kind", pos))
+		args = append(args, f.Kind)
+		pos++
+	}
+	if f.Status != "" {
+		wheres = append(wheres, fmt.Sprintf("status = $%d::membership_application_status", pos))
+		args = append(args, f.Status)
+		pos++
+	}
+	if f.BranchID != nil {
+		wheres = append(wheres, fmt.Sprintf("branch_id = $%d", pos))
+		args = append(args, *f.BranchID)
+		pos++
+	}
+	if f.SubmittedBy != nil {
+		wheres = append(wheres, fmt.Sprintf("submitted_by = $%d", pos))
+		args = append(args, *f.SubmittedBy)
+		pos++
+	}
+	if f.FeeStatus != "" {
+		wheres = append(wheres, fmt.Sprintf("fee_status = $%d", pos))
+		args = append(args, f.FeeStatus)
+		pos++
+	}
+	if f.Unassigned {
+		wheres = append(wheres, "reviewer_user_id IS NULL")
+	}
+	if f.DateFrom != nil {
+		wheres = append(wheres, fmt.Sprintf("submitted_at >= $%d", pos))
+		args = append(args, *f.DateFrom)
+		pos++
+	}
+	if f.DateTo != nil {
+		wheres = append(wheres, fmt.Sprintf("submitted_at <= $%d", pos))
+		args = append(args, *f.DateTo)
+		pos++
+	}
+	if s := strings.TrimSpace(f.SearchTerm); s != "" {
+		wheres = append(wheres, fmt.Sprintf("(application_no ILIKE $%d OR applicant_name ILIKE $%d OR COALESCE(primary_email,'') ILIKE $%d)", pos, pos, pos))
+		args = append(args, "%"+s+"%")
+		pos++
+	}
+
+	whereSQL := ""
+	if len(wheres) > 0 {
+		whereSQL = "WHERE " + strings.Join(wheres, " AND ")
+	}
+
+	// total count
+	var total int
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM membership_applications `+whereSQL, args...,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	q := `SELECT ` + appCols + ` FROM membership_applications ` + whereSQL +
+		fmt.Sprintf(" ORDER BY submitted_at DESC LIMIT $%d OFFSET $%d", pos, pos+1)
+	args = append(args, f.Limit, f.Offset)
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []domain.MembershipApplication{}
+	for rows.Next() {
+		a, err := scanApplication(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *a)
+	}
+	return out, total, rows.Err()
+}
+
+// ─────────── Status transitions ───────────
+
+// TransitionTx flips the application's status, recording the actor
+// metadata for the new state. Returns the fresh application row.
+type TransitionInput struct {
+	ID            uuid.UUID
+	From          domain.ApplicationStatus
+	To            domain.ApplicationStatus
+	ActorUserID   uuid.UUID
+	Note          string
+	DeclineReason string
+	Conditions    string
+}
+
+func (s *ApplicationStore) TransitionTx(ctx context.Context, tx pgx.Tx, in TransitionInput) (*domain.MembershipApplication, error) {
+	if !domain.CanTransitionApp(in.From, in.To) {
+		return nil, domain.ErrIllegalAppTransition
+	}
+
+	// Common UPDATE applies status + updated_at + per-state side-effect
+	// columns. We rely on Postgres' CASE WHEN to keep the SQL terse.
+	_, err := tx.Exec(ctx, `
+		UPDATE membership_applications SET
+		  status            = $2::membership_application_status,
+		  updated_at        = now(),
+
+		  reviewer_user_id  = CASE WHEN $2 = 'under_review' AND reviewer_user_id IS NULL THEN $3 ELSE reviewer_user_id END,
+		  review_started_at = CASE WHEN $2 = 'under_review' AND review_started_at IS NULL THEN now() ELSE review_started_at END,
+
+		  review_completed_at = CASE WHEN $2 = 'reviewed_pending_approval' THEN now() ELSE review_completed_at END,
+		  review_summary_note = CASE WHEN $2 = 'reviewed_pending_approval' THEN NULLIF($4,'') ELSE review_summary_note END,
+
+		  approver_user_id  = CASE WHEN $2 IN ('approved_active','declined') THEN $3 ELSE approver_user_id END,
+		  approved_at       = CASE WHEN $2 = 'approved_active' THEN now() ELSE approved_at END,
+		  decline_reason    = CASE WHEN $2 = 'declined' THEN NULLIF($5,'') ELSE decline_reason END,
+		  approval_conditions = CASE WHEN $2 = 'approved_active' AND $6 <> '' THEN $6 ELSE approval_conditions END,
+
+		  withdrawn_at      = CASE WHEN $2 = 'withdrawn' THEN now() ELSE withdrawn_at END,
+		  withdrawn_by      = CASE WHEN $2 = 'withdrawn' THEN $3   ELSE withdrawn_by END,
+		  withdraw_reason   = CASE WHEN $2 = 'withdrawn' THEN NULLIF($4,'') ELSE withdraw_reason END
+
+		 WHERE id = $1 AND status = $7::membership_application_status
+	`, in.ID, string(in.To), in.ActorUserID, in.Note, in.DeclineReason, in.Conditions, string(in.From))
+	if err != nil {
+		return nil, err
+	}
+	return s.GetTx(ctx, tx, in.ID)
+}
+
+// ─────────── Checklist (per tenant) ───────────
+
+func (s *ApplicationStore) ListChecklistItemsTx(ctx context.Context, tx pgx.Tx, kind domain.ApplicationKind) ([]domain.ChecklistItem, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id, kind::text, code, label, description, mandatory, display_order, is_active
+		  FROM membership_application_checklist_items
+		 WHERE kind = $1::membership_application_kind AND is_active = true
+		 ORDER BY display_order, code
+	`, string(kind))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.ChecklistItem{}
+	for rows.Next() {
+		var it domain.ChecklistItem
+		var k string
+		if err := rows.Scan(&it.ID, &k, &it.Code, &it.Label, &it.Description, &it.Mandatory, &it.DisplayOrder, &it.IsActive); err != nil {
+			return nil, err
+		}
+		it.Kind = domain.ApplicationKind(k)
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+func (s *ApplicationStore) UpsertChecklistResponseTx(ctx context.Context, tx pgx.Tx,
+	appID uuid.UUID, code, response, note string, actor uuid.UUID,
+) (*domain.ChecklistResponse, error) {
+	if response != "confirmed" && response != "flagged" && response != "n/a" {
+		return nil, errors.New("response must be confirmed, flagged, or n/a")
+	}
+	var r domain.ChecklistResponse
+	err := tx.QueryRow(ctx, `
+		INSERT INTO membership_application_checklist_responses (
+		  tenant_id, application_id, checklist_code, response, note, responded_by
+		) VALUES (current_tenant_id(), $1, $2, $3, NULLIF($4,''), $5)
+		ON CONFLICT (application_id, checklist_code) DO UPDATE
+		   SET response = EXCLUDED.response,
+		       note     = EXCLUDED.note,
+		       responded_by = EXCLUDED.responded_by,
+		       responded_at = now()
+		RETURNING id, application_id, checklist_code, response, note, responded_by, responded_at
+	`, appID, code, response, note, actor).Scan(
+		&r.ID, &r.ApplicationID, &r.ChecklistCode, &r.Response, &r.Note, &r.RespondedBy, &r.RespondedAt,
+	)
+	return &r, err
+}
+
+func (s *ApplicationStore) ListChecklistResponsesTx(ctx context.Context, tx pgx.Tx, appID uuid.UUID) ([]domain.ChecklistResponse, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id, application_id, checklist_code, response, note, responded_by, responded_at
+		  FROM membership_application_checklist_responses
+		 WHERE application_id = $1
+		 ORDER BY responded_at DESC
+	`, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.ChecklistResponse{}
+	for rows.Next() {
+		var r domain.ChecklistResponse
+		if err := rows.Scan(&r.ID, &r.ApplicationID, &r.ChecklistCode, &r.Response, &r.Note, &r.RespondedBy, &r.RespondedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ─────────── Correction history ───────────
+
+func (s *ApplicationStore) AppendCorrectionTx(ctx context.Context, tx pgx.Tx,
+	appID uuid.UUID, eventKind, note string, actor uuid.UUID,
+) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO membership_application_correction_history
+		  (tenant_id, application_id, event_kind, actor_user_id, note)
+		VALUES (current_tenant_id(), $1, $2, $3, $4)
+	`, appID, eventKind, actor, note)
+	return err
+}
+
+// ─────────── Activation ───────────
+
+// ActivationResult — the artefacts produced when an application is
+// approved. All three are created inside the same tx so a halfway
+// failure (e.g. share-account insert fails) rolls back the status flip
+// and the application stays at reviewed_pending_approval for a retry.
+type ActivationResult struct {
+	MemberID         uuid.UUID
+	MemberNo         string
+	ShareAccountID   uuid.UUID
+	ShareAccountNo   string
+	DepositAccountID *uuid.UUID // nil if no default product configured
+	DepositAccountNo *string
+}
+
+// nextSavingsSeq replicates the savings service's per-tenant number
+// generator (share_number_seq + DPA/SHA prefix). The member service
+// needs it because activation directly INSERTs into share/deposit
+// accounts to keep the whole materialisation in one cross-table tx.
+func nextSavingsSeq(ctx context.Context, tx pgx.Tx, kind, prefix string) (string, error) {
+	year := time.Now().UTC().Year()
+	var next int
+	err := tx.QueryRow(ctx, `
+		INSERT INTO share_number_seq (tenant_id, kind, year, last_value)
+		VALUES (current_tenant_id(), $1, $2, 1)
+		ON CONFLICT (tenant_id, kind, year)
+		DO UPDATE SET last_value = share_number_seq.last_value + 1
+		RETURNING last_value
+	`, kind, year).Scan(&next)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s-%d-%05d", prefix, year, next), nil
+}
+
+// ActivateApplicationTx is the in-tx half of the approval pipeline.
+// Should be called immediately AFTER transitioning the application to
+// approved_active and inside the same tx. Materialises the member row
+// + share account + (optionally) deposit account; stamps the
+// application's materialized_* columns.
+func (s *ApplicationStore) ActivateApplicationTx(
+	ctx context.Context, tx pgx.Tx,
+	app *domain.MembershipApplication,
+	members *MemberStore,
+	defaultDepositProductID *uuid.UUID,
+	sharePolicyParValue decimal.Decimal,
+	actorID uuid.UUID,
+) (*ActivationResult, error) {
+	// ─── 1. Member row ─────────────────────────────────────
+	memberNo, err := members.NextMemberNoTx(ctx, tx, app.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("allocate member_no: %w", err)
+	}
+	var payload domain.ApplicantPayload
+	if len(app.ApplicantPayload) > 0 {
+		_ = json.Unmarshal(app.ApplicantPayload, &payload)
+	}
+	idDocKind := payload.IDDocKind
+	if idDocKind == "" {
+		idDocKind = "national_id"
+	}
+	idDocNumber := payload.IDDocNumber
+	if idDocNumber == "" {
+		// Institutional applicants have no ID number per se; fall back
+		// to the registration number, then the application_no, so the
+		// NOT NULL constraint is satisfied while keeping the row
+		// distinguishable.
+		idDocNumber = payload.RegistrationNumber
+		if idDocNumber == "" {
+			idDocNumber = app.ApplicationNo
+		}
+	}
+	gender := normalizeGender(payload.Gender)
+
+	var memberID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		INSERT INTO members (
+		  tenant_id, member_no, status, full_name,
+		  id_doc_kind, id_doc_number, kra_pin, gender, date_of_birth,
+		  phone, email, county, sub_county, physical_address,
+		  employment_status, employer,
+		  approved_at, approved_by, created_by
+		) VALUES (
+		  current_tenant_id(), $1, 'active'::member_status, $2,
+		  $3::id_doc_kind, $4, NULLIF($5,''), $6::gender, $7,
+		  $8, $9, $10, $11, $12,
+		  $13, $14,
+		  now(), $15, $15
+		)
+		RETURNING id
+	`,
+		memberNo, app.ApplicantName,
+		idDocKind, idDocNumber, payload.KRAPIN, gender, payload.DateOfBirth,
+		valOrNil(app.PrimaryPhone), valOrNil(app.PrimaryEmail),
+		payload.County, payload.SubCounty, payload.PhysicalAddress,
+		payload.Occupation, payload.Employer,
+		actorID,
+	).Scan(&memberID)
+	if err != nil {
+		return nil, fmt.Errorf("insert member: %w", err)
+	}
+
+	// ─── 2. Share account ──────────────────────────────────
+	shareAcctNo, err := nextSavingsSeq(ctx, tx, "account", "SHA")
+	if err != nil {
+		return nil, fmt.Errorf("allocate share account_no: %w", err)
+	}
+	var shareAcctID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		INSERT INTO share_accounts (tenant_id, member_id, account_no, par_value_at_open)
+		VALUES (current_tenant_id(), $1, $2, $3)
+		RETURNING id
+	`, memberID, shareAcctNo, sharePolicyParValue).Scan(&shareAcctID)
+	if err != nil {
+		return nil, fmt.Errorf("insert share account: %w", err)
+	}
+
+	result := &ActivationResult{
+		MemberID: memberID, MemberNo: memberNo,
+		ShareAccountID: shareAcctID, ShareAccountNo: shareAcctNo,
+	}
+
+	// ─── 3. Deposit account (optional) ─────────────────────
+	if defaultDepositProductID != nil {
+		depAcctNo, err := nextSavingsSeq(ctx, tx, "deposit_account", "DPA")
+		if err != nil {
+			return nil, fmt.Errorf("allocate deposit account_no: %w", err)
+		}
+		var depAcctID uuid.UUID
+		err = tx.QueryRow(ctx, `
+			INSERT INTO deposit_accounts (
+			  tenant_id, member_id, product_id, account_no, status,
+			  current_balance, available_balance, opened_at, created_by
+			) VALUES (
+			  current_tenant_id(), $1, $2, $3, 'active'::deposit_account_status,
+			  0, 0, now(), $4
+			)
+			RETURNING id
+		`, memberID, *defaultDepositProductID, depAcctNo, actorID).Scan(&depAcctID)
+		if err != nil {
+			return nil, fmt.Errorf("insert deposit account: %w", err)
+		}
+		result.DepositAccountID = &depAcctID
+		result.DepositAccountNo = &depAcctNo
+	}
+
+	// ─── 4. Stamp the application ──────────────────────────
+	if _, err := tx.Exec(ctx, `
+		UPDATE membership_applications
+		   SET materialized_member_id = $2,
+		       materialized_at        = now(),
+		       updated_at             = now()
+		 WHERE id = $1
+	`, app.ID, memberID); err != nil {
+		return nil, fmt.Errorf("update application materialized_*: %w", err)
+	}
+
+	return result, nil
+}
+
+// SetFeeJournalEntryTx records the journal-entry id of the
+// registration-fee post. Run AFTER the accounting service returned a
+// successful entry id.
+func (s *ApplicationStore) SetFeeJournalEntryTx(ctx context.Context, tx pgx.Tx, appID, jeID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE membership_applications
+		   SET fee_journal_entry_id = $2, updated_at = now()
+		 WHERE id = $1
+	`, appID, jeID)
+	return err
+}
+
+// SetFeeRefundJournalEntryTx records the reversal journal-entry id
+// and flips fee_status to 'refunded'.
+func (s *ApplicationStore) SetFeeRefundJournalEntryTx(ctx context.Context, tx pgx.Tx, appID, jeID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE membership_applications
+		   SET fee_refund_journal_entry_id = $2,
+		       fee_status                  = 'refunded',
+		       updated_at                  = now()
+		 WHERE id = $1
+	`, appID, jeID)
+	return err
+}
+
+func valOrNil(p *string) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// normalizeGender coerces the free-form value captured at submission time
+// into a value the members.gender enum (male/female/other/undisclosed)
+// accepts. Single-letter shorthand from upstream forms is mapped to the
+// long form; anything unrecognised becomes 'undisclosed'.
+func normalizeGender(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "m", "male":
+		return "male"
+	case "f", "female":
+		return "female"
+	case "o", "other", "x":
+		return "other"
+	default:
+		return "undisclosed"
+	}
+}
+
+func (s *ApplicationStore) ListCorrectionsTx(ctx context.Context, tx pgx.Tx, appID uuid.UUID) ([]domain.CorrectionEvent, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id, application_id, event_kind, actor_user_id, note, created_at
+		  FROM membership_application_correction_history
+		 WHERE application_id = $1
+		 ORDER BY created_at DESC
+	`, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.CorrectionEvent{}
+	for rows.Next() {
+		var e domain.CorrectionEvent
+		if err := rows.Scan(&e.ID, &e.ApplicationID, &e.EventKind, &e.ActorUserID, &e.Note, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

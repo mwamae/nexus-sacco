@@ -51,6 +51,7 @@ type settingsResponse struct {
 	Branding   *domain.TenantBranding    `json:"branding"`
 	Region     *domain.TenantRegion      `json:"region"`
 	Operations *domain.TenantOperations  `json:"operations"`
+	Membership *domain.TenantMembership  `json:"membership"`
 }
 
 func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -69,9 +70,14 @@ func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		mb, err := h.Settings.GetOrInitMembershipTx(r.Context(), tx, tenant.ID)
+		if err != nil {
+			return err
+		}
 		out.Branding = b
 		out.Region = rg
 		out.Operations = op
+		out.Membership = mb
 		return nil
 	})
 	if err != nil {
@@ -443,6 +449,75 @@ func validateOps(p operationsPatchDTO) error {
 		return httpx.ErrBadRequest("approval_credit_limit must be ≤ approval_board_limit")
 	}
 	return nil
+}
+
+// ─────────── PATCH /v1/tenant/membership ───────────
+
+type membershipPatchDTO struct {
+	CollectRegistrationFee       *bool      `json:"collect_registration_fee"`
+	RegistrationFeeIndividual    *float64   `json:"registration_fee_individual"`
+	RegistrationFeeInstitutional *float64   `json:"registration_fee_institutional"`
+	AcceptedPaymentChannels      *[]string  `json:"accepted_payment_channels"`
+	FeeRefundableOnRejection     *bool      `json:"fee_refundable_on_rejection"`
+	DefaultDepositProductID      *uuid.UUID `json:"default_deposit_product_id"`
+}
+
+// validChannel enumerates the payment channels accepted as proof of
+// registration-fee payment. The set mirrors the deposit-channel enum
+// so the onboarding workflow + accounting auto-poster can resolve a
+// CoA cash code from the channel without a translation table.
+var validRegistrationChannels = map[string]bool{
+	"mpesa": true, "airtel_money": true, "bank_transfer": true,
+	"cash": true, "cheque": true,
+}
+
+func (h *SettingsHandler) UpdateMembership(w http.ResponseWriter, r *http.Request) {
+	tenant := middleware.TenantFrom(r)
+	var req membershipPatchDTO
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if req.RegistrationFeeIndividual != nil && *req.RegistrationFeeIndividual < 0 {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("registration_fee_individual must be ≥ 0"))
+		return
+	}
+	if req.RegistrationFeeInstitutional != nil && *req.RegistrationFeeInstitutional < 0 {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("registration_fee_institutional must be ≥ 0"))
+		return
+	}
+	if req.AcceptedPaymentChannels != nil {
+		for _, c := range *req.AcceptedPaymentChannels {
+			if !validRegistrationChannels[c] {
+				httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid payment channel: "+c+" (allowed: mpesa, airtel_money, bank_transfer, cash, cheque)"))
+				return
+			}
+		}
+	}
+
+	var updated *domain.TenantMembership
+	err := h.DB.WithTenantTx(r.Context(), tenant.ID, func(tx pgx.Tx) error {
+		patch := store.MembershipPatch{
+			CollectRegistrationFee:       req.CollectRegistrationFee,
+			RegistrationFeeIndividual:    req.RegistrationFeeIndividual,
+			RegistrationFeeInstitutional: req.RegistrationFeeInstitutional,
+			AcceptedPaymentChannels:      req.AcceptedPaymentChannels,
+			FeeRefundableOnRejection:     req.FeeRefundableOnRejection,
+			DefaultDepositProductID:      req.DefaultDepositProductID,
+		}
+		if err := h.Settings.UpdateMembershipTx(r.Context(), tx, tenant.ID, patch); err != nil {
+			return err
+		}
+		var err error
+		updated, err = h.Settings.GetOrInitMembershipTx(r.Context(), tx, tenant.ID)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	h.audit(r, tenant.ID, "tenant.membership_updated", nil)
+	httpx.OK(w, updated)
 }
 
 // ─────────── helpers ───────────

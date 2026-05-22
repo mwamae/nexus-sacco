@@ -324,3 +324,62 @@ func (s *SettingsStore) UpdateOperationsTx(ctx context.Context, tx pgx.Tx, tenan
 	)
 	return err
 }
+
+// ─────────── Membership ───────────
+
+func (s *SettingsStore) GetOrInitMembershipTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) (*domain.TenantMembership, error) {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO tenant_membership (tenant_id) VALUES ($1)
+		ON CONFLICT DO NOTHING
+	`, tenantID); err != nil {
+		return nil, err
+	}
+	var m domain.TenantMembership
+	err := tx.QueryRow(ctx, `
+		SELECT tenant_id, collect_registration_fee,
+		       registration_fee_individual, registration_fee_institutional,
+		       accepted_payment_channels, fee_refundable_on_rejection,
+		       default_deposit_product_id, updated_at
+		  FROM tenant_membership WHERE tenant_id = $1
+	`, tenantID).Scan(
+		&m.TenantID, &m.CollectRegistrationFee,
+		&m.RegistrationFeeIndividual, &m.RegistrationFeeInstitutional,
+		&m.AcceptedPaymentChannels, &m.FeeRefundableOnRejection,
+		&m.DefaultDepositProductID, &m.UpdatedAt,
+	)
+	return &m, err
+}
+
+type MembershipPatch struct {
+	CollectRegistrationFee       *bool
+	RegistrationFeeIndividual    *float64
+	RegistrationFeeInstitutional *float64
+	AcceptedPaymentChannels      *[]string
+	FeeRefundableOnRejection     *bool
+	DefaultDepositProductID      *uuid.UUID
+}
+
+func (s *SettingsStore) UpdateMembershipTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, p MembershipPatch) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO tenant_membership (tenant_id) VALUES ($1)
+		ON CONFLICT DO NOTHING
+	`, tenantID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `
+		UPDATE tenant_membership SET
+		  collect_registration_fee        = COALESCE($2, collect_registration_fee),
+		  registration_fee_individual     = COALESCE($3, registration_fee_individual),
+		  registration_fee_institutional  = COALESCE($4, registration_fee_institutional),
+		  accepted_payment_channels       = COALESCE($5::text[], accepted_payment_channels),
+		  fee_refundable_on_rejection     = COALESCE($6, fee_refundable_on_rejection),
+		  default_deposit_product_id      = COALESCE($7, default_deposit_product_id)
+		 WHERE tenant_id = $1
+	`, tenantID,
+		p.CollectRegistrationFee,
+		p.RegistrationFeeIndividual, p.RegistrationFeeInstitutional,
+		p.AcceptedPaymentChannels, p.FeeRefundableOnRejection,
+		p.DefaultDepositProductID,
+	)
+	return err
+}

@@ -241,7 +241,6 @@ type ApprovalToggles struct {
 	Withdrawal              bool `json:"withdrawal"`
 	DepositTransfer         bool `json:"deposit_transfer"`
 	SharePurchase           bool `json:"share_purchase"`
-	ShareRedeem             bool `json:"share_redeem"`
 	ShareTransfer           bool `json:"share_transfer"`
 	ShareBonus              bool `json:"share_bonus"`
 	ShareLien               bool `json:"share_lien"`
@@ -261,7 +260,7 @@ func (s *ApprovalsStore) GetTogglesTx(ctx context.Context, tx pgx.Tx) (*Approval
 	err := tx.QueryRow(ctx, `
 		SELECT
 			approval_deposit, approval_withdrawal, approval_deposit_transfer,
-			approval_share_purchase, approval_share_redeem, approval_share_transfer,
+			approval_share_purchase, approval_share_transfer,
 			approval_share_bonus, approval_share_lien,
 			approval_loan_disbursement, approval_loan_repayment, approval_loan_settle,
 			approval_loan_reverse, approval_loan_writeoff,
@@ -270,7 +269,7 @@ func (s *ApprovalsStore) GetTogglesTx(ctx context.Context, tx pgx.Tx) (*Approval
 		FROM tenant_operations
 	`).Scan(
 		&t.Deposit, &t.Withdrawal, &t.DepositTransfer,
-		&t.SharePurchase, &t.ShareRedeem, &t.ShareTransfer,
+		&t.SharePurchase, &t.ShareTransfer,
 		&t.ShareBonus, &t.ShareLien,
 		&t.LoanDisbursement, &t.LoanRepayment, &t.LoanSettle,
 		&t.LoanReverse, &t.LoanWriteoff,
@@ -285,7 +284,6 @@ type UpdateTogglesInput struct {
 	Withdrawal             *bool
 	DepositTransfer        *bool
 	SharePurchase          *bool
-	ShareRedeem            *bool
 	ShareTransfer          *bool
 	ShareBonus             *bool
 	ShareLien              *bool
@@ -307,22 +305,21 @@ func (s *ApprovalsStore) UpdateTogglesTx(ctx context.Context, tx pgx.Tx, in Upda
 			approval_withdrawal               = COALESCE($2,  approval_withdrawal),
 			approval_deposit_transfer         = COALESCE($3,  approval_deposit_transfer),
 			approval_share_purchase           = COALESCE($4,  approval_share_purchase),
-			approval_share_redeem             = COALESCE($5,  approval_share_redeem),
-			approval_share_transfer           = COALESCE($6,  approval_share_transfer),
-			approval_share_bonus              = COALESCE($7,  approval_share_bonus),
-			approval_share_lien               = COALESCE($8,  approval_share_lien),
-			approval_loan_disbursement        = COALESCE($9,  approval_loan_disbursement),
-			approval_loan_repayment           = COALESCE($10, approval_loan_repayment),
-			approval_loan_settle              = COALESCE($11, approval_loan_settle),
-			approval_loan_reverse             = COALESCE($12, approval_loan_reverse),
-			approval_loan_writeoff            = COALESCE($13, approval_loan_writeoff),
-			approval_loan_reschedule          = COALESCE($14, approval_loan_reschedule),
-			approval_loan_moratorium          = COALESCE($15, approval_loan_moratorium),
-			approval_loan_settlement_discount = COALESCE($16, approval_loan_settlement_discount),
-			approval_allow_self               = COALESCE($17, approval_allow_self)
+			approval_share_transfer           = COALESCE($5,  approval_share_transfer),
+			approval_share_bonus              = COALESCE($6,  approval_share_bonus),
+			approval_share_lien               = COALESCE($7,  approval_share_lien),
+			approval_loan_disbursement        = COALESCE($8,  approval_loan_disbursement),
+			approval_loan_repayment           = COALESCE($9,  approval_loan_repayment),
+			approval_loan_settle              = COALESCE($10, approval_loan_settle),
+			approval_loan_reverse             = COALESCE($11, approval_loan_reverse),
+			approval_loan_writeoff            = COALESCE($12, approval_loan_writeoff),
+			approval_loan_reschedule          = COALESCE($13, approval_loan_reschedule),
+			approval_loan_moratorium          = COALESCE($14, approval_loan_moratorium),
+			approval_loan_settlement_discount = COALESCE($15, approval_loan_settlement_discount),
+			approval_allow_self               = COALESCE($16, approval_allow_self)
 	`,
 		in.Deposit, in.Withdrawal, in.DepositTransfer,
-		in.SharePurchase, in.ShareRedeem, in.ShareTransfer,
+		in.SharePurchase, in.ShareTransfer,
 		in.ShareBonus, in.ShareLien,
 		in.LoanDisbursement, in.LoanRepayment, in.LoanSettle,
 		in.LoanReverse, in.LoanWriteoff,
@@ -346,8 +343,6 @@ func (t *ApprovalToggles) IsKindGated(k domain.ApprovalKind) bool {
 		return t.DepositTransfer
 	case domain.ApprovalKindSharePurchase:
 		return t.SharePurchase
-	case domain.ApprovalKindShareRedeem:
-		return t.ShareRedeem
 	case domain.ApprovalKindShareTransfer:
 		return t.ShareTransfer
 	case domain.ApprovalKindShareBonus:

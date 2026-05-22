@@ -478,11 +478,23 @@ export type TenantOperations = {
   updated_at: string;
 };
 
+export type TenantMembership = {
+  tenant_id: string;
+  collect_registration_fee: boolean;
+  registration_fee_individual: number;
+  registration_fee_institutional: number;
+  accepted_payment_channels: string[];
+  fee_refundable_on_rejection: boolean;
+  default_deposit_product_id?: string | null;
+  updated_at: string;
+};
+
 export type TenantSettings = {
   tenant: ApiTenant;
   branding: TenantBranding;
   region: TenantRegion;
   operations: TenantOperations;
+  membership: TenantMembership;
 };
 
 export async function getTenantSettings(): Promise<TenantSettings> {
@@ -545,6 +557,252 @@ export async function updateOperations(patch: Partial<TenantOperations>): Promis
   const { tenant_id: _t, updated_at: _u, ...body } = patch;
   void _t; void _u;
   const r = await api.patch('/v1/tenant/operations', body);
+  return r.data.data;
+}
+
+export async function updateMembership(patch: Partial<TenantMembership>): Promise<TenantMembership> {
+  // Strip server-managed fields — the backend rejects unknown JSON keys.
+  const { tenant_id: _t, updated_at: _u, ...body } = patch;
+  void _t; void _u;
+  const r = await api.patch('/v1/tenant/membership', body);
+  return r.data.data;
+}
+
+// ─────────── Membership applications (unified pipeline) ───────────
+
+export type ApplicationKind = 'individual' | 'institutional';
+export type ApplicationStatus =
+  | 'submitted'
+  | 'under_review'
+  | 'returned_for_correction'
+  | 'reviewed_pending_approval'
+  | 'approved_active'
+  | 'declined'
+  | 'withdrawn';
+
+export type ApplicantPayload = {
+  date_of_birth?: string;
+  gender?: string;
+  nationality?: string;
+  id_doc_kind?: string;
+  id_doc_number?: string;
+  kra_pin?: string;
+  occupation?: string;
+  employer?: string;
+  monthly_income?: string;
+  next_of_kin_name?: string;
+  next_of_kin_relation?: string;
+  next_of_kin_phone?: string;
+  next_of_kin_id_number?: string;
+
+  registered_name?: string;
+  trading_name?: string;
+  registration_number?: string;
+  date_of_registration?: string;
+  industry?: string;
+  nature_of_business?: string;
+  board_resolution_ref?: string;
+  beneficial_owners?: string;
+
+  physical_address?: string;
+  postal_address?: string;
+  county?: string;
+  sub_county?: string;
+  ward?: string;
+
+  notes?: string;
+};
+
+export type MembershipApplication = {
+  id: string;
+  tenant_id: string;
+  application_no: string;
+  kind: ApplicationKind;
+  status: ApplicationStatus;
+  applicant_name: string;
+  entity_type?: string | null;
+  primary_phone?: string | null;
+  primary_email?: string | null;
+  branch_id?: string | null;
+  applicant_payload: ApplicantPayload;
+
+  fee_required: boolean;
+  fee_amount_due: string;
+  fee_amount_paid: string;
+  fee_payment_channel?: string | null;
+  fee_payment_reference?: string | null;
+  fee_payment_date?: string | null;
+  fee_proof_doc_path?: string | null;
+  fee_shortfall_note?: string | null;
+  fee_status: 'not_required' | 'paid' | 'shortfall' | 'not_paid' | 'refund_pending' | 'refunded';
+
+  submitted_at: string;
+  submitted_by: string;
+
+  reviewer_user_id?: string | null;
+  review_started_at?: string | null;
+  review_completed_at?: string | null;
+  review_summary_note?: string | null;
+
+  approver_user_id?: string | null;
+  approved_at?: string | null;
+  decline_reason?: string | null;
+  approval_conditions?: string | null;
+  workflow_instance_id?: string | null;
+
+  withdrawn_at?: string | null;
+  withdrawn_by?: string | null;
+  withdraw_reason?: string | null;
+
+  // Activation linkage (Phase D)
+  materialized_member_id?: string | null;
+  materialized_at?: string | null;
+  fee_journal_entry_id?: string | null;
+  fee_refund_journal_entry_id?: string | null;
+
+  created_at: string;
+  updated_at: string;
+  days_in_queue: number;
+};
+
+export type ActivationResult = {
+  MemberID: string;
+  MemberNo: string;
+  ShareAccountID: string;
+  ShareAccountNo: string;
+  DepositAccountID?: string | null;
+  DepositAccountNo?: string | null;
+};
+
+export type ChecklistItem = {
+  id: string;
+  kind: ApplicationKind;
+  code: string;
+  label: string;
+  description?: string | null;
+  mandatory: boolean;
+  display_order: number;
+  is_active: boolean;
+};
+
+export type ChecklistResponse = {
+  id: string;
+  application_id: string;
+  checklist_code: string;
+  response: 'confirmed' | 'flagged' | 'n/a';
+  note?: string | null;
+  responded_by: string;
+  responded_at: string;
+};
+
+export type CorrectionEvent = {
+  id: string;
+  application_id: string;
+  event_kind: 'returned' | 'resubmitted';
+  actor_user_id: string;
+  note: string;
+  created_at: string;
+};
+
+export type ApplicationDetail = {
+  application: MembershipApplication;
+  checklist_items: ChecklistItem[];
+  checklist_responses: ChecklistResponse[];
+  correction_history: CorrectionEvent[];
+};
+
+export type ApplicationListFilters = {
+  kind?: ApplicationKind | '';
+  status?: ApplicationStatus | '';
+  fee_status?: string;
+  unassigned?: boolean;
+  branch_id?: string;
+  submitted_by?: string;
+  from?: string;
+  to?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function createApplication(input: {
+  kind: ApplicationKind;
+  applicant_name: string;
+  entity_type?: string;
+  primary_phone?: string;
+  primary_email?: string;
+  branch_id?: string;
+  applicant_payload: ApplicantPayload;
+  registration_fee?: {
+    amount_paid: string;
+    payment_channel: string;
+    payment_reference: string;
+    payment_date: string;
+    proof_doc_path?: string;
+    shortfall_note?: string;
+  };
+}): Promise<MembershipApplication> {
+  const r = await api.post('/v1/applications', input);
+  return r.data.data;
+}
+
+export async function listApplications(f: ApplicationListFilters = {}): Promise<{ items: MembershipApplication[]; total: number }> {
+  const q = new URLSearchParams();
+  if (f.kind)         q.set('kind', f.kind);
+  if (f.status)       q.set('status', f.status);
+  if (f.fee_status)   q.set('fee_status', f.fee_status);
+  if (f.unassigned)   q.set('unassigned', 'true');
+  if (f.branch_id)    q.set('branch_id', f.branch_id);
+  if (f.submitted_by) q.set('submitted_by', f.submitted_by);
+  if (f.from)         q.set('from', f.from);
+  if (f.to)           q.set('to', f.to);
+  if (f.q)            q.set('q', f.q);
+  if (f.limit)        q.set('limit', String(f.limit));
+  if (f.offset)       q.set('offset', String(f.offset));
+  const r = await api.get('/v1/applications' + (q.toString() ? '?' + q.toString() : ''));
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function getApplication(id: string): Promise<ApplicationDetail> {
+  const r = await api.get(`/v1/applications/${id}`);
+  return r.data.data;
+}
+
+export async function listApplicationChecklistItems(kind: ApplicationKind): Promise<{ items: ChecklistItem[]; total: number }> {
+  const r = await api.get(`/v1/applications/checklist-items?kind=${kind}`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+async function appTransition(id: string, op: string, body: Record<string, string> = {}): Promise<MembershipApplication> {
+  const r = await api.post(`/v1/applications/${id}/${op}`, body);
+  return r.data.data;
+}
+export const startReview          = (id: string)                    => appTransition(id, 'start-review');
+export const returnForCorrection  = (id: string, note: string)      => appTransition(id, 'return-for-correction', { note });
+export const resubmitApplication  = (id: string, note: string)      => appTransition(id, 'resubmit', { note });
+export const submitForApproval    = (id: string, note?: string)     => appTransition(id, 'submit-for-approval', note ? { note } : {});
+export const declineApplication   = (id: string, reason: string)    => appTransition(id, 'decline', { decline_reason: reason });
+export const returnToReviewer     = (id: string, note: string)      => appTransition(id, 'return-to-reviewer', { note });
+export const withdrawApplication  = (id: string, reason: string)    => appTransition(id, 'withdraw', { note: reason });
+
+// Approve returns a richer envelope so the UI can show the new member
+// number + share/deposit account numbers without an extra fetch.
+export async function approveApplication(id: string, conditions?: string): Promise<{ application: MembershipApplication; activation: ActivationResult | null }> {
+  const r = await api.post(`/v1/applications/${id}/approve`, conditions ? { conditions } : {});
+  return r.data.data;
+}
+
+export async function postRegistrationFeeRefund(id: string): Promise<MembershipApplication> {
+  const r = await api.post(`/v1/applications/${id}/post-refund`);
+  return r.data.data;
+}
+
+export async function respondToChecklist(applicationID: string, input: {
+  code: string;
+  response: 'confirmed' | 'flagged' | 'n/a';
+  note?: string;
+}): Promise<ChecklistResponse> {
+  const r = await api.post(`/v1/applications/${applicationID}/checklist`, input);
   return r.data.data;
 }
 
@@ -1496,9 +1754,14 @@ export async function createWorkflowInstance(input: {
 // Shares sub-module (services/savings)
 // ═══════════════════════════════════════════════════════════════════
 
+// Note: 'redemption' is kept in the type union for historical ledger
+// rows only. New transactions cannot be created with this type —
+// share capital is equity in this SACCO and cannot be redeemed; an
+// exiting member must transfer their shares to another active member.
 export type ShareTxnType =
   | 'purchase' | 'transfer_in' | 'transfer_out'
-  | 'redemption' | 'adjustment' | 'bonus_issue';
+  | 'adjustment' | 'bonus_issue'
+  | 'redemption';
 
 export type SharePaymentChannel =
   | 'cash' | 'mpesa' | 'airtel_money' | 'bank_transfer'
@@ -1674,17 +1937,9 @@ export async function transferShares(memberId: string, input: {
   return unwrapCash(r);
 }
 
-export async function redeemShares(memberId: string, input: {
-  shares: number;
-  reason: string;
-  payment_channel?: SharePaymentChannel;
-  payment_ref?: string;
-  narration?: string;
-  acknowledge_below_minimum?: boolean;
-}): Promise<CashActionResult<ShareTxnResponse>> {
-  const r = await api.post(`/v1/share-accounts/by-member/${memberId}/redeem`, input);
-  return unwrapCash(r);
-}
+// Share redemption is intentionally removed — share capital is
+// equity in this SACCO. Exiting members must use `transferShares` to
+// move their balance to another active member.
 
 export async function adjustShares(memberId: string, input: {
   shares_delta: number;
@@ -3258,7 +3513,7 @@ export async function getMemberLoanHistory(memberId: string): Promise<MemberLoan
 
 export type ApprovalKind =
   | 'deposit' | 'withdrawal' | 'deposit_transfer'
-  | 'share_purchase' | 'share_redeem' | 'share_transfer' | 'share_bonus'
+  | 'share_purchase' | 'share_transfer' | 'share_bonus'
   | 'loan_disbursement' | 'loan_repayment' | 'loan_settle' | 'loan_reverse'
   | 'loan_writeoff' | 'loan_reschedule' | 'loan_moratorium' | 'loan_settlement_discount';
 
@@ -3291,7 +3546,6 @@ export type ApprovalToggles = {
   withdrawal: boolean;
   deposit_transfer: boolean;
   share_purchase: boolean;
-  share_redeem: boolean;
   share_transfer: boolean;
   share_bonus: boolean;
   share_lien: boolean;

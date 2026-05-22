@@ -68,7 +68,9 @@ func Routes(d Deps) http.Handler {
 				r.With(middleware.RequirePermission("shares:view")).Get("/certificate", d.Share.CurrentCertificate)
 				r.With(middleware.RequirePermission("shares:buy")).Post("/purchase", d.Share.Purchase)
 				r.With(middleware.RequirePermission("shares:transfer")).Post("/transfer", d.Share.Transfer)
-				r.With(middleware.RequirePermission("shares:redeem")).Post("/redeem", d.Share.Redeem)
+				// Share redemption removed — share capital is equity; an
+				// exiting member must transfer their shares to another
+				// active member via /transfer.
 				r.With(middleware.RequirePermission("shares:adjust")).Post("/adjust", d.Share.Adjust)
 				r.With(middleware.RequirePermission("shares:lien")).Post("/lien", d.Share.PlaceLien)
 			})

@@ -26,6 +26,11 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       allowedHosts: [appDomain, `.${appDomain}`],
       proxy: {
+        '/api/v1/applications': {
+          target: memberTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/members': {
           target: memberTarget,
           changeOrigin: false,

@@ -574,12 +574,56 @@ func channelCashAccount(ch domain.DepositChannel) string {
 // committed, so we don't unwind. A follow-up reconciliation report
 // surfaces unposted transactions; the accounting team can replay them
 // via the manual journal entry path.
+// resolveLiabilityAcct opens a short tenant-scoped read tx to look up
+// the deposit account's product and map its product_type to a CoA
+// liability code. Falls back to 2000 if the lookup fails so the GL
+// post still succeeds (degrades to the old behaviour).
+func (h *DepositHandler) resolveLiabilityAcct(r *http.Request, tenantID uuid.UUID, productID uuid.UUID) string {
+	liab := "2000"
+	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		p, err := h.Products.GetTx(r.Context(), tx, productID)
+		if err == nil && p != nil {
+			liab = depositLiabilityCode(p.ProductType)
+		}
+		return nil
+	})
+	return liab
+}
+
+// depositLiabilityCode resolves the CoA liability account for a
+// deposit product. Each savings product is a distinct line on the
+// SACCO's balance sheet — fixed deposits are not the same liability
+// as ordinary savings, even though both credit a member's account.
+//
+// Falls back to 2000 Ordinary Savings if the product type is
+// unrecognised so a typo doesn't silently drop the post.
+func depositLiabilityCode(productType domain.DepositProductType) string {
+	switch productType {
+	case domain.ProductOrdinary:
+		return "2000"
+	case domain.ProductHoliday:
+		return "2010"
+	case domain.ProductEmergency:
+		return "2020"
+	case domain.ProductGoal:
+		return "2030"
+	case domain.ProductJunior:
+		return "2040"
+	case domain.ProductFixed:
+		return "2100"
+	}
+	return "2000"
+}
+
 func (h *DepositHandler) postDepositToGL(r *http.Request, tenantID uuid.UUID, result *DepositResult, ch domain.DepositChannel) {
 	if h.Posting == nil || result == nil {
 		return
 	}
 	amount := result.Transaction.Amount
 	cashAcct := channelCashAccount(ch)
+	// Resolve the product so we credit the right liability account
+	// (e.g. fixed deposits go to 2100, not 2000).
+	liabAcct := h.resolveLiabilityAcct(r, tenantID, result.Account.ProductID)
 	narration := fmt.Sprintf("Deposit %s to a/c %s",
 		amount.StringFixed(2), result.Account.AccountNo)
 	err := h.Posting.Post(r.Context(), posting.PostInput{
@@ -590,7 +634,7 @@ func (h *DepositHandler) postDepositToGL(r *http.Request, tenantID uuid.UUID, re
 		Narration:    narration,
 		Lines: []posting.Line{
 			{AccountCode: cashAcct, Debit: amount, Narration: "Cash received"},
-			{AccountCode: "2000", Credit: amount, Narration: "Member savings credited"},
+			{AccountCode: liabAcct, Credit: amount, Narration: "Member savings credited"},
 		},
 	})
 	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
@@ -600,7 +644,7 @@ func (h *DepositHandler) postDepositToGL(r *http.Request, tenantID uuid.UUID, re
 }
 
 // postWithdrawalToGL fires the auto-post for a withdrawal. Spec rule:
-//     Debit  member savings   (liability)
+//     Debit  member savings   (product-specific liability)
 //     Credit cash/m-pesa      (per channel)
 func (h *DepositHandler) postWithdrawalToGL(r *http.Request, tenantID uuid.UUID, result *WithdrawalResult, ch domain.DepositChannel) {
 	if h.Posting == nil || result == nil {
@@ -608,6 +652,7 @@ func (h *DepositHandler) postWithdrawalToGL(r *http.Request, tenantID uuid.UUID,
 	}
 	amount := result.Transaction.Amount
 	cashAcct := channelCashAccount(ch)
+	liabAcct := h.resolveLiabilityAcct(r, tenantID, result.Account.ProductID)
 	narration := fmt.Sprintf("Withdrawal %s from a/c %s",
 		amount.StringFixed(2), result.Account.AccountNo)
 	err := h.Posting.Post(r.Context(), posting.PostInput{
@@ -617,7 +662,7 @@ func (h *DepositHandler) postWithdrawalToGL(r *http.Request, tenantID uuid.UUID,
 		SourceRef:    result.Transaction.ID.String(),
 		Narration:    narration,
 		Lines: []posting.Line{
-			{AccountCode: "2000", Debit: amount, Narration: "Member savings debited"},
+			{AccountCode: liabAcct, Debit: amount, Narration: "Member savings debited"},
 			{AccountCode: cashAcct, Credit: amount, Narration: "Cash paid out"},
 		},
 	})

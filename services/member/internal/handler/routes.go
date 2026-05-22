@@ -12,13 +12,14 @@ import (
 )
 
 type Deps struct {
-	Member      *MemberHandler
-	Org         *OrgHandler
-	Status      *StatusHandler
-	TenantStore *store.TenantStore
-	Issuer      *auth.TokenIssuer
-	AppDomain   string
-	Logger      *slog.Logger
+	Member       *MemberHandler
+	Org          *OrgHandler
+	Status       *StatusHandler
+	Applications *ApplicationHandler
+	TenantStore  *store.TenantStore
+	Issuer       *auth.TokenIssuer
+	AppDomain    string
+	Logger       *slog.Logger
 }
 
 func Routes(d Deps) http.Handler {
@@ -90,6 +91,22 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:view")).Get("/members/status/summary", d.Status.Summary)
 			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/preview", d.Status.DormancyPreview)
 			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/run", d.Status.DormancyRun)
+
+			// ─────────── Membership applications (unified pipeline) ───────────
+			r.With(middleware.RequirePermission("members:create")).Post("/applications", d.Applications.Create)
+			r.With(middleware.RequirePermission("members:view")).Get("/applications", d.Applications.List)
+			r.With(middleware.RequirePermission("members:view")).Get("/applications/checklist-items", d.Applications.ListChecklistItems)
+			r.With(middleware.RequirePermission("members:view")).Get("/applications/{id}", d.Applications.Get)
+			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/start-review", d.Applications.StartReview)
+			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/return-for-correction", d.Applications.ReturnForCorrection)
+			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/resubmit", d.Applications.Resubmit)
+			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/submit-for-approval", d.Applications.SubmitForApproval)
+			r.With(middleware.RequirePermission("members:approve")).Post("/applications/{id}/approve", d.Applications.Approve)
+			r.With(middleware.RequirePermission("members:approve")).Post("/applications/{id}/decline", d.Applications.Decline)
+			r.With(middleware.RequirePermission("members:approve")).Post("/applications/{id}/return-to-reviewer", d.Applications.ReturnToReviewer)
+			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/withdraw", d.Applications.Withdraw)
+			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/checklist", d.Applications.RespondChecklist)
+			r.With(middleware.RequirePermission("members:approve")).Post("/applications/{id}/post-refund", d.Applications.PostRefund)
 		})
 
 		// Workflow callback — public-ish (no auth) but constrained: only

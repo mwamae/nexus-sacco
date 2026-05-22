@@ -78,6 +78,7 @@ func Routes(d Deps) http.Handler {
 				r.With(middleware.RequirePermission("tenant:settings:edit")).Delete("/tenant/branding/logo", d.Settings.ClearLogo)
 				r.With(middleware.RequirePermission("tenant:settings:edit")).Patch("/tenant/region", d.Settings.UpdateRegion)
 				r.With(middleware.RequirePermission("tenant:settings:edit")).Patch("/tenant/operations", d.Settings.UpdateOperations)
+				r.With(middleware.RequirePermission("tenant:settings:edit")).Patch("/tenant/membership", d.Settings.UpdateMembership)
 			})
 
 			// Staff management — works on tenant subdomain OR platform host.

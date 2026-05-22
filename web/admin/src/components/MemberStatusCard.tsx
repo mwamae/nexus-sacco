@@ -287,6 +287,15 @@ function ChangeModal({
               <strong>Sensitive transition.</strong> This routes through the approval workflow engine — the member's status stays unchanged until every required level approves.
             </div>
           )}
+          {transition.To === 'exited' && (
+            <div className="alert alert-warn">
+              <strong>Shares must be transferred first.</strong>{' '}
+              Share capital is equity and cannot be redeemed for cash. The
+              member's share balance must be fully transferred to one or
+              more active members via the Shares panel before this exit
+              can be finalized.
+            </div>
+          )}
           {err && <div className="alert alert-error">{err}</div>}
 
           <p className="muted tiny" style={{ marginTop: 0 }}>{transition.Note}</p>

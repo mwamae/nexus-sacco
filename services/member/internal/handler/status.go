@@ -24,6 +24,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/nexussacco/member/internal/db"
 	"github.com/nexussacco/member/internal/domain"
@@ -192,6 +193,38 @@ func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest(err.Error()))
 		return
 	}
+
+	// Exit guard: share capital is equity and cannot be redeemed for
+	// cash. An exiting member must have transferred their full share
+	// balance to another active member before this transition is
+	// allowed. Refuse the move if any shares are still held — the UI
+	// surfaces this message verbatim in the exit workflow.
+	if target == domain.StatusExited {
+		var sharesHeld int
+		err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+			return tx.QueryRow(r.Context(),
+				`SELECT COALESCE(shares_held, 0) FROM share_accounts WHERE member_id = $1`,
+				m.ID,
+			).Scan(&sharesHeld)
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, store.ErrNotFound) {
+			// share_accounts may not exist in some test contexts — treat
+			// "table not found" as zero shares so the member service stays
+			// usable independently. Real production has the table.
+			if !isMissingShareAccountsTable(err) {
+				httpx.WriteErr(w, r, err)
+				return
+			}
+			sharesHeld = 0
+		}
+		if sharesHeld > 0 {
+			httpx.WriteErr(w, r, httpx.ErrConflict(
+				"Your share balance must be fully transferred to active members before your exit can be finalized. Share capital cannot be redeemed.",
+			))
+			return
+		}
+	}
+
 	sensitive := domain.IsSensitive(m.Status, target) && !(req.SkipWorkflow && isAdmin)
 
 	if !sensitive {
@@ -772,4 +805,16 @@ func itoa(i int) string {
 		b[pos] = '-'
 	}
 	return string(b[pos:])
+}
+
+// isMissingShareAccountsTable returns true when the share_accounts
+// table doesn't exist in the database. Lets the exit guard degrade
+// gracefully in test environments that bring up the member service
+// without savings migrations.
+func isMissingShareAccountsTable(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "42P01"
+	}
+	return false
 }
