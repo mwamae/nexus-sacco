@@ -83,6 +83,11 @@ func main() {
 	loanGuarStore := store.NewLoanGuaranteeStore(pool.Pool)
 	loanStore := store.NewLoanStore(pool.Pool)
 	loanCollectionsStore := store.NewLoanCollectionsStore(pool.Pool)
+	// Bridge: every RecalcDPDTx call now auto-enqueues a collections
+	// case for loans that slip into arrears, not just the nightly
+	// cron. See loan_store.go.SetCollections + loan_repayment_store.go
+	// RecalcDPDTx for the contract.
+	loanStore.SetCollections(loanCollectionsStore)
 	loanRestructureStore := store.NewLoanRestructureStore(pool.Pool)
 	loanReportsStore := store.NewLoanReportsStore(pool.Pool)
 	approvalsStore := store.NewApprovalsStore(pool.Pool)

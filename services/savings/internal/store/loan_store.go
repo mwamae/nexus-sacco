@@ -23,10 +23,24 @@ import (
 
 type LoanStore struct {
 	pool *pgxpool.Pool
+	// Optional — when set, RecalcDPDTx auto-opens a collection case
+	// any time the loan slips into arrears. Wired via SetCollections
+	// in main.go so we don't have to take it as a constructor arg
+	// (and create a chicken-and-egg with LoanCollectionsStore).
+	// Nil-safe: a test or migration that constructs LoanStore
+	// directly without setting Collections still works; it just
+	// doesn't bridge to the queue.
+	collections *LoanCollectionsStore
 }
 
 func NewLoanStore(pool *pgxpool.Pool) *LoanStore {
 	return &LoanStore{pool: pool}
+}
+
+// SetCollections attaches the collections bridge. Call this once at
+// startup from main.go after both stores have been constructed.
+func (s *LoanStore) SetCollections(c *LoanCollectionsStore) {
+	s.collections = c
 }
 
 const loanCols = `

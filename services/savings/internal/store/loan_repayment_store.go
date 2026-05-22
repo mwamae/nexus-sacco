@@ -537,6 +537,26 @@ func (s *LoanStore) RecalcDPDTx(ctx context.Context, tx pgx.Tx, loanID uuid.UUID
 	`, loanID, dpd, classification, string(res.NewStatus)); err != nil {
 		return nil, err
 	}
+
+	// Bridge to the collections queue. Runs from EVERY caller of
+	// RecalcDPDTx now, not just the nightly cron — repayment-posting,
+	// repayment-reversal, and the manual /recalc-dpd endpoint all
+	// trigger it too. EnsureCaseForLoanTx is idempotent on (loan_id +
+	// open status), so re-firing for a loan that's already enqueued
+	// is a no-op. Recovery (auto-close on dpd == 0) is still owned by
+	// the cron's AfterDPDRecalcTx — only opening lives here, because
+	// only opening is the bug that strands loans off the queue.
+	if s.collections != nil && dpd > 0 {
+		// Re-read after the UPDATE so EnsureCaseForLoanTx sees the
+		// fresh dpd + classification when stamping the case.
+		freshLoan, gerr := s.GetTx(ctx, tx, loanID)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if _, gerr := s.collections.EnsureCaseForLoanTx(ctx, tx, freshLoan); gerr != nil {
+			return nil, gerr
+		}
+	}
 	return res, nil
 }
 

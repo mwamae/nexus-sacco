@@ -32,6 +32,7 @@ import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
 import { MemberStatusCard } from '../components/MemberStatusCard';
 import { MemberAccountsPanel } from '../components/MemberAccountsPanel';
+import { MemberAccountsSummary } from '../components/MemberAccountsSummary';
 import { MemberLedgerPanel } from '../components/MemberLedgerPanel';
 import { Icon, type IconName } from '../components/Icon';
 import { AsyncPanel, isTimeoutError, useAsyncPanel } from '../components/AsyncPanel';
@@ -782,13 +783,19 @@ function BeneficiariesCard({ beneficiaries }: { beneficiaries: ApiRelation[] }) 
 function AccountsTab({ currency, memberId }: { currency: string; memberId: string }) {
   return (
     <>
+      {/* Compact "what does this member have?" snapshot. Includes
+          loans (unlike MemberAccountsPanel below) so officers see all
+          three account types in one place before drilling in. Each
+          row links into the source module. */}
+      <MemberAccountsSummary memberId={memberId} currency={currency} />
       {/* MemberAccountsPanel renders the per-account editor view —
-          shares + every deposit account with balances, KPIs, and the
-          per-account transaction history. This serves as the
-          "Accounts" section requested in the spec; loans live in
-          their own tab. */}
+          shares + every deposit account with their action buttons
+          (Buy / Transfer / Deposit / Withdraw) + per-account txn
+          history. Kept below the summary so the snapshot above is
+          the user's first read. */}
       <MemberAccountsPanel memberId={memberId} currency={currency} />
-      {/* Below: the unified ledger across all three modules. */}
+      {/* The unified ledger panel — debits / credits across every
+          module, paginated. */}
       <MemberLedgerPanel memberId={memberId} currency={currency} />
     </>
   );
