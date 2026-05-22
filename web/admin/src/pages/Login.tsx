@@ -3,6 +3,15 @@ import { useAuth } from '../auth/AuthContext';
 import { currentTenantSlug, isPlatformHost } from '../auth/tenant';
 import { extractError, passwordForgot, type MFARequiredResponse } from '../api/client';
 
+// Distinguish bad-credential rejections (server reached, said no) from
+// network/timeout/5xx (couldn't reach the server reliably) so the user
+// sees an actionable message instead of "Login failed".
+function loginErrorMessage(err: unknown): string {
+  const status = (err as { response?: { status?: number } })?.response?.status;
+  if (status === 401) return "Email or password doesn't match.";
+  return "Couldn't sign you in. Check your connection or try again.";
+}
+
 type Mode = 'login' | 'mfa' | 'forgot' | 'forgot_sent';
 
 export default function Login() {
@@ -31,7 +40,10 @@ export default function Login() {
         setMode('mfa');
       }
     } catch (err) {
-      setError(extractError(err, 'Login failed'));
+      setError(loginErrorMessage(err));
+      // Keep the email so the user doesn't retype it; only clear the
+      // password so a wrong/stale value isn't quietly resubmitted.
+      setPassword('');
     } finally {
       setBusy(false);
     }

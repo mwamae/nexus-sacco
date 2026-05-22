@@ -196,7 +196,10 @@ export type MeResponse = {
 };
 
 export async function login(email: string, password: string): Promise<LoginResult> {
-  const r = await api.post('/v1/auth/login', { email, password });
+  // Explicit per-call timeout so a wedged backend can never park the
+  // submit button at "Signing in…" indefinitely — even if the shared
+  // instance default is later changed.
+  const r = await api.post('/v1/auth/login', { email, password }, { timeout: 12000 });
   return r.data.data;
 }
 
