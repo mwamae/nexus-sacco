@@ -140,7 +140,10 @@ func (s *LoanApplicationStore) ListTx(ctx context.Context, tx pgx.Tx, f AppListF
 		idx++
 	}
 	if f.MemberID != nil {
-		where += fmt.Sprintf(" AND a.member_id = $%d", idx)
+		// Filter by the counterparty bridge (Phase D sub-PR 1) — the
+		// caller still passes a members.id, but we resolve through the
+		// indexed counterparty_id column.
+		where += fmt.Sprintf(" AND a.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $%d)", idx)
 		args = append(args, *f.MemberID)
 		idx++
 	}
@@ -337,7 +340,7 @@ func (s *LoanApplicationStore) GatherScoringInputsTx(
 	// Shares.
 	if err := tx.QueryRow(ctx, `
 		SELECT COALESCE(a.shares_held, 0)
-		FROM share_accounts a WHERE a.member_id = $1
+		FROM share_accounts a WHERE a.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 	`, memberID).Scan(&in.SharesHeld); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
@@ -348,13 +351,13 @@ func (s *LoanApplicationStore) GatherScoringInputsTx(
 	// Deposit balance + 12-month inflow stats.
 	_ = tx.QueryRow(ctx, `
 		SELECT COALESCE(SUM(current_balance), 0)
-		FROM deposit_accounts WHERE member_id = $1 AND status = 'active'
+		FROM deposit_accounts WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1) AND status = 'active'
 	`, memberID).Scan(&in.DepositsBalance)
 
 	_ = tx.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(amount), 0)
 		FROM deposit_transactions
-		WHERE member_id = $1
+		WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 		  AND txn_type IN ('deposit', 'transfer_in', 'opening_balance')
 		  AND posted_at > now() - INTERVAL '12 months'
 	`, memberID).Scan(&in.DepositTxnCount12mo, &in.TotalDeposited12mo)
@@ -371,7 +374,7 @@ func (s *LoanApplicationStore) GatherScoringInputsTx(
 			COALESCE(SUM(CASE WHEN status IN ('active', 'in_arrears', 'restructured') AND product_id = $2 THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'settled' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'written_off' THEN 1 ELSE 0 END), 0)
-		FROM loans WHERE member_id = $1
+		FROM loans WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 	`, memberID, productID).Scan(
 		&in.ActiveLoans, &in.ActiveLoansInArrears, &in.ActiveLoansSameProduct,
 		&in.SettledLoans, &writtenOff,

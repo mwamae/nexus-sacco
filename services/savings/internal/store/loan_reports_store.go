@@ -259,7 +259,7 @@ func (s *LoanReportsStore) MemberLoanHistoryTx(ctx context.Context, tx pgx.Tx, m
 		       COALESCE(SUM(CASE WHEN status IN ('active','in_arrears','restructured') THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(principal_disbursed), 0),
 		       COALESCE(SUM(CASE WHEN status IN ('active','in_arrears','restructured') THEN principal_balance + interest_balance + fees_balance + penalty_balance ELSE 0 END), 0)
-		FROM loans WHERE member_id = $1
+		FROM loans WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 	`, memberID).Scan(&out.TotalLoansEverTaken, &out.ActiveLoans, &out.TotalDisbursed, &out.TotalOutstanding)
 	if err != nil {
 		return nil, err
@@ -268,7 +268,7 @@ func (s *LoanReportsStore) MemberLoanHistoryTx(ctx context.Context, tx pgx.Tx, m
 		SELECT `+prefixCols(loanCols, "l")+`, p.code, p.name
 		FROM loans l
 		JOIN loan_products p ON p.id = l.product_id
-		WHERE l.member_id = $1
+		WHERE l.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 		ORDER BY l.created_at DESC
 	`, memberID)
 	if err != nil {

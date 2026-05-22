@@ -76,8 +76,10 @@ const accountCols = `
 // missing. The first-purchase timestamp stays nil until the first
 // crediting transaction posts.
 func (s *ShareStore) EnsureAccountTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID, parValue decimal.Decimal) (*domain.ShareAccount, error) {
-	// Try existing first.
-	row := tx.QueryRow(ctx, `SELECT `+accountCols+` FROM share_accounts WHERE member_id = $1`, memberID)
+	// Try existing first. Read by counterparty_id (Phase D sub-PR 1);
+	// the BEFORE INSERT trigger keeps the bridge column populated, so
+	// the row we may have just inserted is found via the same filter.
+	row := tx.QueryRow(ctx, `SELECT `+accountCols+` FROM share_accounts WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)`, memberID)
 	acc, err := scanAccount(row)
 	if err == nil {
 		return acc, nil
@@ -108,7 +110,7 @@ func (s *ShareStore) GetAccountTx(ctx context.Context, tx pgx.Tx, accountID uuid
 }
 
 func (s *ShareStore) GetAccountByMemberTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) (*domain.ShareAccount, error) {
-	row := tx.QueryRow(ctx, `SELECT `+accountCols+` FROM share_accounts WHERE member_id = $1`, memberID)
+	row := tx.QueryRow(ctx, `SELECT `+accountCols+` FROM share_accounts WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)`, memberID)
 	acc, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound

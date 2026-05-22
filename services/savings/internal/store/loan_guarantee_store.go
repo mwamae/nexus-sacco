@@ -145,7 +145,7 @@ func (s *LoanGuaranteeStore) ByGuarantorMemberTx(ctx context.Context, tx pgx.Tx,
 		  JOIN members          m ON m.id = a.member_id
 		  JOIN loan_products    p ON p.id = a.product_id
 		  LEFT JOIN loans       l ON l.id = g.loan_id
-		 WHERE g.guarantor_member_id = $1
+		 WHERE g.guarantor_counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 		 ORDER BY g.requested_at DESC
 	`, memberID)
 	if err != nil {
@@ -176,7 +176,7 @@ func (s *LoanGuaranteeStore) ExposureForMemberTx(ctx context.Context, tx pgx.Tx,
 	err := tx.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount_guaranteed), 0)
 		FROM loan_guarantees
-		WHERE guarantor_member_id = $1
+		WHERE guarantor_counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 		  AND status IN ('pending_consent', 'accepted')
 	`, memberID).Scan(&total)
 	return total, err

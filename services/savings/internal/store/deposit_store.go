@@ -160,7 +160,7 @@ func (s *DepositStore) GetAccountTx(ctx context.Context, tx pgx.Tx, id uuid.UUID
 }
 
 func (s *DepositStore) AccountsByMemberTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) ([]domain.DepositAccount, error) {
-	rows, err := tx.Query(ctx, `SELECT `+acctCols+` FROM deposit_accounts WHERE member_id = $1 ORDER BY opened_at DESC NULLS LAST`, memberID)
+	rows, err := tx.Query(ctx, `SELECT `+acctCols+` FROM deposit_accounts WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1) ORDER BY opened_at DESC NULLS LAST`, memberID)
 	if err != nil {
 		return nil, err
 	}

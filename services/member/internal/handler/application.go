@@ -443,26 +443,38 @@ func (h *ApplicationHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		}
 		updated = u
 
-		// 2. In-tx materialisation. Dispatches on application kind:
-		// individual → members + share + (optional) deposit;
-		// institutional → org_members only (no auto-opened accounts).
-		// Failure rolls back the status flip.
-		act, err := h.Applications.ActivateApplicationTx(
-			r.Context(), tx, updated, h.Members, h.Orgs,
-			defaultDepositProductID, parValue, actorID,
-		)
-		if err != nil {
-			return err
-		}
-		activation = act
-
-		// 2b. Create the counterparty for the freshly-materialised
-		// legacy row + stamp the application's
-		// materialized_counterparty_id bridge. Direction follows
-		// activation kind. Errors here roll back the whole approval.
-		if h.Counterparties != nil {
-			var newCPID uuid.UUID
-			if act.OrgID != uuid.Nil {
+		// 2. In-tx materialisation. Order matters per kind:
+		//
+		//   institutional → ActivateApplicationTx (inserts org_members
+		//     with no auto-opened savings accounts) → create CP →
+		//     stamp materialized_counterparty_id. Safe single-call
+		//     because there are no child rows whose BEFORE INSERT
+		//     trigger depends on org_members.counterparty_id.
+		//
+		//   individual → 3 phases interleaved with the CP creation:
+		//     (a) MaterialiseIndividualMemberTx — insert member row only
+		//     (b) createCounterpartyFromApplicationTx — create CP +
+		//         SetCounterpartyOnMemberTx (stamps members.counterparty_id)
+		//     (c) OpenDefaultIndividualAccountsTx — insert share +
+		//         optional deposit accounts. By the time the BEFORE
+		//         INSERT trigger fires here, members.counterparty_id
+		//         is already populated, so the per-row bridge gets
+		//         filled in correctly. Skipping the split here is
+		//         what causes the "share_account.counterparty_id = NULL"
+		//         data corruption that sub-PR 1's read switchover
+		//         can't see past. Failure at any phase rolls back
+		//         the whole approval via tx rollback.
+		var newCPID uuid.UUID
+		if updated.Kind == domain.ApplicationKindInstitutional {
+			act, err := h.Applications.ActivateApplicationTx(
+				r.Context(), tx, updated, h.Members, h.Orgs,
+				defaultDepositProductID, parValue, actorID,
+			)
+			if err != nil {
+				return err
+			}
+			activation = act
+			if h.Counterparties != nil {
 				freshOrg, gerr := h.Orgs.ByIDTx(r.Context(), tx, act.OrgID)
 				if gerr != nil {
 					return fmt.Errorf("reload org for counterparty co-create: %w", gerr)
@@ -472,16 +484,34 @@ func (h *ApplicationHandler) Approve(w http.ResponseWriter, r *http.Request) {
 					return fmt.Errorf("create counterparty (org): %w", cerr)
 				}
 				newCPID = cpID
-			} else {
-				cpID, cerr := h.createCounterpartyFromApplicationTx(r.Context(), tx, tenantID, act.MemberID, updated, actorID)
+			}
+		} else {
+			memberID, memberNo, err := h.Applications.MaterialiseIndividualMemberTx(
+				r.Context(), tx, updated, h.Members, actorID,
+			)
+			if err != nil {
+				return err
+			}
+			if h.Counterparties != nil {
+				cpID, cerr := h.createCounterpartyFromApplicationTx(r.Context(), tx, tenantID, memberID, updated, actorID)
 				if cerr != nil {
 					return fmt.Errorf("create counterparty (individual): %w", cerr)
 				}
 				newCPID = cpID
 			}
-			// Stamp the bridge on the application row so future
-			// reads can resolve materialized → counterparty without
-			// going through the kind-specific legacy column.
+			act, err := h.Applications.OpenDefaultIndividualAccountsTx(
+				r.Context(), tx, updated, memberID, memberNo,
+				defaultDepositProductID, parValue, actorID,
+			)
+			if err != nil {
+				return err
+			}
+			activation = act
+		}
+
+		// 2b. Stamp the application's materialized_counterparty_id
+		// bridge if a counterparty was created above.
+		if newCPID != uuid.Nil {
 			if _, err := tx.Exec(r.Context(),
 				`UPDATE membership_applications SET materialized_counterparty_id = $2 WHERE id = $1`,
 				updated.ID, newCPID,

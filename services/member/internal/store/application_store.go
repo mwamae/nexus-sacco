@@ -489,20 +489,25 @@ func (s *ApplicationStore) ActivateApplicationTx(
 	return s.activateIndividualTx(ctx, tx, app, members, defaultDepositProductID, sharePolicyParValue, actorID)
 }
 
-// activateIndividualTx — the original (member + share + deposit)
-// pipeline, unchanged except for the function rename.
-func (s *ApplicationStore) activateIndividualTx(
+// MaterialiseIndividualMemberTx inserts the members row for an
+// approved individual application and nothing else. Returns the new
+// member id + member_no. Auto-opened savings accounts and the
+// materialized_member_id stamp run separately in
+// OpenDefaultIndividualAccountsTx — the caller is expected to create
+// the counterparty + stamp members.counterparty_id between the two
+// calls. That ordering is load-bearing: the BEFORE INSERT triggers
+// on share_accounts/deposit_accounts read members.counterparty_id at
+// insert time, so the bridge must already be in place or the
+// per-row counterparty_id silently nulls.
+func (s *ApplicationStore) MaterialiseIndividualMemberTx(
 	ctx context.Context, tx pgx.Tx,
 	app *domain.MembershipApplication,
 	members *MemberStore,
-	defaultDepositProductID *uuid.UUID,
-	sharePolicyParValue decimal.Decimal,
 	actorID uuid.UUID,
-) (*ActivationResult, error) {
-	// ─── 1. Member row ─────────────────────────────────────
+) (uuid.UUID, string, error) {
 	memberNo, err := members.NextMemberNoTx(ctx, tx, app.TenantID)
 	if err != nil {
-		return nil, fmt.Errorf("allocate member_no: %w", err)
+		return uuid.Nil, "", fmt.Errorf("allocate member_no: %w", err)
 	}
 	var payload domain.ApplicantPayload
 	if len(app.ApplicantPayload) > 0 {
@@ -514,10 +519,6 @@ func (s *ApplicationStore) activateIndividualTx(
 	}
 	idDocNumber := payload.IDDocNumber
 	if idDocNumber == "" {
-		// Institutional applicants have no ID number per se; fall back
-		// to the registration number, then the application_no, so the
-		// NOT NULL constraint is satisfied while keeping the row
-		// distinguishable.
 		idDocNumber = payload.RegistrationNumber
 		if idDocNumber == "" {
 			idDocNumber = app.ApplicationNo
@@ -550,10 +551,27 @@ func (s *ApplicationStore) activateIndividualTx(
 		actorID,
 	).Scan(&memberID)
 	if err != nil {
-		return nil, fmt.Errorf("insert member: %w", err)
+		return uuid.Nil, "", fmt.Errorf("insert member: %w", err)
 	}
+	return memberID, memberNo, nil
+}
 
-	// ─── 2. Share account ──────────────────────────────────
+// OpenDefaultIndividualAccountsTx opens the default share + (optional)
+// deposit account for an already-materialised member and stamps
+// materialized_member_id + materialized_at on the application row.
+// MUST be called AFTER members.counterparty_id is populated for the
+// given memberID — otherwise the BEFORE INSERT triggers on
+// share_accounts / deposit_accounts read NULL and the per-row
+// counterparty_id ends up NULL, which silently corrupts every
+// member-scoped read after the Phase D sub-PR 1 switchover.
+func (s *ApplicationStore) OpenDefaultIndividualAccountsTx(
+	ctx context.Context, tx pgx.Tx,
+	app *domain.MembershipApplication,
+	memberID uuid.UUID, memberNo string,
+	defaultDepositProductID *uuid.UUID,
+	sharePolicyParValue decimal.Decimal,
+	actorID uuid.UUID,
+) (*ActivationResult, error) {
 	shareAcctNo, err := nextSavingsSeq(ctx, tx, "account", "SHA")
 	if err != nil {
 		return nil, fmt.Errorf("allocate share account_no: %w", err)
@@ -573,7 +591,6 @@ func (s *ApplicationStore) activateIndividualTx(
 		ShareAccountID: shareAcctID, ShareAccountNo: shareAcctNo,
 	}
 
-	// ─── 3. Deposit account (optional) ─────────────────────
 	if defaultDepositProductID != nil {
 		depAcctNo, err := nextSavingsSeq(ctx, tx, "deposit_account", "DPA")
 		if err != nil {
@@ -597,7 +614,6 @@ func (s *ApplicationStore) activateIndividualTx(
 		result.DepositAccountNo = &depAcctNo
 	}
 
-	// ─── 4. Stamp the application ──────────────────────────
 	if _, err := tx.Exec(ctx, `
 		UPDATE membership_applications
 		   SET materialized_member_id = $2,
@@ -609,6 +625,30 @@ func (s *ApplicationStore) activateIndividualTx(
 	}
 
 	return result, nil
+}
+
+// activateIndividualTx — facade kept for parity with
+// activateInstitutionalTx so ActivateApplicationTx's dispatch still
+// works for any non-handler caller. The handler's ApproveAndActivate
+// flow does NOT use this path; it calls the split pair directly so it
+// can interleave counterparty creation between the two phases (the
+// share/deposit BEFORE INSERT triggers depend on members.counterparty_id
+// already being stamped). Any new caller that takes this single-call
+// path will inherit that race — open the two phases and put the CP
+// stamp between them instead.
+func (s *ApplicationStore) activateIndividualTx(
+	ctx context.Context, tx pgx.Tx,
+	app *domain.MembershipApplication,
+	members *MemberStore,
+	defaultDepositProductID *uuid.UUID,
+	sharePolicyParValue decimal.Decimal,
+	actorID uuid.UUID,
+) (*ActivationResult, error) {
+	memberID, memberNo, err := s.MaterialiseIndividualMemberTx(ctx, tx, app, members, actorID)
+	if err != nil {
+		return nil, err
+	}
+	return s.OpenDefaultIndividualAccountsTx(ctx, tx, app, memberID, memberNo, defaultDepositProductID, sharePolicyParValue, actorID)
 }
 
 // activateInstitutionalTx — the institutional branch of the

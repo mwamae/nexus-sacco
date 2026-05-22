@@ -169,7 +169,7 @@ func (s *LoanStore) ListTx(ctx context.Context, tx pgx.Tx, f LoanListFilter) ([]
 		idx++
 	}
 	if f.MemberID != nil {
-		where += fmt.Sprintf(" AND l.member_id = $%d", idx)
+		where += fmt.Sprintf(" AND l.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $%d)", idx)
 		args = append(args, *f.MemberID); idx++
 	}
 	if f.ProductID != nil {

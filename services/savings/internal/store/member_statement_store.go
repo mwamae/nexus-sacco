@@ -122,7 +122,7 @@ func (s *MemberStatementStore) BuildTx(ctx context.Context, tx pgx.Tx, memberID 
 	err = tx.QueryRow(ctx, `
 		SELECT sa.id, sa.shares_held, sa.par_value_at_open
 		  FROM share_accounts sa
-		 WHERE sa.member_id = $1
+		 WHERE sa.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 		 LIMIT 1
 	`, memberID).Scan(&shareAcctID, &sharesHeld, &parAtOpen)
 	switch {
@@ -154,7 +154,7 @@ func (s *MemberStatementStore) BuildTx(ctx context.Context, tx pgx.Tx, memberID 
 		       COALESCE(da.opened_at, da.created_at)
 		  FROM deposit_accounts da
 		  JOIN deposit_products p ON p.id = da.product_id
-		 WHERE da.member_id = $1
+		 WHERE da.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 		 ORDER BY COALESCE(da.opened_at, da.created_at) DESC
 	`, memberID)
 	if err != nil {
@@ -184,7 +184,7 @@ func (s *MemberStatementStore) BuildTx(ctx context.Context, tx pgx.Tx, memberID 
 		       COALESCE(SUM(CASE WHEN status IN ('active','in_arrears','restructured')
 		                    THEN principal_balance + interest_balance + fees_balance + penalty_balance
 		                    ELSE 0 END), 0)
-		FROM loans WHERE member_id = $1
+		FROM loans WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 	`, memberID).Scan(&stmt.Loans.TotalLoansEverTaken, &stmt.Loans.ActiveLoans,
 		&stmt.Loans.TotalDisbursed, &stmt.Loans.TotalOutstanding)
 	if err != nil {
@@ -198,7 +198,7 @@ func (s *MemberStatementStore) BuildTx(ctx context.Context, tx pgx.Tx, memberID 
 		       p.code, p.name
 		  FROM loans l
 		  JOIN loan_products p ON p.id = l.product_id
-		 WHERE l.member_id = $1
+		 WHERE l.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 		 ORDER BY l.created_at DESC
 		 LIMIT 20
 	`, memberID)
@@ -242,7 +242,7 @@ func (s *MemberStatementStore) BuildTx(ctx context.Context, tx pgx.Tx, memberID 
 		    CASE WHEN st.shares_delta > 0 THEN st.amount ELSE -st.amount END AS amount,
 		    st.narration AS narration
 		  FROM share_transactions st
-		  WHERE st.member_id = $1
+		  WHERE st.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 		  UNION ALL
 		  -- Deposits
 		  SELECT
@@ -255,7 +255,7 @@ func (s *MemberStatementStore) BuildTx(ctx context.Context, tx pgx.Tx, memberID 
 		    dt.amount AS amount,
 		    dt.narration AS narration
 		  FROM deposit_transactions dt
-		  WHERE dt.member_id = $1
+		  WHERE dt.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 		  UNION ALL
 		  -- Loans (positive amount = increase in obligation = outflow to member when repaying;
 		  --       negative amount = decrease in obligation = repayment received from member)
@@ -271,7 +271,7 @@ func (s *MemberStatementStore) BuildTx(ctx context.Context, tx pgx.Tx, memberID 
 		    -lt.amount AS amount,
 		    lt.narration AS narration
 		  FROM loan_transactions lt
-		  WHERE lt.member_id = $1
+		  WHERE lt.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
 		) t
 		ORDER BY posted_at DESC
 		LIMIT 50
