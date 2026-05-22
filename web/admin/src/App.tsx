@@ -16,6 +16,7 @@ import Members from './pages/Members';
 // and /orgs/new still resolve as 301-style redirects so any
 // in-the-wild bookmarks land in the right place.
 import MemberProfile from './pages/MemberProfile';
+import CounterpartyProfile from './pages/CounterpartyProfile';
 import ApplicationsQueuePage from './pages/Applications/ApplicationsQueue';
 import NewApplicationPage from './pages/Applications/NewApplication';
 import ApplicationDetailPage from './pages/Applications/ApplicationDetail';
@@ -63,8 +64,12 @@ import MemberStatementPage from './pages/Members/MemberStatement';
 import ProvisioningPage from './pages/Loans/Provisioning';
 
 function Gate() {
-  const { status } = useAuth();
+  const { status, featureFlags } = useAuth();
   const path = window.location.pathname;
+  // When the unified counterparties flag is on, both /members/:id
+  // and /orgs/:id route through the merged CounterpartyProfile.
+  // Flag-off tenants stay on the legacy split detail pages.
+  const unifiedOn = featureFlags.unified_counterparties === true;
 
   // Anonymous pages — live outside the auth gate.
   if (path === '/reset') return <ResetPassword />;
@@ -93,7 +98,7 @@ function Gate() {
   }
   else if (path === '/members') page = <Members />;
   else if (path.match(/^\/members\/[^/]+\/statement$/)) page = <MemberStatementPage />;
-  else if (path.startsWith('/members/')) page = <MemberProfile />;
+  else if (path.startsWith('/members/')) page = unifiedOn ? <CounterpartyProfile /> : <MemberProfile />;
   else if (path === '/tenants/new') page = <TenantOnboarding />;
   else if (path.startsWith('/tenants/')) page = <TenantProfile />;
   else if (path === '/settings') page = <TenantSettings />;
@@ -102,7 +107,7 @@ function Gate() {
     page = null;
   }
   else if (path === '/orgs') page = <Organizations />;
-  else if (path.startsWith('/orgs/')) page = <OrganizationProfile />;
+  else if (path.startsWith('/orgs/')) page = unifiedOn ? <CounterpartyProfile /> : <OrganizationProfile />;
   else if (path === '/approvals' || path.startsWith('/approvals/')) page = <ApprovalsInbox />;
   else if (path === '/workflows' || path.startsWith('/workflows/')) page = <WorkflowDefinitions />;
   else if (path === '/shares' || path.startsWith('/shares/')) page = <Shares />;
