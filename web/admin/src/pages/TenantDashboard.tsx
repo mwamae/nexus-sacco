@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import {
   getMemberStatusSummary, listUsers, runDormancy,
@@ -8,9 +8,10 @@ import {
 import SecurityCard from '../components/SecurityCard';
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
+import { roleLabel } from '../lib/roleLabels';
 
 export default function TenantDashboard() {
-  const { user, tenant, roles, permissions, hasPermission } = useAuth();
+  const { user, tenant, roles, hasPermission } = useAuth();
   const [users, setUsers] = useState<ApiUserWithRoles[] | null>(null);
   const [usersErr, setUsersErr] = useState<string | null>(null);
   const [statusSummary, setStatusSummary] = useState<MemberStatusSummary | null>(null);
@@ -69,7 +70,7 @@ export default function TenantDashboard() {
           <div className="eyebrow">{tenant?.name}</div>
           <h1>Welcome, {user?.full_name?.split(' ')[0] ?? 'there'}.</h1>
           <div className="page-sub">
-            {roles.join(' · ') || 'no roles'} · {permissions.length} permissions
+            <RoleStrip roles={roles} canManage={hasPermission('roles:view')} />
           </div>
         </div>
       </div>
@@ -169,6 +170,67 @@ export default function TenantDashboard() {
         </div>
       )}
     </div>
+  );
+}
+
+// ─────────── Role strip (welcome banner) ───────────
+//
+// Renders the current user's roles as humanised labels. Shows the
+// first three inline; collapses the rest behind "+N more" that
+// expands on click. Replaces the old "X permissions" count with a
+// link to the roles page for users who can manage them.
+
+const ROLE_PREVIEW_COUNT = 3;
+
+function RoleStrip({ roles, canManage }: { roles: string[]; canManage: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const labels = useMemo(() => roles.map(roleLabel), [roles]);
+
+  if (labels.length === 0) {
+    return (
+      <>
+        <span className="muted">No roles assigned</span>
+        {canManage && (
+          <>
+            {' · '}
+            <a href="/roles" style={{ color: 'var(--accent)' }}>Manage roles &amp; permissions →</a>
+          </>
+        )}
+      </>
+    );
+  }
+
+  const head = labels.slice(0, ROLE_PREVIEW_COUNT);
+  const tailCount = labels.length - head.length;
+  const visible = expanded ? labels : head;
+
+  return (
+    <>
+      {visible.join(' · ')}
+      {!expanded && tailCount > 0 && (
+        <>
+          {' '}
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="link-btn"
+            style={{
+              background: 'none', border: 'none', padding: 0,
+              color: 'var(--accent)', cursor: 'pointer', font: 'inherit',
+            }}
+            aria-label={`Show ${tailCount} more role${tailCount === 1 ? '' : 's'}`}
+          >
+            +{tailCount} more
+          </button>
+        </>
+      )}
+      {canManage && (
+        <>
+          {' · '}
+          <a href="/roles" style={{ color: 'var(--accent)' }}>Manage roles &amp; permissions →</a>
+        </>
+      )}
+    </>
   );
 }
 
