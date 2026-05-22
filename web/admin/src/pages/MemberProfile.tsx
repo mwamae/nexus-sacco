@@ -32,6 +32,7 @@ import { MemberStatusCard } from '../components/MemberStatusCard';
 import { MemberAccountsPanel } from '../components/MemberAccountsPanel';
 import { Icon, type IconName } from '../components/Icon';
 import { AsyncPanel, isTimeoutError } from '../components/AsyncPanel';
+import { Tabs } from '../components/Tabs';
 import { usePageCrumb } from '../lib/pageCrumb';
 
 const DOC_LABELS: Record<DocumentKind, string> = {
@@ -161,40 +162,33 @@ export default function MemberProfile() {
           />
 
           <div className="card" style={{ padding: 0 }}>
-            <div className="tabs" style={{ padding: '0 14px' }}>
-              {TABS.map((t) => (
-                <div
-                  key={t.id}
-                  className="tab"
-                  data-active={tab === t.id}
-                  onClick={() => navigateTab(t.id)}
-                >
-                  {t.label}
-                </div>
-              ))}
-            </div>
-            <div style={{ padding: 14 }}>
-              {tab === 'overview' && (
-                <OverviewTab m={m} currency={currency} canSeeAudit={canSeeAudit} onJump={navigateTab} />
-              )}
-              {tab === 'profile'  && (
+            <Tabs
+              ariaLabel="Member sections"
+              tabs={TABS}
+              value={tab}
+              onChange={navigateTab}
+            >
+              {(activeId) => (
                 <>
-                  <ProfileTab m={m} />
-                  <MemberStatusCard memberId={m.id} currentStatus={m.status} onChanged={reload} />
+                  {activeId === 'overview' && (
+                    <OverviewTab m={m} currency={currency} canSeeAudit={canSeeAudit} onJump={navigateTab} />
+                  )}
+                  {activeId === 'profile' && (
+                    <>
+                      <ProfileTab m={m} />
+                      <MemberStatusCard memberId={m.id} currentStatus={m.status} onChanged={reload} />
+                    </>
+                  )}
+                  {activeId === 'people'   && <PeopleTab m={m} currency={currency} />}
+                  {activeId === 'accounts' && <AccountsTab currency={currency} memberId={memberId} />}
+                  {activeId === 'loans'    && <LoansTab memberId={memberId} />}
+                  {activeId === 'documents' && (
+                    <DocumentsTab m={m} canUpload={canUpload} onReplaced={reload} />
+                  )}
+                  {activeId === 'activity' && <ActivityTab memberId={m.id} canSeeAudit={canSeeAudit} />}
                 </>
               )}
-              {tab === 'people'   && <PeopleTab m={m} currency={currency} />}
-              {tab === 'accounts' && <AccountsTab currency={currency} memberId={memberId} />}
-              {tab === 'loans' && <LoansTab memberId={memberId} />}
-              {tab === 'documents' && (
-                <DocumentsTab
-                  m={m}
-                  canUpload={canUpload}
-                  onReplaced={reload}
-                />
-              )}
-              {tab === 'activity' && <ActivityTab memberId={m.id} canSeeAudit={canSeeAudit} />}
-            </div>
+            </Tabs>
           </div>
         </>
       )}

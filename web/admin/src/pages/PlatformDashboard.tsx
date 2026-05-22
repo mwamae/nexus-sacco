@@ -25,6 +25,7 @@ import SecurityCard from '../components/SecurityCard';
 import { Badge, StatusBadge } from '../components/Badge';
 import { Icon, type IconName } from '../components/Icon';
 import { PlatformDriversForm } from '../components/PlatformDriversForm';
+import { Tabs } from '../components/Tabs';
 import {
   AdjustmentsTable,
   AnalyticsPanel,
@@ -113,29 +114,31 @@ export default function PlatformDashboard() {
 
       {/* Tabs */}
       <div className="card" style={{ padding: 0 }}>
-        <div className="tabs" style={{ padding: '0 14px' }}>
-          {[
-            { id: 'overview' as const,   label: 'Overview' },
-            { id: 'operations' as const, label: 'Credit operations' },
-            { id: 'drivers' as const,    label: 'Drivers' },
-          ].map((t) => (
-            <div key={t.id} className="tab" data-active={tab === t.id || undefined} onClick={() => setTab(t.id)}>
-              {t.label}
-            </div>
-          ))}
-        </div>
-        <div style={{ padding: 14 }}>
-          {tab === 'overview' && (
-            <OverviewTab
-              real={real}
-              counts={counts}
-              balances={balances}
-              loading={tenants === null}
-            />
+        <Tabs
+          ariaLabel="Platform views"
+          tabs={[
+            { id: 'overview',   label: 'Overview' },
+            { id: 'operations', label: 'Credit operations' },
+            { id: 'drivers',    label: 'Drivers' },
+          ] as const}
+          value={tab}
+          onChange={setTab}
+        >
+          {(activeId) => (
+            <>
+              {activeId === 'overview' && (
+                <OverviewTab
+                  real={real}
+                  counts={counts}
+                  balances={balances}
+                  loading={tenants === null}
+                />
+              )}
+              {activeId === 'operations' && <OperationsTab currentUserID={user?.id ?? ''} onChanged={reload} />}
+              {activeId === 'drivers'    && <PlatformDriversForm />}
+            </>
           )}
-          {tab === 'operations' && <OperationsTab currentUserID={user?.id ?? ''} onChanged={reload} />}
-          {tab === 'drivers' && <PlatformDriversForm />}
-        </div>
+        </Tabs>
       </div>
     </div>
   );
@@ -268,20 +271,26 @@ function OperationsTab({ currentUserID, onChanged }: { currentUserID: string; on
   const [sub, setSub] = useState<'requests' | 'adjustments' | 'analytics'>('requests');
   return (
     <div>
-      <div className="tabs" style={{ padding: 0, marginBottom: 10 }}>
-        {[
-          { id: 'requests' as const,    label: 'Top-up requests' },
-          { id: 'adjustments' as const, label: 'Adjustments' },
-          { id: 'analytics' as const,   label: 'Analytics' },
-        ].map((s) => (
-          <div key={s.id} className="tab" data-active={sub === s.id || undefined} onClick={() => setSub(s.id)}>
-            {s.label}
-          </div>
-        ))}
-      </div>
-      {sub === 'requests' && <RequestsTable onChanged={onChanged} />}
-      {sub === 'adjustments' && <AdjustmentsTable currentUserID={currentUserID} onChanged={onChanged} />}
-      {sub === 'analytics' && <AnalyticsPanel />}
+      <Tabs
+        ariaLabel="Credit operations"
+        tabs={[
+          { id: 'requests',    label: 'Top-up requests' },
+          { id: 'adjustments', label: 'Adjustments' },
+          { id: 'analytics',   label: 'Analytics' },
+        ] as const}
+        value={sub}
+        onChange={setSub}
+        tablistStyle={{ padding: 0, marginBottom: 10 }}
+        panelStyle={{}}
+      >
+        {(activeId) => (
+          <>
+            {activeId === 'requests'    && <RequestsTable onChanged={onChanged} />}
+            {activeId === 'adjustments' && <AdjustmentsTable currentUserID={currentUserID} onChanged={onChanged} />}
+            {activeId === 'analytics'   && <AnalyticsPanel />}
+          </>
+        )}
+      </Tabs>
     </div>
   );
 }

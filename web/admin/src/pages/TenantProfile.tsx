@@ -35,6 +35,7 @@ import {
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
+import { Tabs } from '../components/Tabs';
 import {
   getPlatformTenantDetail,
   platformLedger,
@@ -856,30 +857,30 @@ function TenantCreditsCard({ tenantID }: { tenantID: string }) {
         )}
 
         {/* Sub-tabs for the four action surfaces */}
-        <div className="tabs" style={{ padding: 0, marginBottom: 10 }}>
-          {[
-            { id: 'top-up' as const,   label: 'Top up' },
-            { id: 'adjust' as const,   label: 'Adjust (maker)' },
-            { id: 'ledger' as const,   label: 'Ledger' },
-            { id: 'pricing' as const,  label: 'Pricing' },
-          ].map((v) => (
-            <div
-              key={v.id}
-              className="tab"
-              data-active={view === v.id || undefined}
-              onClick={() => setView(v.id)}
-            >
-              {v.label}
-            </div>
-          ))}
-        </div>
-
-        {view === 'top-up'  && <TopupForm tenantID={tenantID} onCompleted={load} />}
-        {view === 'adjust'  && <AdjustmentForm tenantID={tenantID} onCompleted={load} />}
-        {view === 'ledger'  && <LedgerTable entries={ledger} />}
-        {view === 'pricing' && detail && (
-          <PricingForm tenantID={tenantID} pricing={detail.pricing} onSaved={load} />
-        )}
+        <Tabs
+          ariaLabel="Tenant credit actions"
+          tabs={[
+            { id: 'top-up',  label: 'Top up' },
+            { id: 'adjust',  label: 'Adjust (maker)' },
+            { id: 'ledger',  label: 'Ledger' },
+            { id: 'pricing', label: 'Pricing' },
+          ] as const}
+          value={view}
+          onChange={setView}
+          tablistStyle={{ padding: 0, marginBottom: 10 }}
+          panelStyle={{}}
+        >
+          {(activeId) => (
+            <>
+              {activeId === 'top-up'  && <TopupForm tenantID={tenantID} onCompleted={load} />}
+              {activeId === 'adjust'  && <AdjustmentForm tenantID={tenantID} onCompleted={load} />}
+              {activeId === 'ledger'  && <LedgerTable entries={ledger} />}
+              {activeId === 'pricing' && detail && (
+                <PricingForm tenantID={tenantID} pricing={detail.pricing} onSaved={load} />
+              )}
+            </>
+          )}
+        </Tabs>
       </div>
     </div>
   );

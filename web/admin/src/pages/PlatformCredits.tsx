@@ -28,6 +28,7 @@ import {
   type TopupRequest,
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { Tabs } from '../components/Tabs';
 
 const CHANNELS: CreditChannel[] = ['sms', 'email'];
 const CHANNEL_LABEL: Record<CreditChannel, string> = { sms: 'SMS', email: 'Email' };
@@ -73,31 +74,33 @@ export default function PlatformCreditsPage() {
       </div>
 
       <div className="card" style={{ padding: 0 }}>
-        <div className="tabs" style={{ padding: '0 14px' }}>
-          {[
-            { id: 'tenants' as const, label: 'Tenants' },
-            { id: 'requests' as const, label: 'Top-up requests' },
-            { id: 'adjustments' as const, label: 'Adjustments' },
-            { id: 'analytics' as const, label: 'Analytics' },
-          ].map((t) => (
-            <div key={t.id} className="tab" data-active={tab === t.id || undefined} onClick={() => setTab(t.id)}>
-              {t.label}
-            </div>
-          ))}
-        </div>
-        <div style={{ padding: 14 }}>
-          {err && <div className="alert alert-error">{err}</div>}
-          {tab === 'tenants' && (
-            <TenantsTable
-              tenants={tenants}
-              onOpen={(id) => setSelectedID(id)}
-              onRefresh={loadTenants}
-            />
+        <Tabs
+          ariaLabel="Platform credit views"
+          tabs={[
+            { id: 'tenants',     label: 'Tenants' },
+            { id: 'requests',    label: 'Top-up requests' },
+            { id: 'adjustments', label: 'Adjustments' },
+            { id: 'analytics',   label: 'Analytics' },
+          ] as const}
+          value={tab}
+          onChange={setTab}
+        >
+          {(activeId) => (
+            <>
+              {err && <div className="alert alert-error">{err}</div>}
+              {activeId === 'tenants' && (
+                <TenantsTable
+                  tenants={tenants}
+                  onOpen={(id) => setSelectedID(id)}
+                  onRefresh={loadTenants}
+                />
+              )}
+              {activeId === 'requests'    && <RequestsTable onChanged={loadTenants} />}
+              {activeId === 'adjustments' && <AdjustmentsTable currentUserID={user?.id ?? ''} onChanged={loadTenants} />}
+              {activeId === 'analytics'   && <AnalyticsPanel />}
+            </>
           )}
-          {tab === 'requests' && <RequestsTable onChanged={loadTenants} />}
-          {tab === 'adjustments' && <AdjustmentsTable currentUserID={user?.id ?? ''} onChanged={loadTenants} />}
-          {tab === 'analytics' && <AnalyticsPanel />}
-        </div>
+        </Tabs>
       </div>
 
       {selectedID && (
@@ -228,29 +231,34 @@ export function TenantDetailModal({
             </div>
           )}
 
-          <div className="tabs" style={{ padding: 0, marginBottom: 10 }}>
-            {[
-              { id: 'top-up' as const, label: 'Top up' },
-              { id: 'adjust' as const, label: 'Adjust (maker)' },
-              { id: 'ledger' as const, label: 'Ledger' },
-              { id: 'pricing' as const, label: 'Pricing' },
-            ].map((v) => (
-              <div key={v.id} className="tab" data-active={view === v.id || undefined} onClick={() => setView(v.id)}>
-                {v.label}
-              </div>
-            ))}
-          </div>
-
-          {view === 'top-up' && (
-            <TopupForm tenantID={tenantID} onCompleted={() => { void load(); onChanged(); }} />
-          )}
-          {view === 'adjust' && (
-            <AdjustmentForm tenantID={tenantID} onCompleted={() => { void load(); onChanged(); }} />
-          )}
-          {view === 'ledger' && <LedgerTable entries={ledger} />}
-          {view === 'pricing' && detail && (
-            <PricingForm tenantID={tenantID} pricing={detail.pricing} onSaved={load} />
-          )}
+          <Tabs
+            ariaLabel="Tenant credit actions"
+            tabs={[
+              { id: 'top-up',  label: 'Top up' },
+              { id: 'adjust',  label: 'Adjust (maker)' },
+              { id: 'ledger',  label: 'Ledger' },
+              { id: 'pricing', label: 'Pricing' },
+            ] as const}
+            value={view}
+            onChange={setView}
+            tablistStyle={{ padding: 0, marginBottom: 10 }}
+            panelStyle={{}}
+          >
+            {(activeId) => (
+              <>
+                {activeId === 'top-up' && (
+                  <TopupForm tenantID={tenantID} onCompleted={() => { void load(); onChanged(); }} />
+                )}
+                {activeId === 'adjust' && (
+                  <AdjustmentForm tenantID={tenantID} onCompleted={() => { void load(); onChanged(); }} />
+                )}
+                {activeId === 'ledger' && <LedgerTable entries={ledger} />}
+                {activeId === 'pricing' && detail && (
+                  <PricingForm tenantID={tenantID} pricing={detail.pricing} onSaved={load} />
+                )}
+              </>
+            )}
+          </Tabs>
         </div>
       </div>
     </div>

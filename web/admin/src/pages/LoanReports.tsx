@@ -26,6 +26,7 @@ import {
   type WriteoffRegisterEntry,
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { Tabs } from '../components/Tabs';
 
 type Tab = 'portfolio' | 'aging' | 'maturing' | 'restructured' | 'writeoffs' | 'crb';
 
@@ -61,27 +62,19 @@ export default function LoanReportsPage() {
       </div>
 
       <div className="card" style={{ padding: 0 }}>
-        <div className="tabs" style={{ padding: '0 14px' }}>
-          {TABS.map((t) => (
-            <div
-              key={t.id}
-              className="tab"
-              data-active={tab === t.id || undefined}
-              onClick={() => selectTab(t.id)}
-            >
-              {t.label}
-            </div>
-          ))}
-        </div>
-        <div style={{ padding: 14 }}>
-          <p className="muted tiny" style={{ margin: '0 0 14px' }}>{TABS.find((t) => t.id === tab)?.hint}</p>
-          {tab === 'portfolio' && <PortfolioTab />}
-          {tab === 'aging' && <AgingTab />}
-          {tab === 'maturing' && <MaturingTab />}
-          {tab === 'restructured' && <RestructuredTab />}
-          {tab === 'writeoffs' && <WriteoffsTab />}
-          {tab === 'crb' && <CRBTab />}
-        </div>
+        <Tabs ariaLabel="Loan report sections" tabs={TABS} value={tab} onChange={selectTab}>
+          {(activeId) => (
+            <>
+              <p className="muted tiny" style={{ margin: '0 0 14px' }}>{TABS.find((t) => t.id === activeId)?.hint}</p>
+              {activeId === 'portfolio'    && <PortfolioTab />}
+              {activeId === 'aging'        && <AgingTab />}
+              {activeId === 'maturing'     && <MaturingTab />}
+              {activeId === 'restructured' && <RestructuredTab />}
+              {activeId === 'writeoffs'    && <WriteoffsTab />}
+              {activeId === 'crb'          && <CRBTab />}
+            </>
+          )}
+        </Tabs>
       </div>
     </div>
   );

@@ -36,6 +36,7 @@ import {
 } from '../api/client';
 import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
+import { Tabs } from '../components/Tabs';
 import { usePageCrumb } from '../lib/pageCrumb';
 
 type TabId = 'overview' | 'profile' | 'documents' | 'people' | 'banking' | 'activity';
@@ -197,21 +198,18 @@ export default function OrganizationProfile() {
           />
 
           <div className="card" style={{ padding: 0 }}>
-            <div className="tabs" style={{ padding: '0 14px' }}>
-              {TABS.map((t) => (
-                <div key={t.id} className="tab" data-active={tab === t.id} onClick={() => navigateTab(t.id)}>
-                  {t.label}
-                </div>
-              ))}
-            </div>
-            <div style={{ padding: 14 }}>
-              {tab === 'overview'  && <OverviewTab o={o} onJump={navigateTab} canSeeAudit={canSeeAudit} />}
-              {tab === 'profile'   && <ProfileTab o={o} />}
-              {tab === 'documents' && <DocumentsTab o={o} canCreate={canCreate} canEdit={canEdit} onChanged={reload} />}
-              {tab === 'people'    && <PeopleTab o={o} canCreate={canCreate} canEdit={canEdit} onChanged={reload} />}
-              {tab === 'banking'   && <BankingTab banking={o.banking} contacts={o.contacts} />}
-              {tab === 'activity'  && <ActivityTab orgId={o.id} canSeeAudit={canSeeAudit} />}
-            </div>
+            <Tabs ariaLabel="Organisation sections" tabs={TABS} value={tab} onChange={navigateTab}>
+              {(activeId) => (
+                <>
+                  {activeId === 'overview'  && <OverviewTab o={o} onJump={navigateTab} canSeeAudit={canSeeAudit} />}
+                  {activeId === 'profile'   && <ProfileTab o={o} />}
+                  {activeId === 'documents' && <DocumentsTab o={o} canCreate={canCreate} canEdit={canEdit} onChanged={reload} />}
+                  {activeId === 'people'    && <PeopleTab o={o} canCreate={canCreate} canEdit={canEdit} onChanged={reload} />}
+                  {activeId === 'banking'   && <BankingTab banking={o.banking} contacts={o.contacts} />}
+                  {activeId === 'activity'  && <ActivityTab orgId={o.id} canSeeAudit={canSeeAudit} />}
+                </>
+              )}
+            </Tabs>
           </div>
         </>
       )}

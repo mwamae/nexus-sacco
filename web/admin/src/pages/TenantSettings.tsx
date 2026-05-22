@@ -31,6 +31,7 @@ import {
 } from '../api/client';
 import { Badge } from '../components/Badge';
 import { Icon } from '../components/Icon';
+import { Tabs } from '../components/Tabs';
 
 type Tab = 'branding' | 'region' | 'operations' | 'membership' | 'approvals' | 'notifications';
 const TABS: { id: Tab; label: string; hint: string }[] = [
@@ -89,40 +90,32 @@ export default function TenantSettings() {
       {err && <div className="alert alert-error">{err}</div>}
 
       <div className="card" style={{ padding: 0 }}>
-        <div className="tabs" style={{ padding: '0 14px' }}>
-          {TABS.map((t) => (
-            <div
-              key={t.id}
-              className="tab"
-              data-active={tab === t.id}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </div>
-          ))}
-        </div>
-        <div style={{ padding: 14 }}>
-          <p className="muted tiny" style={{ margin: '0 0 14px' }}>{TABS.find((t) => t.id === tab)?.hint}</p>
-          {!s && <div className="empty">Loading…</div>}
-          {s && tab === 'branding' && (
-            <BrandingTab branding={s.branding} canEdit={canEdit} onSaved={reload} />
+        <Tabs ariaLabel="Tenant settings" tabs={TABS} value={tab} onChange={setTab}>
+          {(activeId) => (
+            <>
+              <p className="muted tiny" style={{ margin: '0 0 14px' }}>{TABS.find((t) => t.id === activeId)?.hint}</p>
+              {!s && <div className="empty">Loading…</div>}
+              {s && activeId === 'branding' && (
+                <BrandingTab branding={s.branding} canEdit={canEdit} onSaved={reload} />
+              )}
+              {s && activeId === 'region' && (
+                <RegionTab region={s.region} canEdit={canEdit} onSaved={reload} />
+              )}
+              {s && activeId === 'operations' && (
+                <OperationsTab operations={s.operations} currency={s.tenant.currency_code} canEdit={canEdit} onSaved={reload} />
+              )}
+              {s && activeId === 'membership' && (
+                <MembershipTab membership={s.membership} currency={s.tenant.currency_code} canEdit={canEdit} onSaved={reload} />
+              )}
+              {s && activeId === 'approvals' && (
+                <ApprovalsTab canEdit={canEdit} />
+              )}
+              {s && activeId === 'notifications' && (
+                <NotificationsConfigTab canEdit={canEdit} />
+              )}
+            </>
           )}
-          {s && tab === 'region' && (
-            <RegionTab region={s.region} canEdit={canEdit} onSaved={reload} />
-          )}
-          {s && tab === 'operations' && (
-            <OperationsTab operations={s.operations} currency={s.tenant.currency_code} canEdit={canEdit} onSaved={reload} />
-          )}
-          {s && tab === 'membership' && (
-            <MembershipTab membership={s.membership} currency={s.tenant.currency_code} canEdit={canEdit} onSaved={reload} />
-          )}
-          {s && tab === 'approvals' && (
-            <ApprovalsTab canEdit={canEdit} />
-          )}
-          {s && tab === 'notifications' && (
-            <NotificationsConfigTab canEdit={canEdit} />
-          )}
-        </div>
+        </Tabs>
       </div>
     </div>
   );

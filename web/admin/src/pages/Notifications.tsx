@@ -17,6 +17,7 @@ import {
   type NotificationPriority,
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { Tabs } from '../components/Tabs';
 
 // Classify load failures so the page can render a clear, non-scary
 // message instead of leaking raw axios error text. A 401 here means the
@@ -60,18 +61,20 @@ export default function NotificationsPage() {
       </div>
 
       <div className="card" style={{ padding: 0 }}>
-        <div className="tabs" style={{ padding: '0 14px' }}>
-          {TABS.filter((t) => t.id !== 'log' || canViewLog).map((t) => (
-            <div key={t.id} className="tab" data-active={tab === t.id || undefined} onClick={() => setTab(t.id)}>
-              {t.label}
-            </div>
-          ))}
-        </div>
-        <div style={{ padding: 14 }}>
-          <p className="muted tiny" style={{ margin: '0 0 14px' }}>{TABS.find((t) => t.id === tab)?.hint}</p>
-          {tab === 'inbox' && <InboxTab />}
-          {tab === 'log' && canViewLog && <LogTab />}
-        </div>
+        <Tabs
+          ariaLabel="Notification views"
+          tabs={TABS.filter((t) => t.id !== 'log' || canViewLog)}
+          value={tab}
+          onChange={setTab}
+        >
+          {(activeId) => (
+            <>
+              <p className="muted tiny" style={{ margin: '0 0 14px' }}>{TABS.find((t) => t.id === activeId)?.hint}</p>
+              {activeId === 'inbox' && <InboxTab />}
+              {activeId === 'log' && canViewLog && <LogTab />}
+            </>
+          )}
+        </Tabs>
       </div>
     </div>
   );

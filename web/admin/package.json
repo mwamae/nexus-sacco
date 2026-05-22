@@ -26,6 +26,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
     "@vitest/ui": "^4.1.7",
+    "axe-core": "^4.11.4",
     "axios-mock-adapter": "^2.1.0",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
@@ -35,6 +36,7 @@
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.7",
+    "vitest-axe": "^0.1.0"
   }
 }
