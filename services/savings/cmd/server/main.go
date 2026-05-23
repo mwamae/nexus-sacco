@@ -94,6 +94,7 @@ func main() {
 	approvalsStore := store.NewApprovalsStore(pool.Pool)
 	receiptStore := store.NewReceiptStore(pool.Pool)
 	virtualTillStore := store.NewVirtualTillStore(pool.Pool)
+	feeCatalogStore := store.NewFeeCatalogStore(pool.Pool)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
@@ -245,7 +246,9 @@ func main() {
 		Shares:         shareStore,
 		Tenants:        tenants,
 		Counterparties: counterparties,
+		Fees:           feeCatalogStore,
 		Notifier:       notifyClient,
+		Posting:        postingClient,
 		Deposit:        depositH,
 		LoanRepay:      loanRepayH,
 		Logger:         logger,

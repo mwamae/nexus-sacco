@@ -19,11 +19,13 @@ import {
   getCurrentTillSession,
   getOutstanding,
   listCounterparties,
+  listFees,
   type ApiReceipt,
   type Counterparty,
   type CounterpartyOutstanding,
   type CreateReceiptLineInput,
   type CurrentTillSession,
+  type FeeCatalogEntry,
   type ReceiptChannel,
   type ReceiptLineKind,
 } from '../api/client';
@@ -62,13 +64,19 @@ function rowKey() {
 }
 
 export default function CollectionDesk() {
-  // Step 0 — load till session up front; cash is blocked without one.
+  // Step 0 — load till session + fee catalog up front. Cash is blocked
+  // without an open till; the fee catalog drives the line picker so
+  // every "fee" line has a known code + GL account.
   const [till, setTill] = useState<CurrentTillSession | null>(null);
   const [tillErr, setTillErr] = useState<string | null>(null);
+  const [fees, setFees] = useState<FeeCatalogEntry[]>([]);
   useEffect(() => {
     getCurrentTillSession()
       .then((t) => setTill(t))
       .catch((e) => setTillErr(extractError(e)));
+    listFees(false)
+      .then((f) => setFees(f))
+      .catch(() => setFees([])); // catalog absence shouldn't block the desk
   }, []);
 
   const [step, setStep] = useState<Step>('find');
@@ -197,6 +205,7 @@ export default function CollectionDesk() {
               <BuildStep
                 lines={lines}
                 setLines={setLines}
+                fees={fees}
                 onContinue={() => {
                   setChannelAmount(subtotal.toFixed(2));
                   setStep('payment');
@@ -486,13 +495,26 @@ function OutstandingPanel({
 // ─────────── Step 2: build receipt ───────────
 
 function BuildStep({
-  lines, setLines, onContinue,
+  lines, setLines, fees, onContinue,
 }: {
   lines: LineDraft[];
   setLines: (l: LineDraft[]) => void;
+  fees: FeeCatalogEntry[];
   onContinue: () => void;
 }) {
   function add(kind: ReceiptLineKind) {
+    // For a fee line, pre-pick the first catalog entry so the dropdown
+    // shows a valid selection by default (and the amount field is
+    // initialised when amount_editable=false).
+    if (kind === 'fee' && fees.length > 0) {
+      const f = fees[0];
+      setLines([...lines, {
+        rowKey: rowKey(), kind,
+        fee_code: f.code,
+        amount: f.amount_editable ? '' : f.amount_default,
+      }]);
+      return;
+    }
     setLines([...lines, { rowKey: rowKey(), kind, amount: '' }]);
   }
   function update(i: number, patch: Partial<LineDraft>) {
@@ -551,28 +573,61 @@ function BuildStep({
                       />
                     )}
                     {l.kind === 'fee' && (
-                      <input
-                        className="input"
-                        style={{ height: 28, fontSize: 12 }}
-                        placeholder="fee code (e.g. ad_hoc)"
-                        value={l.fee_code ?? ''}
-                        onChange={(e) => update(i, { fee_code: e.target.value })}
-                      />
+                      fees.length > 0 ? (
+                        <select
+                          className="input"
+                          style={{ height: 28, fontSize: 12 }}
+                          value={l.fee_code ?? ''}
+                          onChange={(e) => {
+                            const f = fees.find((x) => x.code === e.target.value);
+                            update(i, {
+                              fee_code: e.target.value,
+                              // When picking a fixed-amount fee, snap
+                              // the row's amount to the catalog default.
+                              ...(f && !f.amount_editable ? { amount: f.amount_default } : {}),
+                            });
+                          }}
+                        >
+                          {fees.map((f) => (
+                            <option key={f.code} value={f.code}>
+                              {f.label}{!f.amount_editable ? ` (KES ${f.amount_default})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          className="input"
+                          style={{ height: 28, fontSize: 12 }}
+                          placeholder="fee code (catalog empty)"
+                          value={l.fee_code ?? ''}
+                          onChange={(e) => update(i, { fee_code: e.target.value })}
+                        />
+                      )
                     )}
                     {l.kind === 'share_purchase' && (
                       <span className="muted tiny">No target — issues against the CP's share account.</span>
                     )}
                   </td>
                   <td>
-                    <input
-                      className="input mono"
-                      style={{ height: 28, width: 110, textAlign: 'right' }}
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={l.amount}
-                      onChange={(e) => update(i, { amount: e.target.value })}
-                    />
+                    {(() => {
+                      const feeEntry = l.kind === 'fee' && l.fee_code
+                        ? fees.find((f) => f.code === l.fee_code)
+                        : undefined;
+                      const locked = feeEntry ? !feeEntry.amount_editable : false;
+                      return (
+                        <input
+                          className="input mono"
+                          style={{ height: 28, width: 110, textAlign: 'right', background: locked ? '#f5f5f5' : undefined }}
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={l.amount}
+                          readOnly={locked}
+                          title={locked ? 'Fixed-amount fee — edit in fee catalog to change' : undefined}
+                          onChange={(e) => update(i, { amount: e.target.value })}
+                        />
+                      );
+                    })()}
                   </td>
                   <td>
                     <input

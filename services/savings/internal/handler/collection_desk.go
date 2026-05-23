@@ -35,6 +35,7 @@ import (
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -48,7 +49,9 @@ type CollectionDeskHandler struct {
 	Shares         *store.ShareStore
 	Tenants        *store.TenantStore
 	Counterparties *store.CounterpartyStore
+	Fees           *store.FeeCatalogStore
 	Notifier       *notifier.Client
+	Posting        *posting.Client
 	Logger         *slog.Logger
 
 	// Reverse-side wiring (Phase G follow-up: line-level reversal).
@@ -360,10 +363,10 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 			return cerr
 		}
 
-		// Queue an approval per line. Fee + welfare lines have no
-		// existing approval kind / executor; for v1 we mark them
-		// 'posted' immediately and leave the underlying GL move to a
-		// follow-up PR (fee catalog work).
+		// Queue an approval per line. Fee + welfare lines route through
+		// the fee catalog rather than the approvals queue: the cashier
+		// has already collected the cash, so the GL credit fires
+		// immediately to the catalog-configured revenue account.
 		for i := range r2.Lines {
 			line := &r2.Lines[i]
 			approvalKind, payload, perr := buildApprovalPayload(*line, *r2, in.Channel, in.ChannelRef, in.Narration, valueDate)
@@ -371,8 +374,12 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 				return perr
 			}
 			if approvalKind == "" {
-				// Fee/welfare: mark posted immediately, defer GL move.
-				if mErr := h.Receipts.MarkLinePostedTx(r.Context(), tx, line.ID, uuid.Nil); mErr != nil {
+				// Fee or welfare line — post directly to GL via the catalog.
+				txnID, fErr := h.postFeeLineTx(r.Context(), tx, tenantID, *r2, *line, in.Channel)
+				if fErr != nil {
+					return fErr
+				}
+				if mErr := h.Receipts.MarkLinePostedTx(r.Context(), tx, line.ID, txnID); mErr != nil {
 					return mErr
 				}
 				continue
@@ -702,6 +709,174 @@ func (h *CollectionDeskHandler) dispatchReversal(
 		return nil, nil
 	}
 	return nil, fmt.Errorf("unknown line kind for reversal: %s", line.Kind)
+}
+
+// ─────────── Fee-line execution + catalog endpoints ───────────
+
+// postFeeLineTx fires the GL credit for a fee-or-welfare receipt
+// line. Resolves the catalog entry by code → finds the credit account,
+// computes the debit account from the receipt's channel
+// (cash → till GL '1010', non-cash → channel suspense via the
+// virtual_tills.gl_account_code), and posts a 2-line journal entry.
+//
+// Returns the synthetic "posted_txn_id" the receipt-line stores —
+// here we use a UUID generated upfront and pass it as the source_ref
+// so the accounting service's (source_module, source_ref) dedup
+// catches re-tries. The journal entry itself is the source of truth;
+// posted_txn_id is just the back-reference for the receipts view.
+func (h *CollectionDeskHandler) postFeeLineTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	receipt domain.Receipt, line domain.ReceiptLine, channel domain.ReceiptChannel,
+) (uuid.UUID, error) {
+	if h.Fees == nil {
+		return uuid.Nil, fmt.Errorf("fee catalog not wired")
+	}
+	if line.FeeCode == nil || *line.FeeCode == "" {
+		return uuid.Nil, httpx.ErrBadRequest("fee line requires fee_code")
+	}
+	entry, err := h.Fees.GetByCodeTx(ctx, tx, *line.FeeCode)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return uuid.Nil, httpx.ErrBadRequest("fee code not in catalog: " + *line.FeeCode)
+		}
+		return uuid.Nil, err
+	}
+	debitAccount, err := debitAccountForChannel(ctx, tx, channel, receipt)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if h.Posting == nil || h.Posting.Disabled {
+		// Dev environment without an accounting service. Stamp a
+		// synthetic txn id so the receipt line still rolls up; log a
+		// warning so production never trips this silently.
+		if h.Logger != nil {
+			h.Logger.Warn("collection desk: posting client disabled, fee line not GL-posted",
+				"receipt", receipt.Serial, "fee_code", entry.Code, "amount", line.Amount.StringFixed(2))
+		}
+		return uuid.New(), nil
+	}
+	sourceRef := uuid.New()
+	if err := h.Posting.Post(ctx, posting.PostInput{
+		TenantID:     tenantID,
+		EntryDate:    receipt.ValueDate,
+		ValueDate:    receipt.ValueDate,
+		SourceModule: "savings.collection_desk.fees",
+		SourceRef:    sourceRef.String(),
+		Narration:    fmt.Sprintf("Receipt %s · fee %s", receipt.Serial, entry.Code),
+		Lines: []posting.Line{
+			{AccountCode: debitAccount, Debit: line.Amount, Narration: "Cash in via " + string(channel)},
+			{AccountCode: entry.GLCreditCode, Credit: line.Amount, Narration: entry.Label},
+		},
+	}); err != nil {
+		return uuid.Nil, fmt.Errorf("post fee GL entry: %w", err)
+	}
+	return sourceRef, nil
+}
+
+// debitAccountForChannel returns the GL account code the fee posting
+// should debit. Cash goes to the till's GL account; everything else
+// hits the virtual_tills.gl_account_code for that channel.
+func debitAccountForChannel(ctx context.Context, tx pgx.Tx, channel domain.ReceiptChannel, receipt domain.Receipt) (string, error) {
+	if channel == domain.RCCash {
+		if receipt.TillSessionID == nil {
+			return "", fmt.Errorf("cash receipt has no till_session_id")
+		}
+		var code string
+		if err := tx.QueryRow(ctx, `
+			SELECT t.gl_account_code FROM till_sessions s JOIN tills t ON t.id = s.till_id WHERE s.id = $1
+		`, *receipt.TillSessionID).Scan(&code); err != nil {
+			return "", fmt.Errorf("lookup till GL account: %w", err)
+		}
+		return code, nil
+	}
+	if receipt.VirtualTillID == nil {
+		return "", fmt.Errorf("non-cash receipt has no virtual_till_id")
+	}
+	var code string
+	if err := tx.QueryRow(ctx, `SELECT gl_account_code FROM virtual_tills WHERE id = $1`, *receipt.VirtualTillID).Scan(&code); err != nil {
+		return "", fmt.Errorf("lookup virtual till GL account: %w", err)
+	}
+	return code, nil
+}
+
+// ─────────── GET /v1/fees ───────────
+
+func (h *CollectionDeskHandler) ListFees(w http.ResponseWriter, r *http.Request) {
+	if h.Fees == nil {
+		httpx.WriteErr(w, r, fmt.Errorf("fee catalog not wired"))
+		return
+	}
+	tenantID, _ := middleware.TenantIDFrom(r)
+	includeAll := r.URL.Query().Get("include_inactive") == "true"
+	var out []domain.FeeCatalogEntry
+	err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		var err error
+		if includeAll {
+			out, err = h.Fees.ListAllTx(r.Context(), tx)
+		} else {
+			out, err = h.Fees.ListActiveTx(r.Context(), tx)
+		}
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if out == nil {
+		out = []domain.FeeCatalogEntry{}
+	}
+	httpx.OK(w, out)
+}
+
+// ─────────── POST /v1/fees (admin) ───────────
+
+type createFeeRequest struct {
+	Code           string          `json:"code"`
+	Label          string          `json:"label"`
+	Description    string          `json:"description"`
+	AmountDefault  decimal.Decimal `json:"amount_default"`
+	AmountEditable bool            `json:"amount_editable"`
+	GLCreditCode   string          `json:"gl_credit_code"`
+	SortOrder      int             `json:"sort_order"`
+}
+
+func (h *CollectionDeskHandler) CreateFee(w http.ResponseWriter, r *http.Request) {
+	if h.Fees == nil {
+		httpx.WriteErr(w, r, fmt.Errorf("fee catalog not wired"))
+		return
+	}
+	var in createFeeRequest
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	tenantID, _ := middleware.TenantIDFrom(r)
+	var desc *string
+	if in.Description != "" {
+		desc = &in.Description
+	}
+	var out *domain.FeeCatalogEntry
+	err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		entry, err := h.Fees.CreateTx(r.Context(), tx, tenantID, store.CreateFeeCatalogInput{
+			Code:           in.Code,
+			Label:          in.Label,
+			Description:    desc,
+			AmountDefault:  in.AmountDefault,
+			AmountEditable: in.AmountEditable,
+			GLCreditCode:   in.GLCreditCode,
+			SortOrder:      in.SortOrder,
+		})
+		if err != nil {
+			return err
+		}
+		out = entry
+		return nil
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.Created(w, out)
 }
 
 // ─────────── POST /v1/receipts/{id}/pdf ───────────

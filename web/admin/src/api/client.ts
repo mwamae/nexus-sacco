@@ -1905,6 +1905,27 @@ export async function voidReceiptLine(receiptId: string, lineId: string, reason:
   await api.post(`/v1/receipts/${receiptId}/lines/${lineId}/void`, { reason });
 }
 
+export type FeeCatalogEntry = {
+  id: string;
+  tenant_id: string;
+  code: string;
+  label: string;
+  description?: string | null;
+  amount_default: string;
+  amount_editable: boolean;
+  gl_credit_code: string;
+  is_active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listFees(includeInactive = false): Promise<FeeCatalogEntry[]> {
+  const q = includeInactive ? '?include_inactive=true' : '';
+  const r = await api.get(`/v1/fees${q}`);
+  return Array.isArray(r.data.data) ? r.data.data : [];
+}
+
 export type RenderReceiptPDFResponse = {
   pdf_document_id: string;
   download_url: string; // backend returns "/v1/pdf-documents/<id>/download"; client.ts prepends /api
