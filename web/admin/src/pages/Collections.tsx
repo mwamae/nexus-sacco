@@ -214,7 +214,7 @@ function CaseDetail({ caseId }: { caseId: string }) {
           <div className="eyebrow"><a href="/collections" style={{ color: 'inherit' }}>Collections</a> · {l.loan_no}</div>
           <h1>Case · {l.loan_no}</h1>
           <div className="page-sub">
-            <a href={`/members/${l.member_id}`} className="tbl-link">{l.member_id.slice(0, 8)}…</a> ·
+            <a href={`/members/${l.counterparty_id}`} className="tbl-link">{l.counterparty_id.slice(0, 8)}…</a> ·
             {' '}{currency} {fmt(l.principal)} loan · {l.interest_rate_pct}% {l.interest_method.replace('_', ' ')}
           </div>
         </div>

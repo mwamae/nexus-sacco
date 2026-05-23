@@ -57,7 +57,7 @@ type ProvisionRunLine struct {
 	ID                     uuid.UUID       `json:"id"`
 	RunID                  uuid.UUID       `json:"run_id"`
 	LoanID                 uuid.UUID       `json:"loan_id"`
-	MemberID               uuid.UUID       `json:"member_id"`
+	CounterpartyID               uuid.UUID       `json:"counterparty_id"`
 	LoanNo                 string          `json:"loan_no"`
 	DaysPastDue            int             `json:"days_past_due"`
 	Classification         string          `json:"classification"`

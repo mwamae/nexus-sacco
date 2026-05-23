@@ -63,7 +63,7 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("shares:bonus_issue")).
 				Post("/share-accounts/bonus-issue", d.Share.BonusIssue)
 
-			r.Route("/share-accounts/by-member/{member_id}", func(r chi.Router) {
+			r.Route("/share-accounts/by-member/{counterparty_id}", func(r chi.Router) {
 				r.With(middleware.RequirePermission("shares:view")).Get("/", d.Share.GetByMember)
 				r.With(middleware.RequirePermission("shares:view")).Get("/transactions", d.Share.HistoryByMember)
 				r.With(middleware.RequirePermission("shares:view")).Get("/certificate", d.Share.CurrentCertificate)
@@ -98,7 +98,7 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("savings:transact")).
 				Post("/deposit-accounts", d.Deposit.Open)
 			r.With(middleware.RequirePermission("savings:view")).
-				Get("/deposit-accounts/by-member/{member_id}", d.Deposit.AccountsByMember)
+				Get("/deposit-accounts/by-member/{counterparty_id}", d.Deposit.AccountsByMember)
 
 			r.Route("/deposit-accounts/{account_id}", func(r chi.Router) {
 				r.With(middleware.RequirePermission("savings:view")).Get("/", d.Deposit.GetAccount)
@@ -125,7 +125,7 @@ func Routes(d Deps) http.Handler {
 
 			// ─────────── WHT reports ───────────
 			r.With(middleware.RequirePermission("interest:view")).Get("/wht-schedule", d.Interest.WHTSchedule)
-			r.With(middleware.RequirePermission("interest:view")).Get("/wht-certificate/{member_id}", d.Interest.WHTCertificate)
+			r.With(middleware.RequirePermission("interest:view")).Get("/wht-certificate/{counterparty_id}", d.Interest.WHTCertificate)
 
 			// ─────────── Dividend engine ───────────
 			r.With(middleware.RequirePermission("dividends:view")).Get("/dividend-runs", d.Dividend.ListRuns)
@@ -161,7 +161,7 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("loans:guarantee")).Post("/loan-guarantees/{guarantee_id}/respond", d.LoanApp.GuaranteeRespond)
 			// Member-scoped — every loan this member guarantees, joined
 			// with borrower + loan number for the Member Profile People tab.
-			r.With(middleware.RequirePermission("loans:view")).Get("/loan-guarantees/by-member/{member_id}", d.LoanApp.ListByGuarantor)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-guarantees/by-member/{counterparty_id}", d.LoanApp.ListByGuarantor)
 
 			// ─────────── Loan offer + acceptance + disbursement ───────────
 			r.With(middleware.RequirePermission("loans:offer")).Post("/loan-applications/{app_id}/send-offer", d.Loan.SendOffer)
@@ -203,19 +203,19 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/restructured", d.LoanReports.Restructured)
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/writeoffs", d.LoanReports.WriteoffRegister)
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/crb-submission", d.LoanReports.CRB)
-			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/by-member/{member_id}", d.LoanReports.MemberHistory)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/by-member/{counterparty_id}", d.LoanReports.MemberHistory)
 			r.With(middleware.RequirePermission("loans:writeoff")).Post("/loans/{loan_id}/writeoff", d.LoanReports.WriteOff)
 
 			// ─────────── Member 360° statement ───────────
 			// Path uses /member-statements/ rather than /members/{id}/statement
 			// because the latter prefix is proxied to the member service.
-			r.With(middleware.RequirePermission("members:view")).Get("/member-statements/{member_id}", d.MemberStmt.Get)
+			r.With(middleware.RequirePermission("members:view")).Get("/member-statements/{counterparty_id}", d.MemberStmt.Get)
 			// Unified ledger — UNION ALL across deposit / loan / share
 			// transactions for this member, cursor-paginated by posted_at.
 			// Named member-ledger (not /members/{id}/ledger) to keep the
 			// /v1/members/* prefix routable to the member service while
 			// this lives on savings.
-			r.With(middleware.RequirePermission("members:view")).Get("/member-ledger/{member_id}", d.MemberLedger.Get)
+			r.With(middleware.RequirePermission("members:view")).Get("/member-ledger/{counterparty_id}", d.MemberLedger.Get)
 
 			// ─────────── Loan loss provisioning (Phase 11/3) ───────────
 			r.With(middleware.RequirePermission("loans:view")).Get("/provisioning/runs", d.Provisioning.List)

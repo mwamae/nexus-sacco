@@ -44,7 +44,7 @@ func (s *LoanStore) SetCollections(c *LoanCollectionsStore) {
 }
 
 const loanCols = `
-	id, tenant_id, loan_no, application_id, member_id, product_id, status,
+	id, tenant_id, loan_no, application_id, counterparty_id, product_id, status,
 	principal, interest_rate_pct, interest_method, repayment_method,
 	term_months, grace_period_months, installment_count, first_due_date,
 	disbursement_channel, disbursement_target_account_id, disbursement_ref,
@@ -61,7 +61,7 @@ const loanCols = `
 func scanLoan(row pgx.Row) (*domain.Loan, error) {
 	var l domain.Loan
 	err := row.Scan(
-		&l.ID, &l.TenantID, &l.LoanNo, &l.ApplicationID, &l.MemberID, &l.ProductID, &l.Status,
+		&l.ID, &l.TenantID, &l.LoanNo, &l.ApplicationID, &l.CounterpartyID, &l.ProductID, &l.Status,
 		&l.Principal, &l.InterestRatePct, &l.InterestMethod, &l.RepaymentMethod,
 		&l.TermMonths, &l.GracePeriodMonths, &l.InstallmentCount, &l.FirstDueDate,
 		&l.DisbursementChannel, &l.DisbursementTargetAccountID, &l.DisbursementRef,
@@ -85,7 +85,7 @@ func scanLoan(row pgx.Row) (*domain.Loan, error) {
 // until DisburseTx is called.
 type CreateLoanInput struct {
 	ApplicationID         uuid.UUID
-	MemberID              uuid.UUID
+	CounterpartyID              uuid.UUID
 	ProductID             uuid.UUID
 	Principal             decimal.Decimal
 	InterestRatePct       decimal.Decimal
@@ -101,9 +101,17 @@ func (s *LoanStore) CreateOnAcceptanceTx(ctx context.Context, tx pgx.Tx, in Crea
 	if err != nil {
 		return nil, err
 	}
+	// Resolve members.id → counterparty.id at the boundary; the caller
+	// (loan-application acceptance path) still passes a real members.id
+	// in CreateLoanInput.CounterpartyID. The column FKs counterparties(id)
+	// post-Phase D sub-PR 2a.
+	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for loan create: %w", err)
+	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO loans (
-			tenant_id, loan_no, application_id, member_id, product_id, status,
+			tenant_id, loan_no, application_id, counterparty_id, product_id, status,
 			principal, interest_rate_pct, interest_method, repayment_method,
 			term_months, grace_period_months, installment_count,
 			principal_balance, interest_balance, fees_balance, penalty_balance
@@ -114,7 +122,7 @@ func (s *LoanStore) CreateOnAcceptanceTx(ctx context.Context, tx pgx.Tx, in Crea
 			0, 0, 0, 0
 		)
 		RETURNING `+loanCols,
-		loanNo, in.ApplicationID, in.MemberID, in.ProductID,
+		loanNo, in.ApplicationID, cpID, in.ProductID,
 		in.Principal, in.InterestRatePct, string(in.InterestMethod), string(in.RepaymentMethod),
 		in.TermMonths, in.GracePeriodMonths, in.InstallmentCount,
 	)
@@ -141,7 +149,7 @@ func (s *LoanStore) GetByApplicationTx(ctx context.Context, tx pgx.Tx, appID uui
 
 type LoanListFilter struct {
 	Status    string
-	MemberID  *uuid.UUID
+	CounterpartyID  *uuid.UUID
 	ProductID *uuid.UUID
 	Q         string
 	Limit     int
@@ -168,9 +176,9 @@ func (s *LoanStore) ListTx(ctx context.Context, tx pgx.Tx, f LoanListFilter) ([]
 		args = append(args, f.Status)
 		idx++
 	}
-	if f.MemberID != nil {
+	if f.CounterpartyID != nil {
 		where += fmt.Sprintf(" AND l.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $%d)", idx)
-		args = append(args, *f.MemberID); idx++
+		args = append(args, *f.CounterpartyID); idx++
 	}
 	if f.ProductID != nil {
 		where += fmt.Sprintf(" AND l.product_id = $%d", idx)
@@ -182,14 +190,14 @@ func (s *LoanStore) ListTx(ctx context.Context, tx pgx.Tx, f LoanListFilter) ([]
 	}
 	var total int
 	if err := tx.QueryRow(ctx,
-		"SELECT COUNT(*) FROM loans l JOIN members m ON m.id = l.member_id JOIN loan_products p ON p.id = l.product_id "+where, args...).Scan(&total); err != nil {
+		"SELECT COUNT(*) FROM loans l JOIN members m ON m.id = l.counterparty_id JOIN loan_products p ON p.id = l.product_id "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, f.Limit, f.Offset)
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT %s, m.member_no, m.full_name, p.code, p.name
 		FROM loans l
-		JOIN members m ON m.id = l.member_id
+		JOIN members m ON m.id = l.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		%s
 		ORDER BY l.created_at DESC
@@ -203,7 +211,7 @@ func (s *LoanStore) ListTx(ctx context.Context, tx pgx.Tx, f LoanListFilter) ([]
 	for rows.Next() {
 		var it LoanListItem
 		dest := []any{
-			&it.Loan.ID, &it.Loan.TenantID, &it.Loan.LoanNo, &it.Loan.ApplicationID, &it.Loan.MemberID, &it.Loan.ProductID, &it.Loan.Status,
+			&it.Loan.ID, &it.Loan.TenantID, &it.Loan.LoanNo, &it.Loan.ApplicationID, &it.Loan.CounterpartyID, &it.Loan.ProductID, &it.Loan.Status,
 			&it.Loan.Principal, &it.Loan.InterestRatePct, &it.Loan.InterestMethod, &it.Loan.RepaymentMethod,
 			&it.Loan.TermMonths, &it.Loan.GracePeriodMonths, &it.Loan.InstallmentCount, &it.Loan.FirstDueDate,
 			&it.Loan.DisbursementChannel, &it.Loan.DisbursementTargetAccountID, &it.Loan.DisbursementRef,
@@ -305,7 +313,7 @@ func (s *LoanStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostLoanInput) 
 	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO loan_transactions (
-			tenant_id, loan_id, member_id, txn_no, txn_type,
+			tenant_id, loan_id, counterparty_id, txn_no, txn_type,
 			amount, principal_component, interest_component, fee_component, penalty_component,
 			channel, channel_ref, narration, installment_no,
 			reverses_txn_id, initiated_by, authorized_by
@@ -315,20 +323,20 @@ func (s *LoanStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostLoanInput) 
 			$10, $11, $12, $13,
 			$14, $15, $16
 		)
-		RETURNING id, tenant_id, loan_id, member_id, txn_no, txn_type,
+		RETURNING id, tenant_id, loan_id, counterparty_id, txn_no, txn_type,
 		          amount, principal_component, interest_component, fee_component, penalty_component,
 		          value_date, channel, channel_ref, narration,
 		          reverses_txn_id, reversed_by_txn_id, installment_no,
 		          posted_at, initiated_by, authorized_by
 	`,
-		in.Loan.ID, in.Loan.MemberID, txnNo, string(in.TxnType),
+		in.Loan.ID, in.Loan.CounterpartyID, txnNo, string(in.TxnType),
 		in.Amount, in.PrincipalComponent, in.InterestComponent, in.FeeComponent, in.PenaltyComponent,
 		in.Channel, in.ChannelRef, in.Narration, in.InstallmentNo,
 		in.ReversesTxnID, in.InitiatedBy, in.AuthorizedBy,
 	)
 	var t domain.LoanTransaction
 	err = row.Scan(
-		&t.ID, &t.TenantID, &t.LoanID, &t.MemberID, &t.TxnNo, &t.TxnType,
+		&t.ID, &t.TenantID, &t.LoanID, &t.CounterpartyID, &t.TxnNo, &t.TxnType,
 		&t.Amount, &t.PrincipalComponent, &t.InterestComponent, &t.FeeComponent, &t.PenaltyComponent,
 		&t.ValueDate, &t.Channel, &t.ChannelRef, &t.Narration,
 		&t.ReversesTxnID, &t.ReversedByTxnID, &t.InstallmentNo,

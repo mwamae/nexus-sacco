@@ -23,9 +23,9 @@ type MemberLedgerHandler struct {
 	Logger *slog.Logger
 }
 
-// Get — GET /v1/members/{member_id}/ledger?limit=50&before=2026-05-22T00:00:00Z
+// Get — GET /v1/members/{counterparty_id}/ledger?limit=50&before=2026-05-22T00:00:00Z
 func (h *MemberLedgerHandler) Get(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return

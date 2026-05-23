@@ -14,7 +14,7 @@
 //   POST   /v1/interest-runs/{id}/lock          final lock
 //   POST   /v1/interest-runs/{id}/cancel        abandon
 //   GET    /v1/wht-schedule?fy=...              tenant remittance schedule
-//   GET    /v1/wht-certificate/{member_id}?fy=  member tax certificate
+//   GET    /v1/wht-certificate/{counterparty_id}?fy=  member tax certificate
 //   POST   /v1/interest-runs/callback           workflow service → us
 
 package handler
@@ -600,7 +600,7 @@ func (h *InterestHandler) postLine(
 	case domain.PayoutCreditSavings:
 		if line.PayoutTargetAccountID == nil {
 			// Fall back to any active ordinary-savings account owned by the member.
-			fallback, err := h.findFallbackSavingsTx(ctx, tx, line.MemberID)
+			fallback, err := h.findFallbackSavingsTx(ctx, tx, line.CounterpartyID)
 			if err != nil {
 				return err
 			}
@@ -636,7 +636,7 @@ func (h *InterestHandler) postLine(
 		sharesQty := line.NetInterest.Div(par).Floor()
 		n := int(sharesQty.IntPart())
 		if n > 0 {
-			acct, err := h.Shares.EnsureAccountTx(ctx, tx, line.MemberID, par)
+			acct, err := h.Shares.EnsureAccountTx(ctx, tx, line.CounterpartyID, par)
 			if err != nil {
 				return err
 			}
@@ -660,7 +660,7 @@ func (h *InterestHandler) postLine(
 			if err != nil {
 				return err
 			}
-			if _, err := h.Shares.IssueCertificateTx(ctx, tx, acct.ID, line.MemberID, userID,
+			if _, err := h.Shares.IssueCertificateTx(ctx, tx, acct.ID, line.CounterpartyID, userID,
 				updated.SharesHeld, par, sharePolicy.CertificatePrefix); err != nil {
 				return err
 			}
@@ -668,7 +668,7 @@ func (h *InterestHandler) postLine(
 		// Credit any remainder to the member's fallback savings account.
 		remainder := line.NetInterest.Sub(par.Mul(decimal.NewFromInt(int64(n))))
 		if remainder.GreaterThan(decimal.Zero) {
-			fallback, err := h.findFallbackSavingsTx(ctx, tx, line.MemberID)
+			fallback, err := h.findFallbackSavingsTx(ctx, tx, line.CounterpartyID)
 			if err != nil {
 				return err
 			}
@@ -699,7 +699,7 @@ func (h *InterestHandler) postLine(
 	}
 
 	// Look up member identity for the tax_payable row.
-	member, err := h.Members.GetTx(ctx, tx, line.MemberID)
+	member, err := h.Members.GetByCounterpartyTx(ctx, tx, line.CounterpartyID)
 	if err != nil {
 		return err
 	}
@@ -707,7 +707,7 @@ func (h *InterestHandler) postLine(
 	if err := h.Interest.InsertTaxPayableTx(ctx, tx, &domain.TaxPayableEntry{
 		SourceKind:  "interest_run",
 		SourceID:    &runID,
-		MemberID:    line.MemberID,
+		CounterpartyID:    line.CounterpartyID,
 		MemberNo:    member.MemberNo,
 		MemberName:  member.FullName,
 		FYLabel:     run.FinancialYearLabel,
@@ -729,7 +729,7 @@ func ptrChannel(c domain.DepositChannel) *domain.DepositChannel { return &c }
 func (h *InterestHandler) findFallbackSavingsTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) (*domain.DepositAccount, error) {
 	row := tx.QueryRow(ctx, `
 		SELECT id FROM deposit_accounts
-		WHERE member_id = $1 AND status = 'active'
+		WHERE counterparty_id = $1 AND status = 'active'
 		ORDER BY
 		  CASE WHEN product_id IN (SELECT id FROM deposit_products WHERE product_type = 'ordinary') THEN 0 ELSE 1 END,
 		  current_balance DESC
@@ -844,7 +844,7 @@ func (h *InterestHandler) WHTSchedule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *InterestHandler) WHTCertificate(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -874,7 +874,7 @@ func (h *InterestHandler) WHTCertificate(w http.ResponseWriter, r *http.Request)
 		totWHT = totWHT.Add(e.WHTAmount)
 	}
 	httpx.OK(w, map[string]any{
-		"member_id": memberID,
+		"counterparty_id": memberID,
 		"fy_label":  fy,
 		"entries":   entries,
 		"totals": map[string]any{

@@ -258,7 +258,7 @@ type LoanApplication struct {
 	ID                          uuid.UUID            `json:"id"`
 	TenantID                    uuid.UUID            `json:"tenant_id"`
 	ApplicationNo               string               `json:"application_no"`
-	MemberID                    uuid.UUID            `json:"member_id"`
+	CounterpartyID                    uuid.UUID            `json:"counterparty_id"`
 	ProductID                   uuid.UUID            `json:"product_id"`
 	Status                      LoanAppStatus        `json:"status"`
 	RequestedAmount             decimal.Decimal      `json:"requested_amount"`
@@ -357,7 +357,7 @@ type Loan struct {
 	TenantID                    uuid.UUID            `json:"tenant_id"`
 	LoanNo                      string               `json:"loan_no"`
 	ApplicationID               uuid.UUID            `json:"application_id"`
-	MemberID                    uuid.UUID            `json:"member_id"`
+	CounterpartyID                    uuid.UUID            `json:"counterparty_id"`
 	ProductID                   uuid.UUID            `json:"product_id"`
 	Status                      LoanStatus           `json:"status"`
 	Principal                   decimal.Decimal      `json:"principal"`
@@ -425,7 +425,7 @@ type LoanTransaction struct {
 	ID                  uuid.UUID       `json:"id"`
 	TenantID            uuid.UUID       `json:"tenant_id"`
 	LoanID              uuid.UUID       `json:"loan_id"`
-	MemberID            uuid.UUID       `json:"member_id"`
+	CounterpartyID            uuid.UUID       `json:"counterparty_id"`
 	TxnNo               string          `json:"txn_no"`
 	TxnType             LoanTxnType     `json:"txn_type"`
 	Amount              decimal.Decimal `json:"amount"`

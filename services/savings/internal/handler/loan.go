@@ -167,7 +167,7 @@ func (h *LoanHandler) AcceptOffer(w http.ResponseWriter, r *http.Request) {
 		// Create the loan row.
 		loan, err := h.Loans.CreateOnAcceptanceTx(r.Context(), tx, store.CreateLoanInput{
 			ApplicationID:     app.ID,
-			MemberID:          app.MemberID,
+			CounterpartyID:          app.CounterpartyID,
 			ProductID:         app.ProductID,
 			Principal:         *app.ApprovedAmount,
 			InterestRatePct:   *app.ApprovedInterestRatePct,
@@ -259,7 +259,7 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			memberID := loan.MemberID
+			memberID := loan.CounterpartyID
 			amount := loan.Principal
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:            domain.ApprovalKindLoanDisbursement,
@@ -301,7 +301,7 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 		var member *store.MemberLite
 		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 			var lerr error
-			member, lerr = h.Members.GetTx(r.Context(), tx, result.Loan.MemberID)
+			member, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, result.Loan.CounterpartyID)
 			return lerr
 		})
 		if member != nil {
@@ -396,10 +396,10 @@ func (h *LoanHandler) List(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	f := store.LoanListFilter{Status: q.Get("status"), Q: q.Get("q"), Limit: limit, Offset: offset}
-	if v := q.Get("member_id"); v != "" {
+	if v := q.Get("counterparty_id"); v != "" {
 		id, err := uuid.Parse(v)
 		if err == nil {
-			f.MemberID = &id
+			f.CounterpartyID = &id
 		}
 	}
 	if v := q.Get("product_id"); v != "" {
@@ -427,7 +427,7 @@ func (h *LoanHandler) List(w http.ResponseWriter, r *http.Request) {
 // loadLoanTxnsTx is a small helper for the detail endpoint.
 func loadLoanTxnsTx(ctx context.Context, tx pgx.Tx, loanID uuid.UUID) ([]domain.LoanTransaction, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, tenant_id, loan_id, member_id, txn_no, txn_type,
+		SELECT id, tenant_id, loan_id, counterparty_id, txn_no, txn_type,
 		       amount, principal_component, interest_component, fee_component, penalty_component,
 		       value_date, channel, channel_ref, narration,
 		       reverses_txn_id, reversed_by_txn_id, installment_no,
@@ -442,7 +442,7 @@ func loadLoanTxnsTx(ctx context.Context, tx pgx.Tx, loanID uuid.UUID) ([]domain.
 	for rows.Next() {
 		var t domain.LoanTransaction
 		if err := rows.Scan(
-			&t.ID, &t.TenantID, &t.LoanID, &t.MemberID, &t.TxnNo, &t.TxnType,
+			&t.ID, &t.TenantID, &t.LoanID, &t.CounterpartyID, &t.TxnNo, &t.TxnType,
 			&t.Amount, &t.PrincipalComponent, &t.InterestComponent, &t.FeeComponent, &t.PenaltyComponent,
 			&t.ValueDate, &t.Channel, &t.ChannelRef, &t.Narration,
 			&t.ReversesTxnID, &t.ReversedByTxnID, &t.InstallmentNo,

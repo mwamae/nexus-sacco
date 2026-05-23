@@ -70,7 +70,7 @@ func (h *DepositHandler) loadProductAccount(ctx context.Context, tx pgx.Tx, acco
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	member, err := h.Members.GetTx(ctx, tx, acct.MemberID)
+	member, err := h.Members.GetByCounterpartyTx(ctx, tx, acct.CounterpartyID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -80,7 +80,7 @@ func (h *DepositHandler) loadProductAccount(ctx context.Context, tx pgx.Tx, acco
 // ─────────── Account open ───────────
 
 type openAcctReq struct {
-	MemberID             uuid.UUID                `json:"member_id"`
+	CounterpartyID             uuid.UUID                `json:"counterparty_id"`
 	ProductID            uuid.UUID                `json:"product_id"`
 	OpeningDeposit       decimal.Decimal          `json:"opening_deposit"`
 	OpeningChannel       *domain.DepositChannel   `json:"opening_channel"`
@@ -106,8 +106,8 @@ func (h *DepositHandler) Open(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, err)
 		return
 	}
-	if in.MemberID == uuid.Nil || in.ProductID == uuid.Nil {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("member_id and product_id are required"))
+	if in.CounterpartyID == uuid.Nil || in.ProductID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("counterparty_id and product_id are required"))
 		return
 	}
 	userID, _ := middleware.UserIDFrom(r)
@@ -136,7 +136,7 @@ func (h *DepositHandler) Open(w http.ResponseWriter, r *http.Request) {
 		if !product.IsActive {
 			return domain.ErrProductInactive
 		}
-		member, err := h.Members.GetTx(r.Context(), tx, in.MemberID)
+		member, err := h.Members.GetByCounterpartyTx(r.Context(), tx, in.CounterpartyID)
 		if err != nil {
 			return err
 		}
@@ -182,7 +182,7 @@ func (h *DepositHandler) Open(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		acct, openingTxn, err := h.Deposits.OpenAccountTx(r.Context(), tx, store.OpenInput{
-			MemberID:             in.MemberID,
+			CounterpartyID:             in.CounterpartyID,
 			ProductID:            in.ProductID,
 			OpeningDeposit:       in.OpeningDeposit,
 			OpeningChannel:       in.OpeningChannel,
@@ -199,7 +199,7 @@ func (h *DepositHandler) Open(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		_ = h.Members.TouchActivityTx(r.Context(), tx, in.MemberID)
+		_ = h.Members.TouchActivityByCounterpartyTx(r.Context(), tx, in.CounterpartyID)
 		resp = openAcctResp{Account: *acct, Product: *product, OpeningTxn: openingTxn}
 		return nil
 	})
@@ -279,7 +279,7 @@ type memberAcctItem struct {
 }
 
 func (h *DepositHandler) AccountsByMember(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -422,7 +422,7 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 			if lerr != nil {
 				return lerr
 			}
-			memberID := acct.MemberID
+			memberID := acct.CounterpartyID
 			amount := in.Amount
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:             domain.ApprovalKindDeposit,
@@ -511,7 +511,7 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 			if lerr != nil {
 				return lerr
 			}
-			memberID := acct.MemberID
+			memberID := acct.CounterpartyID
 			amount := in.Amount
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:             domain.ApprovalKindWithdrawal,
@@ -685,7 +685,7 @@ func (h *DepositHandler) emitDeposit(
 	var member *store.MemberLite
 	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
-		member, err = h.Members.GetTx(r.Context(), tx, result.Account.MemberID)
+		member, err = h.Members.GetByCounterpartyTx(r.Context(), tx, result.Account.CounterpartyID)
 		return err
 	})
 	if member == nil {
@@ -728,7 +728,7 @@ func (h *DepositHandler) emitWithdrawal(
 	var member *store.MemberLite
 	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
-		member, err = h.Members.GetTx(r.Context(), tx, result.Account.MemberID)
+		member, err = h.Members.GetByCounterpartyTx(r.Context(), tx, result.Account.CounterpartyID)
 		return err
 	})
 	if member == nil {

@@ -252,7 +252,7 @@ func (h *Handler) Notify(w http.ResponseWriter, r *http.Request) {
 				key.UserID = *in.RecipientUserID
 			}
 			if in.RecipientMemberID != nil {
-				key.MemberID = *in.RecipientMemberID
+				key.CounterpartyID = *in.RecipientMemberID
 			}
 			h.Bus.Publish(key, feedItem)
 		}

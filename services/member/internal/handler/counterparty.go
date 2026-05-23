@@ -9,7 +9,7 @@
 // workflow surface — see prompt #3. Accounts + ledger aggregators link
 // to the savings service via the existing /v1/deposit-accounts/by-member,
 // /v1/share-accounts/by-member, /v1/loan-reports/by-member, and
-// /v1/member-ledger endpoints (those still take member_id since
+// /v1/member-ledger endpoints (those still take counterparty_id since
 // FK-rewriting is a Phase C concern).
 
 package handler

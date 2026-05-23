@@ -972,7 +972,7 @@ function OpenAccountModal({ memberId, products, onClose, onSaved }: {
         setErr(null); setBusy(true);
         try {
           await openDepositAccount({
-            member_id: memberId,
+            counterparty_id: memberId,
             product_id: product.id,
             opening_deposit: openingDeposit,
             opening_channel: parseFloat(openingDeposit) > 0 ? channel : undefined,

@@ -21,9 +21,9 @@ type MemberStatementHandler struct {
 	Logger     *slog.Logger
 }
 
-// Get — GET /v1/members/{member_id}/statement
+// Get — GET /v1/members/{counterparty_id}/statement
 func (h *MemberStatementHandler) Get(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return

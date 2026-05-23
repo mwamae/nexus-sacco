@@ -121,7 +121,7 @@ type DividendRunLine struct {
 	TenantID              uuid.UUID            `json:"tenant_id"`
 	RunID                 uuid.UUID            `json:"run_id"`
 	ShareAccountID        uuid.UUID            `json:"share_account_id"`
-	MemberID              uuid.UUID            `json:"member_id"`
+	CounterpartyID              uuid.UUID            `json:"counterparty_id"`
 	CalcMethod            DividendCalcMethod   `json:"calc_method"`
 	SharesBasis           decimal.Decimal      `json:"shares_basis"`
 	ParValueAtRun         decimal.Decimal      `json:"par_value_at_run"`
@@ -166,7 +166,7 @@ var (
 // shares produces KES 10 per share regardless of par-value drift.
 type DivCalcInputs struct {
 	ShareAccountID  uuid.UUID
-	MemberID        uuid.UUID
+	CounterpartyID        uuid.UUID
 	CalcMethod      DividendCalcMethod
 	SharesBasis     decimal.Decimal     // weighted/closing/pro-rated count
 	ParValueAtRun   decimal.Decimal
@@ -182,7 +182,7 @@ func DivCalcLine(in DivCalcInputs, ratePct, whtPct decimal.Decimal) DividendRunL
 	net := gross.Sub(wht)
 	return DividendRunLine{
 		ShareAccountID: in.ShareAccountID,
-		MemberID:       in.MemberID,
+		CounterpartyID:       in.CounterpartyID,
 		CalcMethod:     in.CalcMethod,
 		SharesBasis:    in.SharesBasis,
 		ParValueAtRun:  in.ParValueAtRun,
@@ -201,7 +201,7 @@ func DivCalcLine(in DivCalcInputs, ratePct, whtPct decimal.Decimal) DividendRunL
 func SumDivLines(lines []DividendRunLine) (memberCount int, totBasis, totGross, totWHT, totNet decimal.Decimal) {
 	seen := map[uuid.UUID]struct{}{}
 	for _, l := range lines {
-		seen[l.MemberID] = struct{}{}
+		seen[l.CounterpartyID] = struct{}{}
 		totBasis = totBasis.Add(l.SharesBasis)
 		totGross = totGross.Add(l.GrossDividend)
 		totWHT = totWHT.Add(l.WHTAmount)

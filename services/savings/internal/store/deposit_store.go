@@ -35,8 +35,8 @@ func NewDepositStore(pool *pgxpool.Pool) *DepositStore {
 
 // ─────────── Account scan / cols ───────────
 
-// acctCols projects counterparty_id where member_id used to be (Phase
-// D sub-PR 2a). Scan dest is still DepositAccount.MemberID — the
+// acctCols projects counterparty_id where counterparty_id used to be (Phase
+// D sub-PR 2a). Scan dest is still DepositAccount.CounterpartyID — the
 // field is a "lying name" stub that holds counterparty.id; sub-PR 2b
 // renames it. guardian_member_id stays as-is — it's a distinct column
 // not covered by the counterparty unification.
@@ -55,7 +55,7 @@ const acctCols = `
 func scanAcct(row pgx.Row) (*domain.DepositAccount, error) {
 	var a domain.DepositAccount
 	err := row.Scan(
-		&a.ID, &a.TenantID, &a.MemberID, &a.ProductID, &a.AccountNo, &a.Status,
+		&a.ID, &a.TenantID, &a.CounterpartyID, &a.ProductID, &a.AccountNo, &a.Status,
 		&a.CurrentBalance, &a.AvailableBalance,
 		&a.OpenedAt, &a.MaturesAt, &a.ClosedAt,
 		&a.LastActivityAt, &a.LastDepositAt, &a.LastWithdrawalAt,
@@ -74,7 +74,7 @@ func scanAcct(row pgx.Row) (*domain.DepositAccount, error) {
 // ─────────── Account open / get / list ───────────
 
 type OpenInput struct {
-	MemberID             uuid.UUID
+	CounterpartyID             uuid.UUID
 	ProductID            uuid.UUID
 	OpeningDeposit       decimal.Decimal // 0 to skip the opening deposit
 	OpeningChannel       *domain.DepositChannel
@@ -100,9 +100,16 @@ func (s *DepositStore) OpenAccountTx(ctx context.Context, tx pgx.Tx, in OpenInpu
 	}
 	now := time.Now()
 
+	// Resolve members.id → counterparty.id at the boundary; the handler
+	// still passes a real members.id (OpenInput.CounterpartyID); the column
+	// FKs counterparties(id) post-Phase D sub-PR 2a.
+	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve counterparty for deposit open: %w", err)
+	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO deposit_accounts (
-			tenant_id, member_id, product_id, account_no, status,
+			tenant_id, counterparty_id, product_id, account_no, status,
 			current_balance, available_balance,
 			opened_at, matures_at,
 			fixed_term_months, fixed_interest_rate_pct,
@@ -119,7 +126,7 @@ func (s *DepositStore) OpenAccountTx(ctx context.Context, tx pgx.Tx, in OpenInpu
 			$13
 		)
 		RETURNING `+acctCols,
-		in.MemberID, in.ProductID, accountNo,
+		cpID, in.ProductID, accountNo,
 		now, matures,
 		in.FixedTermMonths, in.FixedInterestRatePct,
 		in.GoalTargetAmount, in.GoalTargetDate, in.GoalDescription,
@@ -226,7 +233,7 @@ func (s *DepositStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f AcctList
 
 	var total int
 	if err := tx.QueryRow(ctx,
-		"SELECT COUNT(*) FROM deposit_accounts a JOIN members m ON m.id = a.member_id JOIN deposit_products p ON p.id = a.product_id "+where,
+		"SELECT COUNT(*) FROM deposit_accounts a JOIN members m ON m.id = a.counterparty_id JOIN deposit_products p ON p.id = a.product_id "+where,
 		args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -237,7 +244,7 @@ func (s *DepositStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f AcctList
 		       m.member_no, m.full_name, m.status::text,
 		       p.code, p.name, p.product_type
 		FROM deposit_accounts a
-		JOIN members m ON m.id = a.member_id
+		JOIN members m ON m.id = a.counterparty_id
 		JOIN deposit_products p ON p.id = a.product_id
 		%s
 		ORDER BY a.current_balance DESC, m.full_name ASC
@@ -251,7 +258,7 @@ func (s *DepositStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f AcctList
 	for rows.Next() {
 		var it AcctListItem
 		err := rows.Scan(
-			&it.Account.ID, &it.Account.TenantID, &it.Account.MemberID, &it.Account.ProductID,
+			&it.Account.ID, &it.Account.TenantID, &it.Account.CounterpartyID, &it.Account.ProductID,
 			&it.Account.AccountNo, &it.Account.Status,
 			&it.Account.CurrentBalance, &it.Account.AvailableBalance,
 			&it.Account.OpenedAt, &it.Account.MaturesAt, &it.Account.ClosedAt,
@@ -404,7 +411,7 @@ func (s *DepositStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostDepInput
 
 	row := tx.QueryRow(ctx, `
 		INSERT INTO deposit_transactions (
-			tenant_id, account_id, member_id, txn_no, txn_type,
+			tenant_id, account_id, counterparty_id, txn_no, txn_type,
 			amount, value_date,
 			channel, channel_ref, narration,
 			counterparty_account_id, counterparty_txn_id,
@@ -422,14 +429,14 @@ func (s *DepositStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostDepInput
 			$15, $16, $17,
 			$18
 		)
-		RETURNING id, tenant_id, account_id, member_id, txn_no, txn_type,
+		RETURNING id, tenant_id, account_id, counterparty_id, txn_no, txn_type,
 		          amount, value_date, channel, channel_ref, narration,
 		          counterparty_account_id, counterparty_txn_id,
 		          reverses_txn_id, reversed_by_txn_id, reversal_reason,
 		          balance_after, initiated_by, authorized_by, authorization_reason,
 		          workflow_instance_id, posted_at, created_at
 	`,
-		in.Account.ID, in.Account.MemberID, txnNo, string(in.TxnType),
+		in.Account.ID, in.Account.CounterpartyID, txnNo, string(in.TxnType),
 		signed, valueDate,
 		ch, in.ChannelRef, in.Narration,
 		cpAcctID, in.CounterpartyTxnID,
@@ -455,11 +462,11 @@ func (s *DepositStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostDepInput
 	// Upsert today's daily snapshot for this account.
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO deposit_daily_balances (tenant_id, account_id, snapshot_date, balance, product_id, member_id)
+		INSERT INTO deposit_daily_balances (tenant_id, account_id, snapshot_date, balance, product_id, counterparty_id)
 		VALUES (current_tenant_id(), $1, $2, $3, $4, $5)
 		ON CONFLICT (account_id, snapshot_date)
 		DO UPDATE SET balance = EXCLUDED.balance
-	`, in.Account.ID, today, newBalance, in.Account.ProductID, in.Account.MemberID); err != nil {
+	`, in.Account.ID, today, newBalance, in.Account.ProductID, in.Account.CounterpartyID); err != nil {
 		return nil, err
 	}
 
@@ -476,7 +483,7 @@ func (s *DepositStore) LinkCounterpartyTxnTx(ctx context.Context, tx pgx.Tx, txn
 // GetTxnTx loads a single transaction by id.
 func (s *DepositStore) GetTxnTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*domain.DepositTransaction, error) {
 	row := tx.QueryRow(ctx, `
-		SELECT id, tenant_id, account_id, member_id, txn_no, txn_type,
+		SELECT id, tenant_id, account_id, counterparty_id, txn_no, txn_type,
 		       amount, value_date, channel, channel_ref, narration,
 		       counterparty_account_id, counterparty_txn_id,
 		       reverses_txn_id, reversed_by_txn_id, reversal_reason,
@@ -494,7 +501,7 @@ func scanDepTxn(row pgx.Row) (*domain.DepositTransaction, error) {
 	var t domain.DepositTransaction
 	var ch *string
 	err := row.Scan(
-		&t.ID, &t.TenantID, &t.AccountID, &t.MemberID, &t.TxnNo, &t.TxnType,
+		&t.ID, &t.TenantID, &t.AccountID, &t.CounterpartyID, &t.TxnNo, &t.TxnType,
 		&t.Amount, &t.ValueDate, &ch, &t.ChannelRef, &t.Narration,
 		&t.CounterpartyAccountID, &t.CounterpartyTxnID,
 		&t.ReversesTxnID, &t.ReversedByTxnID, &t.ReversalReason,
@@ -573,7 +580,7 @@ func (s *DepositStore) StatementTx(ctx context.Context, tx pgx.Tx, accountID uui
 		return nil, decimal.Zero, err
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT id, tenant_id, account_id, member_id, txn_no, txn_type,
+		SELECT id, tenant_id, account_id, counterparty_id, txn_no, txn_type,
 		       amount, value_date, channel, channel_ref, narration,
 		       counterparty_account_id, counterparty_txn_id,
 		       reverses_txn_id, reversed_by_txn_id, reversal_reason,
@@ -663,8 +670,8 @@ func (s *DepositStore) SummaryTx(ctx context.Context, tx pgx.Tx) (*DepositsSumma
 func (s *DepositStore) SnapshotForDateTx(ctx context.Context, tx pgx.Tx, date time.Time) (int, error) {
 	d := date.UTC().Truncate(24 * time.Hour)
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO deposit_daily_balances (tenant_id, account_id, snapshot_date, balance, product_id, member_id)
-		SELECT current_tenant_id(), a.id, $1, a.current_balance, a.product_id, a.member_id
+		INSERT INTO deposit_daily_balances (tenant_id, account_id, snapshot_date, balance, product_id, counterparty_id)
+		SELECT current_tenant_id(), a.id, $1, a.current_balance, a.product_id, a.counterparty_id
 		FROM deposit_accounts a
 		WHERE a.status <> 'closed'
 		ON CONFLICT (account_id, snapshot_date)

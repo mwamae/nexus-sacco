@@ -107,7 +107,7 @@ func (s *ApprovalsStore) GetTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*d
 type ApprovalListFilter struct {
 	Status        string
 	Kind          string
-	MemberID      *uuid.UUID
+	CounterpartyID      *uuid.UUID
 	MakerUserID   *uuid.UUID
 	IncludeClosed bool
 	Limit         int
@@ -130,9 +130,9 @@ func (s *ApprovalsStore) ListTx(ctx context.Context, tx pgx.Tx, f ApprovalListFi
 		args = append(args, f.Kind)
 		idx++
 	}
-	if f.MemberID != nil {
+	if f.CounterpartyID != nil {
 		where += " AND subject_member_id = $" + itoa(idx)
-		args = append(args, *f.MemberID)
+		args = append(args, *f.CounterpartyID)
 		idx++
 	}
 	if f.MakerUserID != nil {

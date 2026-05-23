@@ -89,7 +89,7 @@ func (h *LoanRepaymentHandler) ExecuteRepaymentTx(
 		if err != nil {
 			return nil, err
 		}
-		if acct.MemberID != loan.MemberID {
+		if acct.CounterpartyID != loan.CounterpartyID {
 			return nil, httpx.ErrBadRequest("savings account does not belong to this member")
 		}
 		if acct.AvailableBalance.LessThan(p.Amount) {
@@ -158,7 +158,7 @@ func (h *LoanRepaymentHandler) ExecuteSettleTx(
 		if err != nil {
 			return nil, err
 		}
-		if acct.MemberID != loan.MemberID {
+		if acct.CounterpartyID != loan.CounterpartyID {
 			return nil, httpx.ErrBadRequest("savings account does not belong to this member")
 		}
 		if acct.AvailableBalance.LessThan(payoff) {

@@ -112,7 +112,7 @@ func (h *LoanHandler) ExecuteDisbursementTx(
 		if err != nil {
 			return nil, err
 		}
-		if acct.MemberID != loan.MemberID {
+		if acct.CounterpartyID != loan.CounterpartyID {
 			return nil, httpx.ErrBadRequest("target deposit account does not belong to this member")
 		}
 		internal := domain.DepChannelInternal

@@ -26,17 +26,23 @@ func NewLoanGuaranteeStore(pool *pgxpool.Pool) *LoanGuaranteeStore {
 // ─────────── Guarantees ───────────
 
 func (s *LoanGuaranteeStore) CreateTx(ctx context.Context, tx pgx.Tx, g *domain.LoanGuarantee) (*domain.LoanGuarantee, error) {
+	// Resolve members.id → counterparty.id at the boundary; the handler
+	// still receives a real members.id from the request payload.
+	guarantorCPID, err := ResolveCounterpartyID(ctx, tx, g.GuarantorMemberID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for guarantor: %w", err)
+	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO loan_guarantees (
-			tenant_id, application_id, guarantor_member_id, amount_guaranteed,
+			tenant_id, application_id, guarantor_counterparty_id, amount_guaranteed,
 			status, requested_by
 		) VALUES (
 			current_tenant_id(), $1, $2, $3, 'pending_consent', $4
 		)
-		RETURNING id, tenant_id, application_id, loan_id, guarantor_member_id,
+		RETURNING id, tenant_id, application_id, loan_id, guarantor_counterparty_id,
 		          amount_guaranteed, status, requested_at, requested_by,
 		          responded_at, released_at, called_upon_at, decline_reason, notes
-	`, g.ApplicationID, g.GuarantorMemberID, g.AmountGuaranteed, g.RequestedBy)
+	`, g.ApplicationID, guarantorCPID, g.AmountGuaranteed, g.RequestedBy)
 	var out domain.LoanGuarantee
 	if err := row.Scan(
 		&out.ID, &out.TenantID, &out.ApplicationID, &out.LoanID, &out.GuarantorMemberID,
@@ -50,7 +56,7 @@ func (s *LoanGuaranteeStore) CreateTx(ctx context.Context, tx pgx.Tx, g *domain.
 
 func (s *LoanGuaranteeStore) ByApplicationTx(ctx context.Context, tx pgx.Tx, appID uuid.UUID) ([]domain.LoanGuarantee, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, tenant_id, application_id, loan_id, guarantor_member_id,
+		SELECT id, tenant_id, application_id, loan_id, guarantor_counterparty_id,
 		       amount_guaranteed, status, requested_at, requested_by,
 		       responded_at, released_at, called_upon_at, decline_reason, notes
 		FROM loan_guarantees WHERE application_id = $1
@@ -93,7 +99,7 @@ func (s *LoanGuaranteeStore) RespondTx(
 		       decline_reason = $3
 		 WHERE id = $1
 		   AND status = 'pending_consent'
-		 RETURNING id, tenant_id, application_id, loan_id, guarantor_member_id,
+		 RETURNING id, tenant_id, application_id, loan_id, guarantor_counterparty_id,
 		           amount_guaranteed, status, requested_at, requested_by,
 		           responded_at, released_at, called_upon_at, decline_reason, notes
 	`, guaranteeID, status, declineReason)
@@ -131,18 +137,18 @@ type GuarantorshipRow struct {
 // level.
 func (s *LoanGuaranteeStore) ByGuarantorMemberTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) ([]GuarantorshipRow, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT g.id, g.tenant_id, g.application_id, g.loan_id, g.guarantor_member_id,
+		SELECT g.id, g.tenant_id, g.application_id, g.loan_id, g.guarantor_counterparty_id,
 		       g.amount_guaranteed, g.status, g.requested_at, g.requested_by,
 		       g.responded_at, g.released_at, g.called_upon_at, g.decline_reason, g.notes,
 		       l.loan_no,
 		       a.application_no,
-		       a.member_id        AS borrower_member_id,
+		       a.counterparty_id        AS borrower_member_id,
 		       m.full_name        AS borrower_full_name,
 		       p.code             AS product_code,
 		       p.name             AS product_name
 		  FROM loan_guarantees g
 		  JOIN loan_applications a ON a.id = g.application_id
-		  JOIN members          m ON m.id = a.member_id
+		  JOIN members          m ON m.id = a.counterparty_id
 		  JOIN loan_products    p ON p.id = a.product_id
 		  LEFT JOIN loans       l ON l.id = g.loan_id
 		 WHERE g.guarantor_counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)

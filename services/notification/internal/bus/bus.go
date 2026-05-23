@@ -21,12 +21,12 @@ import (
 	"github.com/nexussacco/notification/internal/domain"
 )
 
-// Key identifies a subscriber. Either UserID or MemberID is set —
+// Key identifies a subscriber. Either UserID or CounterpartyID is set —
 // matches the recipient model on the notifications table.
 type Key struct {
 	TenantID uuid.UUID
 	UserID   uuid.UUID
-	MemberID uuid.UUID
+	CounterpartyID uuid.UUID
 }
 
 type Bus struct {

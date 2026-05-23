@@ -115,7 +115,7 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			memberID := loan.MemberID
+			memberID := loan.CounterpartyID
 			amount := in.Amount
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:            domain.ApprovalKindLoanRepayment,
@@ -239,7 +239,7 @@ func (h *LoanRepaymentHandler) emitRepayment(
 	var member *store.MemberLite
 	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
-		member, err = h.Members.GetTx(r.Context(), tx, result.Loan.MemberID)
+		member, err = h.Members.GetByCounterpartyTx(r.Context(), tx, result.Loan.CounterpartyID)
 		return err
 	})
 	if member == nil {
@@ -381,7 +381,7 @@ func (h *LoanRepaymentHandler) Settle(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			memberID := loan.MemberID
+			memberID := loan.CounterpartyID
 			payoff := loan.PenaltyBalance.Add(loan.InterestBalance).Add(loan.PrincipalBalance).Add(loan.FeesBalance)
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:            domain.ApprovalKindLoanSettle,

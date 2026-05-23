@@ -275,13 +275,13 @@ func (s *InterestStore) ComputeLinesTx(
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT account_id, member_id, product_id,
+		SELECT account_id, counterparty_id, product_id,
 		       COUNT(*)              AS snapshot_days,
 		       COALESCE(SUM(balance), 0) AS sum_balance
 		FROM deposit_daily_balances
 		WHERE snapshot_date BETWEEN $1 AND $2
 		  AND product_id = ANY($3)
-		GROUP BY account_id, member_id, product_id
+		GROUP BY account_id, counterparty_id, product_id
 		HAVING SUM(balance) > 0
 		ORDER BY account_id
 	`, run.FYStart, run.FYEnd, run.ProductIDs)
@@ -302,7 +302,7 @@ func (s *InterestStore) ComputeLinesTx(
 		}
 		line := domain.CalcLine(domain.CalcInputs{
 			AccountID:          acctID,
-			MemberID:           memberID,
+			CounterpartyID:           memberID,
 			ProductID:          productID,
 			DaysInFY:           daysInFY,
 			DaysWithSnapshots:  snapshotDays,
@@ -340,7 +340,7 @@ func (s *InterestStore) ReplaceLinesTx(
 		l := &lines[i]
 		_, err := tx.Exec(ctx, `
 			INSERT INTO interest_run_lines (
-				tenant_id, run_id, account_id, member_id, product_id,
+				tenant_id, run_id, account_id, counterparty_id, product_id,
 				days_in_fy, days_with_snapshots, sum_of_daily_balances,
 				weighted_avg_balance, rate_applied_pct, wht_rate_pct,
 				gross_interest, wht_amount, net_interest,
@@ -353,7 +353,7 @@ func (s *InterestStore) ReplaceLinesTx(
 				$14
 			)
 		`,
-			runID, l.AccountID, l.MemberID, l.ProductID,
+			runID, l.AccountID, l.CounterpartyID, l.ProductID,
 			l.DaysInFY, l.DaysWithSnapshots, l.SumOfDailyBalances,
 			l.WeightedAvgBalance, l.RateAppliedPct, l.WHTRatePct,
 			l.GrossInterest, l.WHTAmount, l.NetInterest,
@@ -370,7 +370,7 @@ func (s *InterestStore) ReplaceLinesTx(
 // and the posting loop.
 func (s *InterestStore) LinesByRunTx(ctx context.Context, tx pgx.Tx, runID uuid.UUID) ([]domain.InterestRunLine, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, tenant_id, run_id, account_id, member_id, product_id,
+		SELECT id, tenant_id, run_id, account_id, counterparty_id, product_id,
 		       days_in_fy, days_with_snapshots, sum_of_daily_balances,
 		       weighted_avg_balance, rate_applied_pct, wht_rate_pct,
 		       gross_interest, wht_amount, net_interest,
@@ -379,7 +379,7 @@ func (s *InterestStore) LinesByRunTx(ctx context.Context, tx pgx.Tx, runID uuid.
 		       posted_at, posted_txn_id, share_txn_id, notes
 		FROM interest_run_lines
 		WHERE run_id = $1
-		ORDER BY member_id, account_id
+		ORDER BY counterparty_id, account_id
 	`, runID)
 	if err != nil {
 		return nil, err
@@ -389,7 +389,7 @@ func (s *InterestStore) LinesByRunTx(ctx context.Context, tx pgx.Tx, runID uuid.
 	for rows.Next() {
 		var l domain.InterestRunLine
 		err := rows.Scan(
-			&l.ID, &l.TenantID, &l.RunID, &l.AccountID, &l.MemberID, &l.ProductID,
+			&l.ID, &l.TenantID, &l.RunID, &l.AccountID, &l.CounterpartyID, &l.ProductID,
 			&l.DaysInFY, &l.DaysWithSnapshots, &l.SumOfDailyBalances,
 			&l.WeightedAvgBalance, &l.RateAppliedPct, &l.WHTRatePct,
 			&l.GrossInterest, &l.WHTAmount, &l.NetInterest,
@@ -456,21 +456,21 @@ func (s *InterestStore) InsertTaxPayableTx(
 ) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO tax_payable_ledger (
-			tenant_id, source_kind, source_id, member_id, member_no, member_name,
+			tenant_id, source_kind, source_id, counterparty_id, member_no, member_name,
 			fy_label, gross_amount, wht_rate_pct, wht_amount, posted_by
 		) VALUES (
 			current_tenant_id(), $1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10
 		)
 	`,
-		e.SourceKind, e.SourceID, e.MemberID, e.MemberNo, e.MemberName,
+		e.SourceKind, e.SourceID, e.CounterpartyID, e.MemberNo, e.MemberName,
 		e.FYLabel, e.GrossAmount, e.WHTRatePct, e.WHTAmount, e.PostedBy,
 	)
 	return err
 }
 
 type WHTScheduleRow struct {
-	MemberID    uuid.UUID       `json:"member_id"`
+	CounterpartyID    uuid.UUID       `json:"counterparty_id"`
 	MemberNo    string          `json:"member_no"`
 	MemberName  string          `json:"member_name"`
 	GrossAmount decimal.Decimal `json:"gross_amount"`
@@ -485,12 +485,12 @@ func (s *InterestStore) WHTScheduleForFYTx(
 	fyLabel string,
 ) ([]WHTScheduleRow, decimal.Decimal, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT member_id, member_no, member_name,
+		SELECT counterparty_id, member_no, member_name,
 		       SUM(gross_amount) AS gross,
 		       SUM(wht_amount)   AS wht
 		FROM tax_payable_ledger
 		WHERE fy_label = $1
-		GROUP BY member_id, member_no, member_name
+		GROUP BY counterparty_id, member_no, member_name
 		ORDER BY wht DESC
 	`, fyLabel)
 	if err != nil {
@@ -501,7 +501,7 @@ func (s *InterestStore) WHTScheduleForFYTx(
 	var total decimal.Decimal
 	for rows.Next() {
 		var r WHTScheduleRow
-		if err := rows.Scan(&r.MemberID, &r.MemberNo, &r.MemberName, &r.GrossAmount, &r.WHTAmount); err != nil {
+		if err := rows.Scan(&r.CounterpartyID, &r.MemberNo, &r.MemberName, &r.GrossAmount, &r.WHTAmount); err != nil {
 			return nil, decimal.Zero, err
 		}
 		out = append(out, r)
@@ -517,7 +517,7 @@ func (s *InterestStore) PerMemberCertificateTx(
 	memberID uuid.UUID, fyLabel string,
 ) ([]domain.TaxPayableEntry, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, tenant_id, source_kind, source_id, member_id, member_no, member_name,
+		SELECT id, tenant_id, source_kind, source_id, counterparty_id, member_no, member_name,
 		       fy_label, gross_amount, wht_rate_pct, wht_amount,
 		       posted_at, posted_by, remitted_at, remittance_ref
 		FROM tax_payable_ledger
@@ -532,7 +532,7 @@ func (s *InterestStore) PerMemberCertificateTx(
 	for rows.Next() {
 		var e domain.TaxPayableEntry
 		if err := rows.Scan(
-			&e.ID, &e.TenantID, &e.SourceKind, &e.SourceID, &e.MemberID, &e.MemberNo, &e.MemberName,
+			&e.ID, &e.TenantID, &e.SourceKind, &e.SourceID, &e.CounterpartyID, &e.MemberNo, &e.MemberName,
 			&e.FYLabel, &e.GrossAmount, &e.WHTRatePct, &e.WHTAmount,
 			&e.PostedAt, &e.PostedBy, &e.RemittedAt, &e.RemittanceRef,
 		); err != nil {

@@ -409,7 +409,7 @@ function LineRow({ line, runStatus, currency, onReload }: {
   return (
     <tr>
       <td>
-        <a className="tbl-link" href={`/members/${line.member_id}?tab=accounts`}>{line.member_id.slice(0, 8)}…</a>
+        <a className="tbl-link" href={`/members/${line.counterparty_id}?tab=accounts`}>{line.counterparty_id.slice(0, 8)}…</a>
         {line.days_held_in_fy != null && <div className="muted tiny">days held: {line.days_held_in_fy}/{line.days_in_fy}</div>}
       </td>
       <td className="mono" style={{ textAlign: 'right' }}>{fmt(line.shares_basis)}</td>
@@ -510,11 +510,11 @@ function fmt(s: string | number | undefined): string {
 }
 
 function downloadLinesCSV(run: DividendRun, lines: DividendRunLine[], currency: string) {
-  const rows = [['run_no', 'fy_label', 'method', 'share_account_id', 'member_id', 'shares_basis', 'capital_basis', 'rate_pct', `gross (${currency})`, 'wht', `net (${currency})`, 'days_held_in_fy', 'payout_method', 'posted_at']];
+  const rows = [['run_no', 'fy_label', 'method', 'share_account_id', 'counterparty_id', 'shares_basis', 'capital_basis', 'rate_pct', `gross (${currency})`, 'wht', `net (${currency})`, 'days_held_in_fy', 'payout_method', 'posted_at']];
   for (const l of lines) {
     rows.push([
       run.run_no, run.financial_year_label, l.calc_method,
-      l.share_account_id, l.member_id,
+      l.share_account_id, l.counterparty_id,
       l.shares_basis, l.capital_basis,
       l.rate_applied_pct, l.gross_dividend, l.wht_amount, l.net_dividend,
       l.days_held_in_fy != null ? String(l.days_held_in_fy) : '',

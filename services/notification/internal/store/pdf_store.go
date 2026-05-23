@@ -167,7 +167,7 @@ func (s *PDFStore) GetDocumentByTokenAnyTenantTx(ctx context.Context, tx pgx.Tx,
 
 // ListBySubjectTx — used by member profile / loan detail panels.
 type PDFListFilter struct {
-	MemberID  *uuid.UUID
+	CounterpartyID  *uuid.UUID
 	LoanID    *uuid.UUID
 	AccountID *uuid.UUID
 	DocType   string
@@ -179,9 +179,9 @@ func (s *PDFStore) ListTx(ctx context.Context, tx pgx.Tx, f PDFListFilter) ([]do
 	where := "WHERE 1=1"
 	args := []any{}
 	idx := 1
-	if f.MemberID != nil {
+	if f.CounterpartyID != nil {
 		where += " AND subject_member_id = $" + strconv.Itoa(idx)
-		args = append(args, *f.MemberID)
+		args = append(args, *f.CounterpartyID)
 		idx++
 	}
 	if f.LoanID != nil {

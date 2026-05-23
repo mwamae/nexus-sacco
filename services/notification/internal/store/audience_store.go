@@ -1,5 +1,5 @@
 // Audience resolver — converts a campaign's audience filter into the
-// concrete list of recipients (member_id, name, phone, email).
+// concrete list of recipients (counterparty_id, name, phone, email).
 //
 // Stage 7 supports four filter shapes; more land in stage 8 as the
 // frontend exposes them.
@@ -35,7 +35,7 @@ func NewAudienceStore(pool *pgxpool.Pool) *AudienceStore {
 }
 
 type AudienceRecipient struct {
-	MemberID uuid.UUID
+	CounterpartyID uuid.UUID
 	MemberNo string
 	FullName string
 	Phone    *string
@@ -93,7 +93,7 @@ func (s *AudienceStore) ResolveTx(ctx context.Context, tx pgx.Tx, f *AudienceFil
 	out := []AudienceRecipient{}
 	for rows.Next() {
 		var r AudienceRecipient
-		if err := rows.Scan(&r.MemberID, &r.MemberNo, &r.FullName, &r.Phone, &r.Email); err != nil {
+		if err := rows.Scan(&r.CounterpartyID, &r.MemberNo, &r.FullName, &r.Phone, &r.Email); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -124,7 +124,7 @@ func buildAudienceQuery(f *AudienceFilter, countOnly bool) (string, []any, error
 		return `
 			SELECT ` + selectCols + `
 			FROM members m
-			JOIN loans l ON l.member_id = m.id
+			JOIN loans l ON l.counterparty_id = m.id
 			WHERE l.status IN ('active', 'in_arrears', 'restructured')
 		`, nil, nil
 
@@ -136,7 +136,7 @@ func buildAudienceQuery(f *AudienceFilter, countOnly bool) (string, []any, error
 		return `
 			SELECT ` + selectCols + `
 			FROM members m
-			JOIN loans l ON l.member_id = m.id
+			JOIN loans l ON l.counterparty_id = m.id
 			WHERE l.status IN ('active', 'in_arrears', 'restructured', 'defaulted')
 			  AND l.days_past_due >= $1
 		`, []any{dpd}, nil

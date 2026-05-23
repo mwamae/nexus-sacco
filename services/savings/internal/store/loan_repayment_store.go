@@ -776,7 +776,7 @@ func (s *LoanStore) PayoffFigureTx(ctx context.Context, tx pgx.Tx, loanID uuid.U
 
 func (s *LoanStore) GetTxnTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*domain.LoanTransaction, error) {
 	row := tx.QueryRow(ctx, `
-		SELECT id, tenant_id, loan_id, member_id, txn_no, txn_type,
+		SELECT id, tenant_id, loan_id, counterparty_id, txn_no, txn_type,
 		       amount, principal_component, interest_component, fee_component, penalty_component,
 		       value_date, channel, channel_ref, narration,
 		       reverses_txn_id, reversed_by_txn_id, installment_no,
@@ -785,7 +785,7 @@ func (s *LoanStore) GetTxnTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*dom
 	`, id)
 	var t domain.LoanTransaction
 	err := row.Scan(
-		&t.ID, &t.TenantID, &t.LoanID, &t.MemberID, &t.TxnNo, &t.TxnType,
+		&t.ID, &t.TenantID, &t.LoanID, &t.CounterpartyID, &t.TxnNo, &t.TxnType,
 		&t.Amount, &t.PrincipalComponent, &t.InterestComponent, &t.FeeComponent, &t.PenaltyComponent,
 		&t.ValueDate, &t.Channel, &t.ChannelRef, &t.Narration,
 		&t.ReversesTxnID, &t.ReversedByTxnID, &t.InstallmentNo,

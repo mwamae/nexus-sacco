@@ -45,7 +45,7 @@ func LoanRepaymentReminderHandler(notifs *store.NotificationStore, templates *st
 		type row struct {
 			LoanID         uuid.UUID
 			LoanNo         string
-			MemberID       uuid.UUID
+			CounterpartyID       uuid.UUID
 			MemberName     string
 			Phone          *string
 			Email          *string
@@ -56,11 +56,11 @@ func LoanRepaymentReminderHandler(notifs *store.NotificationStore, templates *st
 		var rows []row
 		err := pool.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 			r, err := tx.Query(ctx, `
-				SELECT l.id, l.loan_no, l.member_id, m.full_name, m.phone, m.email,
+				SELECT l.id, l.loan_no, l.counterparty_id, m.full_name, m.phone, m.email,
 				       l.next_installment_due_at, l.next_installment_amount,
 				       (DATE(l.next_installment_due_at) - CURRENT_DATE)::int AS days_ahead
 				FROM loans l
-				JOIN members m ON m.id = l.member_id
+				JOIN members m ON m.id = l.counterparty_id
 				WHERE l.status IN ('active', 'in_arrears', 'restructured')
 				  AND l.next_installment_due_at IS NOT NULL
 				  AND (DATE(l.next_installment_due_at) - CURRENT_DATE)::int = ANY($1::int[])
@@ -73,7 +73,7 @@ func LoanRepaymentReminderHandler(notifs *store.NotificationStore, templates *st
 				var row row
 				var nextAt *time.Time
 				if err := r.Scan(
-					&row.LoanID, &row.LoanNo, &row.MemberID, &row.MemberName, &row.Phone, &row.Email,
+					&row.LoanID, &row.LoanNo, &row.CounterpartyID, &row.MemberName, &row.Phone, &row.Email,
 					&nextAt, &row.NextAmount, &row.DaysAhead,
 				); err != nil {
 					return err
@@ -101,7 +101,7 @@ func LoanRepaymentReminderHandler(notifs *store.NotificationStore, templates *st
 			}
 			if err := dispatchOne(ctx, pool, notifs, templates,
 				tenantID, "LOAN_INSTALLMENT_DUE",
-				&r.MemberID, r.MemberName, r.Phone, r.Email,
+				&r.CounterpartyID, r.MemberName, r.Phone, r.Email,
 				"savings.loans", &r.LoanID, payload,
 			); err != nil {
 				failed++
@@ -132,7 +132,7 @@ func DormancyWarningHandler(notifs *store.NotificationStore, templates *store.Te
 		}
 
 		type row struct {
-			MemberID   uuid.UUID
+			CounterpartyID   uuid.UUID
 			MemberNo   string
 			MemberName string
 			Phone      *string
@@ -154,7 +154,7 @@ func DormancyWarningHandler(notifs *store.NotificationStore, templates *store.Te
 			defer r.Close()
 			for r.Next() {
 				var row row
-				if err := r.Scan(&row.MemberID, &row.MemberNo, &row.MemberName, &row.Phone, &row.Email, &row.LastSeen); err != nil {
+				if err := r.Scan(&row.CounterpartyID, &row.MemberNo, &row.MemberName, &row.Phone, &row.Email, &row.LastSeen); err != nil {
 					return err
 				}
 				rows = append(rows, row)
@@ -174,8 +174,8 @@ func DormancyWarningHandler(notifs *store.NotificationStore, templates *store.Te
 			}
 			if err := dispatchOne(ctx, pool, notifs, templates,
 				tenantID, "DORMANCY_WARNING",
-				&r.MemberID, r.MemberName, r.Phone, r.Email,
-				"notification.scheduler.dormancy", &r.MemberID, payload,
+				&r.CounterpartyID, r.MemberName, r.Phone, r.Email,
+				"notification.scheduler.dormancy", &r.CounterpartyID, payload,
 			); err != nil {
 				failed++
 				continue

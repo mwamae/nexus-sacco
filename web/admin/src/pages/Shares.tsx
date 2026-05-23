@@ -126,7 +126,7 @@ export default function Shares() {
                     <td><Avatar name={it.full_name} size="sm" /></td>
                     <td>
                       <div style={{ fontWeight: 500 }}>
-                        <a href={`/members/${it.account.member_id}?tab=accounts`} className="tbl-link">{it.full_name}</a>
+                        <a href={`/members/${it.account.counterparty_id}?tab=accounts`} className="tbl-link">{it.full_name}</a>
                       </div>
                       <div className="tiny-mono">{it.member_no}</div>
                     </td>
@@ -141,7 +141,7 @@ export default function Shares() {
                     </td>
                     <td className="mono" style={{ textAlign: 'right' }}>{currency} {fmtMoney(it.account.total_value)}</td>
                     <td>
-                      <a className="btn btn-sm" href={`/members/${it.account.member_id}?tab=accounts`} title="Open">
+                      <a className="btn btn-sm" href={`/members/${it.account.counterparty_id}?tab=accounts`} title="Open">
                         <Icon name="eye" size={12} />
                       </a>
                     </td>

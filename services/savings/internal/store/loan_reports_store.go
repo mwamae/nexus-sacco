@@ -244,7 +244,7 @@ type MemberLoanRow struct {
 }
 
 type MemberLoanHistory struct {
-	MemberID            uuid.UUID       `json:"member_id"`
+	CounterpartyID            uuid.UUID       `json:"counterparty_id"`
 	TotalLoansEverTaken int             `json:"total_loans_ever_taken"`
 	ActiveLoans         int             `json:"active_loans"`
 	TotalDisbursed      decimal.Decimal `json:"total_disbursed"`
@@ -253,7 +253,7 @@ type MemberLoanHistory struct {
 }
 
 func (s *LoanReportsStore) MemberLoanHistoryTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) (*MemberLoanHistory, error) {
-	out := &MemberLoanHistory{MemberID: memberID, Loans: []MemberLoanRow{}}
+	out := &MemberLoanHistory{CounterpartyID: memberID, Loans: []MemberLoanRow{}}
 	err := tx.QueryRow(ctx, `
 		SELECT COUNT(*),
 		       COALESCE(SUM(CASE WHEN status IN ('active','in_arrears','restructured') THEN 1 ELSE 0 END), 0),
@@ -278,7 +278,7 @@ func (s *LoanReportsStore) MemberLoanHistoryTx(ctx context.Context, tx pgx.Tx, m
 	for rows.Next() {
 		var r MemberLoanRow
 		dest := []any{
-			&r.Loan.ID, &r.Loan.TenantID, &r.Loan.LoanNo, &r.Loan.ApplicationID, &r.Loan.MemberID, &r.Loan.ProductID, &r.Loan.Status,
+			&r.Loan.ID, &r.Loan.TenantID, &r.Loan.LoanNo, &r.Loan.ApplicationID, &r.Loan.CounterpartyID, &r.Loan.ProductID, &r.Loan.Status,
 			&r.Loan.Principal, &r.Loan.InterestRatePct, &r.Loan.InterestMethod, &r.Loan.RepaymentMethod,
 			&r.Loan.TermMonths, &r.Loan.GracePeriodMonths, &r.Loan.InstallmentCount, &r.Loan.FirstDueDate,
 			&r.Loan.DisbursementChannel, &r.Loan.DisbursementTargetAccountID, &r.Loan.DisbursementRef,
@@ -325,7 +325,7 @@ func (s *LoanReportsStore) MaturingLoansTx(ctx context.Context, tx pgx.Tx, withi
 		SELECT `+prefixCols(loanCols, "l")+`,
 		       m.member_no, m.full_name, p.name, f.final_due
 		FROM loans l
-		JOIN members m ON m.id = l.member_id
+		JOIN members m ON m.id = l.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		JOIN final_dues f ON f.loan_id = l.id
 		WHERE l.status IN ('active', 'in_arrears', 'restructured')
@@ -341,7 +341,7 @@ func (s *LoanReportsStore) MaturingLoansTx(ctx context.Context, tx pgx.Tx, withi
 		var r MaturingLoanRow
 		var finalDue *time.Time
 		dest := []any{
-			&r.Loan.ID, &r.Loan.TenantID, &r.Loan.LoanNo, &r.Loan.ApplicationID, &r.Loan.MemberID, &r.Loan.ProductID, &r.Loan.Status,
+			&r.Loan.ID, &r.Loan.TenantID, &r.Loan.LoanNo, &r.Loan.ApplicationID, &r.Loan.CounterpartyID, &r.Loan.ProductID, &r.Loan.Status,
 			&r.Loan.Principal, &r.Loan.InterestRatePct, &r.Loan.InterestMethod, &r.Loan.RepaymentMethod,
 			&r.Loan.TermMonths, &r.Loan.GracePeriodMonths, &r.Loan.InstallmentCount, &r.Loan.FirstDueDate,
 			&r.Loan.DisbursementChannel, &r.Loan.DisbursementTargetAccountID, &r.Loan.DisbursementRef,
@@ -389,7 +389,7 @@ func (s *LoanReportsStore) RestructuringRegisterTx(ctx context.Context, tx pgx.T
 		       l.loan_no, m.member_no, m.full_name, p.name
 		FROM loan_restructurings r
 		JOIN loans l ON l.id = r.loan_id
-		JOIN members m ON m.id = l.member_id
+		JOIN members m ON m.id = l.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		`+where+`
 		ORDER BY r.created_at DESC
@@ -426,7 +426,7 @@ func (s *LoanReportsStore) RestructuringRegisterTx(ctx context.Context, tx pgx.T
 type LoanWriteoff struct {
 	ID                  uuid.UUID       `json:"id"`
 	LoanID              uuid.UUID       `json:"loan_id"`
-	MemberID            uuid.UUID       `json:"member_id"`
+	CounterpartyID            uuid.UUID       `json:"counterparty_id"`
 	PrincipalWrittenOff decimal.Decimal `json:"principal_written_off"`
 	InterestWrittenOff  decimal.Decimal `json:"interest_written_off"`
 	FeesWrittenOff      decimal.Decimal `json:"fees_written_off"`
@@ -492,7 +492,7 @@ func (s *LoanReportsStore) WriteOffLoanTx(
 	// Snapshot balances + zero them.
 	wo := &LoanWriteoff{
 		LoanID:              in.LoanID,
-		MemberID:            loan.MemberID,
+		CounterpartyID:            loan.CounterpartyID,
 		PrincipalWrittenOff: loan.PrincipalBalance,
 		InterestWrittenOff:  loan.InterestBalance,
 		FeesWrittenOff:      loan.FeesBalance,
@@ -504,14 +504,14 @@ func (s *LoanReportsStore) WriteOffLoanTx(
 	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO loan_writeoffs (
-			tenant_id, loan_id, member_id,
+			tenant_id, loan_id, counterparty_id,
 			principal_written_off, interest_written_off, fees_written_off, penalty_written_off, total_written_off,
 			reason, authorized_by, writeoff_txn_id
 		) VALUES (
 			current_tenant_id(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		)
 		RETURNING id, authorized_at
-	`, wo.LoanID, wo.MemberID,
+	`, wo.LoanID, wo.CounterpartyID,
 		wo.PrincipalWrittenOff, wo.InterestWrittenOff, wo.FeesWrittenOff, wo.PenaltyWrittenOff, wo.TotalWrittenOff,
 		wo.Reason, wo.AuthorizedBy, wo.WriteoffTxnID)
 	if err := row.Scan(&wo.ID, &wo.AuthorizedAt); err != nil {
@@ -542,14 +542,14 @@ func (s *LoanReportsStore) WriteOffLoanTx(
 
 func (s *LoanReportsStore) WriteoffRegisterTx(ctx context.Context, tx pgx.Tx) ([]WriteoffRegisterRow, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT w.id, w.loan_id, w.member_id,
+		SELECT w.id, w.loan_id, w.counterparty_id,
 		       w.principal_written_off, w.interest_written_off, w.fees_written_off, w.penalty_written_off, w.total_written_off,
 		       w.reason, w.authorized_at, w.authorized_by, w.writeoff_txn_id,
 		       l.loan_no, m.member_no, m.full_name,
 		       COALESCE((SELECT SUM(amount) FROM loan_recoveries WHERE writeoff_id = w.id), 0)
 		FROM loan_writeoffs w
 		JOIN loans l ON l.id = w.loan_id
-		JOIN members m ON m.id = w.member_id
+		JOIN members m ON m.id = w.counterparty_id
 		ORDER BY w.authorized_at DESC
 	`)
 	if err != nil {
@@ -561,7 +561,7 @@ func (s *LoanReportsStore) WriteoffRegisterTx(ctx context.Context, tx pgx.Tx) ([
 		var r WriteoffRegisterRow
 		var w = &r.Writeoff
 		if err := rows.Scan(
-			&w.ID, &w.LoanID, &w.MemberID,
+			&w.ID, &w.LoanID, &w.CounterpartyID,
 			&w.PrincipalWrittenOff, &w.InterestWrittenOff, &w.FeesWrittenOff, &w.PenaltyWrittenOff, &w.TotalWrittenOff,
 			&w.Reason, &w.AuthorizedAt, &w.AuthorizedBy, &w.WriteoffTxnID,
 			&r.LoanNo, &r.MemberNo, &r.MemberName,
@@ -578,7 +578,7 @@ func (s *LoanReportsStore) WriteoffRegisterTx(ctx context.Context, tx pgx.Tx) ([
 
 type CRBLoanRecord struct {
 	LoanNo               string          `json:"loan_no"`
-	MemberID             uuid.UUID       `json:"member_id"`
+	CounterpartyID             uuid.UUID       `json:"counterparty_id"`
 	MemberName           string          `json:"member_name"`
 	IDDocNumber          string          `json:"id_doc_number"`
 	DisbursedAt          *time.Time      `json:"disbursed_at,omitempty"`
@@ -591,12 +591,12 @@ type CRBLoanRecord struct {
 
 func (s *LoanReportsStore) CRBSubmissionTx(ctx context.Context, tx pgx.Tx) ([]CRBLoanRecord, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT l.loan_no, l.member_id, m.full_name, m.id_doc_number,
+		SELECT l.loan_no, l.counterparty_id, m.full_name, m.id_doc_number,
 		       l.disbursed_at, l.principal_disbursed,
 		       (l.principal_balance + l.interest_balance + l.fees_balance + l.penalty_balance),
 		       l.days_past_due, l.arrears_classification
 		FROM loans l
-		JOIN members m ON m.id = l.member_id
+		JOIN members m ON m.id = l.counterparty_id
 		WHERE l.status IN ('active', 'in_arrears', 'restructured', 'written_off')
 		ORDER BY l.disbursed_at
 	`)
@@ -608,7 +608,7 @@ func (s *LoanReportsStore) CRBSubmissionTx(ctx context.Context, tx pgx.Tx) ([]CR
 	for rows.Next() {
 		var r CRBLoanRecord
 		if err := rows.Scan(
-			&r.LoanNo, &r.MemberID, &r.MemberName, &r.IDDocNumber,
+			&r.LoanNo, &r.CounterpartyID, &r.MemberName, &r.IDDocNumber,
 			&r.DisbursedAt, &r.PrincipalDisbursed, &r.OutstandingBalance,
 			&r.DaysPastDue, &r.Classification,
 		); err != nil {

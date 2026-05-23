@@ -26,7 +26,7 @@ func NewLoanApplicationStore(pool *pgxpool.Pool) *LoanApplicationStore {
 }
 
 const loanAppCols = `
-	id, tenant_id, application_no, member_id, product_id, status,
+	id, tenant_id, application_no, counterparty_id, product_id, status,
 	requested_amount, requested_term_months, purpose_category_id, purpose_note,
 	preferred_disbursement_channel,
 	employment_type, employer_name, employer_payroll_contact,
@@ -45,7 +45,7 @@ const loanAppCols = `
 func scanApp(row pgx.Row) (*domain.LoanApplication, error) {
 	var a domain.LoanApplication
 	err := row.Scan(
-		&a.ID, &a.TenantID, &a.ApplicationNo, &a.MemberID, &a.ProductID, &a.Status,
+		&a.ID, &a.TenantID, &a.ApplicationNo, &a.CounterpartyID, &a.ProductID, &a.Status,
 		&a.RequestedAmount, &a.RequestedTermMonths, &a.PurposeCategoryID, &a.PurposeNote,
 		&a.PreferredDisbursementChannel,
 		&a.EmploymentType, &a.EmployerName, &a.EmployerPayrollContact,
@@ -74,9 +74,15 @@ func (s *LoanApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in *doma
 		return nil, err
 	}
 	in.ApplicationNo = appNo
+	// Resolve members.id → counterparty.id at the boundary; the column
+	// FKs counterparties(id) post-Phase D sub-PR 2a.
+	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for loan application create: %w", err)
+	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO loan_applications (
-			tenant_id, application_no, member_id, product_id, status,
+			tenant_id, application_no, counterparty_id, product_id, status,
 			requested_amount, requested_term_months,
 			purpose_category_id, purpose_note, preferred_disbursement_channel,
 			employment_type, employer_name, employer_payroll_contact,
@@ -91,7 +97,7 @@ func (s *LoanApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in *doma
 			$17, $18
 		)
 		RETURNING `+loanAppCols,
-		in.ApplicationNo, in.MemberID, in.ProductID, string(in.Status),
+		in.ApplicationNo, cpID, in.ProductID, string(in.Status),
 		in.RequestedAmount, in.RequestedTermMonths,
 		in.PurposeCategoryID, in.PurposeNote, in.PreferredDisbursementChannel,
 		in.EmploymentType, in.EmployerName, in.EmployerPayrollContact,
@@ -112,7 +118,7 @@ func (s *LoanApplicationStore) GetTx(ctx context.Context, tx pgx.Tx, id uuid.UUI
 
 type AppListFilter struct {
 	Status    string
-	MemberID  *uuid.UUID
+	CounterpartyID  *uuid.UUID
 	ProductID *uuid.UUID
 	Q         string
 	Limit     int
@@ -139,12 +145,12 @@ func (s *LoanApplicationStore) ListTx(ctx context.Context, tx pgx.Tx, f AppListF
 		args = append(args, f.Status)
 		idx++
 	}
-	if f.MemberID != nil {
+	if f.CounterpartyID != nil {
 		// Filter by the counterparty bridge (Phase D sub-PR 1) — the
 		// caller still passes a members.id, but we resolve through the
 		// indexed counterparty_id column.
 		where += fmt.Sprintf(" AND a.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $%d)", idx)
-		args = append(args, *f.MemberID)
+		args = append(args, *f.CounterpartyID)
 		idx++
 	}
 	if f.ProductID != nil {
@@ -159,14 +165,14 @@ func (s *LoanApplicationStore) ListTx(ctx context.Context, tx pgx.Tx, f AppListF
 	}
 	var total int
 	if err := tx.QueryRow(ctx,
-		"SELECT COUNT(*) FROM loan_applications a JOIN members m ON m.id = a.member_id JOIN loan_products p ON p.id = a.product_id "+where, args...).Scan(&total); err != nil {
+		"SELECT COUNT(*) FROM loan_applications a JOIN members m ON m.id = a.counterparty_id JOIN loan_products p ON p.id = a.product_id "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, f.Limit, f.Offset)
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT %s, m.member_no, m.full_name, p.code, p.name
 		FROM loan_applications a
-		JOIN members m ON m.id = a.member_id
+		JOIN members m ON m.id = a.counterparty_id
 		JOIN loan_products p ON p.id = a.product_id
 		%s
 		ORDER BY a.created_at DESC
@@ -181,7 +187,7 @@ func (s *LoanApplicationStore) ListTx(ctx context.Context, tx pgx.Tx, f AppListF
 		var it AppListItem
 		dest := []any{
 			&it.Application.ID, &it.Application.TenantID, &it.Application.ApplicationNo,
-			&it.Application.MemberID, &it.Application.ProductID, &it.Application.Status,
+			&it.Application.CounterpartyID, &it.Application.ProductID, &it.Application.Status,
 			&it.Application.RequestedAmount, &it.Application.RequestedTermMonths,
 			&it.Application.PurposeCategoryID, &it.Application.PurposeNote, &it.Application.PreferredDisbursementChannel,
 			&it.Application.EmploymentType, &it.Application.EmployerName, &it.Application.EmployerPayrollContact,

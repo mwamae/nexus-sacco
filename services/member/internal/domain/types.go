@@ -46,7 +46,7 @@ const (
 
 type MemberStatusChange struct {
 	ID                 uuid.UUID    `json:"id"`
-	MemberID           uuid.UUID    `json:"member_id"`
+	CounterpartyID           uuid.UUID    `json:"counterparty_id"`
 	FromStatus         MemberStatus `json:"from_status,omitempty"`
 	ToStatus           MemberStatus `json:"to_status"`
 	ReasonCategory     StatusReason `json:"reason_category"`
@@ -62,7 +62,7 @@ type MemberStatusChange struct {
 
 type MemberStatusProposal struct {
 	ID                 uuid.UUID    `json:"id"`
-	MemberID           uuid.UUID    `json:"member_id"`
+	CounterpartyID           uuid.UUID    `json:"counterparty_id"`
 	WorkflowInstanceID uuid.UUID    `json:"workflow_instance_id"`
 	ProposedStatus     MemberStatus `json:"proposed_status"`
 	ReasonCategory     StatusReason `json:"reason_category"`
@@ -144,7 +144,7 @@ type Member struct {
 
 type Relation struct {
 	ID            uuid.UUID    `json:"id"`
-	MemberID      uuid.UUID    `json:"member_id"`
+	CounterpartyID      uuid.UUID    `json:"counterparty_id"`
 	Kind          RelationKind `json:"kind"`
 	FullName      string       `json:"full_name"`
 	Relationship  string       `json:"relationship"`
@@ -157,7 +157,7 @@ type Relation struct {
 
 type Document struct {
 	ID          uuid.UUID    `json:"id"`
-	MemberID    uuid.UUID    `json:"member_id"`
+	CounterpartyID    uuid.UUID    `json:"counterparty_id"`
 	Kind        DocumentKind `json:"kind"`
 	StoragePath string       `json:"-"` // never expose raw storage path
 	MIME        string       `json:"mime"`

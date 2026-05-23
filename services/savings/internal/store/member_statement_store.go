@@ -29,7 +29,7 @@ func NewMemberStatementStore(pool *pgxpool.Pool) *MemberStatementStore {
 // ─────────── DTOs ───────────
 
 type MemberStatement struct {
-	MemberID    uuid.UUID                `json:"member_id"`
+	CounterpartyID    uuid.UUID                `json:"counterparty_id"`
 	GeneratedAt time.Time                `json:"generated_at"`
 	Member      MemberIdentity           `json:"member"`
 	Shares      *SharesSummary           `json:"shares,omitempty"`
@@ -94,10 +94,10 @@ type ActivityEntry struct {
 // transactions across all three modules.
 func (s *MemberStatementStore) BuildTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) (*MemberStatement, error) {
 	stmt := &MemberStatement{
-		MemberID:    memberID,
+		CounterpartyID:    memberID,
 		GeneratedAt: time.Now(),
 		Deposits:    MemberDepositsSummary{Accounts: []MemberDepositAcctRow{}},
-		Loans:       MemberLoanHistory{MemberID: memberID, Loans: []MemberLoanRow{}},
+		Loans:       MemberLoanHistory{CounterpartyID: memberID, Loans: []MemberLoanRow{}},
 		RecentActivity: []ActivityEntry{},
 	}
 

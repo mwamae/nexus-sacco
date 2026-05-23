@@ -177,7 +177,7 @@ type DepositProduct struct {
 type DepositAccount struct {
 	ID                       uuid.UUID            `json:"id"`
 	TenantID                 uuid.UUID            `json:"tenant_id"`
-	MemberID                 uuid.UUID            `json:"member_id"`
+	CounterpartyID                 uuid.UUID            `json:"counterparty_id"`
 	ProductID                uuid.UUID            `json:"product_id"`
 	AccountNo                string               `json:"account_no"`
 	Status                   DepositAccountStatus `json:"status"`
@@ -207,7 +207,7 @@ type DepositTransaction struct {
 	ID                    uuid.UUID         `json:"id"`
 	TenantID              uuid.UUID         `json:"tenant_id"`
 	AccountID             uuid.UUID         `json:"account_id"`
-	MemberID              uuid.UUID         `json:"member_id"`
+	CounterpartyID              uuid.UUID         `json:"counterparty_id"`
 	TxnNo                 string            `json:"txn_no"`
 	TxnType               DepositTxnType    `json:"txn_type"`
 	Amount                decimal.Decimal   `json:"amount"`

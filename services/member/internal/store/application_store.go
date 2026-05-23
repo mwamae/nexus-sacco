@@ -417,7 +417,7 @@ func (s *ApplicationStore) AppendCorrectionTx(ctx context.Context, tx pgx.Tx,
 // approved. Created in the same tx as the status flip so a halfway
 // failure rolls everything back.
 //
-// Individual applications produce: MemberID + share account
+// Individual applications produce: CounterpartyID + share account
 // (mandatory) + deposit account (if default product configured).
 //
 // Institutional applications produce: OrgID only. Share and deposit
@@ -427,10 +427,10 @@ func (s *ApplicationStore) AppendCorrectionTx(ctx context.Context, tx pgx.Tx,
 // counterparty_id becomes the load-bearing FK in a follow-up PR.
 //
 // The XOR (Member vs Org) is the discriminator: exactly one of
-// {MemberID, OrgID} is set on any successful activation.
+// {CounterpartyID, OrgID} is set on any successful activation.
 type ActivationResult struct {
 	// Individual path
-	MemberID         uuid.UUID  // uuid.Nil for institutional apps
+	CounterpartyID         uuid.UUID  // uuid.Nil for institutional apps
 	MemberNo         string
 	ShareAccountID   uuid.UUID
 	ShareAccountNo   string
@@ -576,18 +576,25 @@ func (s *ApplicationStore) OpenDefaultIndividualAccountsTx(
 	if err != nil {
 		return nil, fmt.Errorf("allocate share account_no: %w", err)
 	}
+	// Resolve members.id → counterparty.id at the boundary; the
+	// counterparty_id columns on share_accounts and deposit_accounts
+	// FK counterparties(id) post-Phase D sub-PR 2a.
+	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for default account open: %w", err)
+	}
 	var shareAcctID uuid.UUID
 	err = tx.QueryRow(ctx, `
-		INSERT INTO share_accounts (tenant_id, member_id, account_no, par_value_at_open)
+		INSERT INTO share_accounts (tenant_id, counterparty_id, account_no, par_value_at_open)
 		VALUES (current_tenant_id(), $1, $2, $3)
 		RETURNING id
-	`, memberID, shareAcctNo, sharePolicyParValue).Scan(&shareAcctID)
+	`, cpID, shareAcctNo, sharePolicyParValue).Scan(&shareAcctID)
 	if err != nil {
 		return nil, fmt.Errorf("insert share account: %w", err)
 	}
 
 	result := &ActivationResult{
-		MemberID: memberID, MemberNo: memberNo,
+		CounterpartyID: memberID, MemberNo: memberNo,
 		ShareAccountID: shareAcctID, ShareAccountNo: shareAcctNo,
 	}
 
@@ -599,14 +606,14 @@ func (s *ApplicationStore) OpenDefaultIndividualAccountsTx(
 		var depAcctID uuid.UUID
 		err = tx.QueryRow(ctx, `
 			INSERT INTO deposit_accounts (
-			  tenant_id, member_id, product_id, account_no, status,
+			  tenant_id, counterparty_id, product_id, account_no, status,
 			  current_balance, available_balance, opened_at, created_by
 			) VALUES (
 			  current_tenant_id(), $1, $2, $3, 'active'::deposit_account_status,
 			  0, 0, now(), $4
 			)
 			RETURNING id
-		`, memberID, *defaultDepositProductID, depAcctNo, actorID).Scan(&depAcctID)
+		`, cpID, *defaultDepositProductID, depAcctNo, actorID).Scan(&depAcctID)
 		if err != nil {
 			return nil, fmt.Errorf("insert deposit account: %w", err)
 		}

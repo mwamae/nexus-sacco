@@ -269,7 +269,7 @@ func (h *DividendHandler) Compute(w http.ResponseWriter, r *http.Request) {
 		for _, b := range basis {
 			line := domain.DivCalcLine(domain.DivCalcInputs{
 				ShareAccountID: b.AccountID,
-				MemberID:       b.MemberID,
+				CounterpartyID:       b.CounterpartyID,
 				CalcMethod:     run.CalcMethod,
 				SharesBasis:    b.SharesBasis,
 				ParValueAtRun:  policy.ParValue,
@@ -491,14 +491,14 @@ func newInterestSubset(tx pgx.Tx) *taxWriter { return &taxWriter{tx: tx} }
 func (tw *taxWriter) writeTaxPayable(ctx context.Context, e *domain.TaxPayableEntry) error {
 	_, err := tw.tx.Exec(ctx, `
 		INSERT INTO tax_payable_ledger (
-			tenant_id, source_kind, source_id, member_id, member_no, member_name,
+			tenant_id, source_kind, source_id, counterparty_id, member_no, member_name,
 			fy_label, gross_amount, wht_rate_pct, wht_amount, posted_by
 		) VALUES (
 			current_tenant_id(), $1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10
 		)
 	`,
-		e.SourceKind, e.SourceID, e.MemberID, e.MemberNo, e.MemberName,
+		e.SourceKind, e.SourceID, e.CounterpartyID, e.MemberNo, e.MemberName,
 		e.FYLabel, e.GrossAmount, e.WHTRatePct, e.WHTAmount, e.PostedBy,
 	)
 	return err
@@ -523,7 +523,7 @@ func (h *DividendHandler) postDivLine(
 	switch line.PayoutMethod {
 	case domain.PayoutCreditSavings:
 		if line.PayoutTargetAccountID == nil {
-			fallback, err := h.findFallbackSavingsTx(ctx, tx, line.MemberID)
+			fallback, err := h.findFallbackSavingsTx(ctx, tx, line.CounterpartyID)
 			if err != nil {
 				return err
 			}
@@ -559,7 +559,7 @@ func (h *DividendHandler) postDivLine(
 		sharesQty := line.NetDividend.Div(par).Floor()
 		n := int(sharesQty.IntPart())
 		if n > 0 {
-			acct, err := h.Shares.EnsureAccountTx(ctx, tx, line.MemberID, par)
+			acct, err := h.Shares.EnsureAccountTx(ctx, tx, line.CounterpartyID, par)
 			if err != nil {
 				return err
 			}
@@ -582,7 +582,7 @@ func (h *DividendHandler) postDivLine(
 			if err != nil {
 				return err
 			}
-			if _, err := h.Shares.IssueCertificateTx(ctx, tx, acct.ID, line.MemberID, userID,
+			if _, err := h.Shares.IssueCertificateTx(ctx, tx, acct.ID, line.CounterpartyID, userID,
 				updated.SharesHeld, par, sharePolicy.CertificatePrefix); err != nil {
 				return err
 			}
@@ -590,7 +590,7 @@ func (h *DividendHandler) postDivLine(
 		// Residual to fallback savings.
 		residual := line.NetDividend.Sub(par.Mul(decimal.NewFromInt(int64(n))))
 		if residual.GreaterThan(decimal.Zero) {
-			fallback, err := h.findFallbackSavingsTx(ctx, tx, line.MemberID)
+			fallback, err := h.findFallbackSavingsTx(ctx, tx, line.CounterpartyID)
 			if err != nil {
 				return err
 			}
@@ -618,7 +618,7 @@ func (h *DividendHandler) postDivLine(
 		}
 	}
 
-	member, err := h.Members.GetTx(ctx, tx, line.MemberID)
+	member, err := h.Members.GetByCounterpartyTx(ctx, tx, line.CounterpartyID)
 	if err != nil {
 		return err
 	}
@@ -626,7 +626,7 @@ func (h *DividendHandler) postDivLine(
 	if err := tw.writeTaxPayable(ctx, &domain.TaxPayableEntry{
 		SourceKind:  "dividend_run",
 		SourceID:    &runID,
-		MemberID:    line.MemberID,
+		CounterpartyID:    line.CounterpartyID,
 		MemberNo:    member.MemberNo,
 		MemberName:  member.FullName,
 		FYLabel:     run.FinancialYearLabel,
@@ -643,7 +643,7 @@ func (h *DividendHandler) postDivLine(
 func (h *DividendHandler) findFallbackSavingsTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) (*domain.DepositAccount, error) {
 	row := tx.QueryRow(ctx, `
 		SELECT id FROM deposit_accounts
-		WHERE member_id = $1 AND status = 'active'
+		WHERE counterparty_id = $1 AND status = 'active'
 		ORDER BY
 		  CASE WHEN product_id IN (SELECT id FROM deposit_products WHERE product_type = 'ordinary') THEN 0 ELSE 1 END,
 		  current_balance DESC

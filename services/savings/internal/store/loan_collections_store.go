@@ -28,7 +28,7 @@ func NewLoanCollectionsStore(pool *pgxpool.Pool) *LoanCollectionsStore {
 // ─────────── Cases ───────────
 
 const caseCols = `
-	id, tenant_id, loan_id, member_id, status, classification_at_open,
+	id, tenant_id, loan_id, counterparty_id, status, classification_at_open,
 	assigned_to, assigned_at, priority, total_contacts, last_contact_at, last_action, notes,
 	opened_at, closed_at, closed_by, closure_reason
 `
@@ -36,7 +36,7 @@ const caseCols = `
 func scanCase(row pgx.Row) (*domain.CollectionCase, error) {
 	var c domain.CollectionCase
 	err := row.Scan(
-		&c.ID, &c.TenantID, &c.LoanID, &c.MemberID, &c.Status, &c.ClassificationAtOpen,
+		&c.ID, &c.TenantID, &c.LoanID, &c.CounterpartyID, &c.Status, &c.ClassificationAtOpen,
 		&c.AssignedTo, &c.AssignedAt, &c.Priority, &c.TotalContacts, &c.LastContactAt, &c.LastAction, &c.Notes,
 		&c.OpenedAt, &c.ClosedAt, &c.ClosedBy, &c.ClosureReason,
 	)
@@ -70,12 +70,12 @@ func (s *LoanCollectionsStore) EnsureCaseForLoanTx(
 	}
 	row = tx.QueryRow(ctx, `
 		INSERT INTO loan_collection_cases (
-			tenant_id, loan_id, member_id, status, classification_at_open, priority
+			tenant_id, loan_id, counterparty_id, status, classification_at_open, priority
 		) VALUES (
 			current_tenant_id(), $1, $2, 'open', $3, $4
 		)
 		RETURNING `+caseCols,
-		loan.ID, loan.MemberID, loan.ArrearsClassification, priority)
+		loan.ID, loan.CounterpartyID, loan.ArrearsClassification, priority)
 	return scanCase(row)
 }
 
@@ -144,7 +144,7 @@ func (s *LoanCollectionsStore) ListCasesTx(ctx context.Context, tx pgx.Tx, f Cas
 		       (SELECT COUNT(*) FROM loan_promises_to_pay WHERE case_id = c.id AND status = 'open') AS open_ptps
 		FROM loan_collection_cases c
 		JOIN loans l ON l.id = c.loan_id
-		JOIN members m ON m.id = c.member_id
+		JOIN members m ON m.id = c.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		%s
 		ORDER BY c.priority DESC, c.opened_at
@@ -158,10 +158,10 @@ func (s *LoanCollectionsStore) ListCasesTx(ctx context.Context, tx pgx.Tx, f Cas
 	for rows.Next() {
 		var it CaseListItem
 		dest := []any{
-			&it.Case.ID, &it.Case.TenantID, &it.Case.LoanID, &it.Case.MemberID, &it.Case.Status, &it.Case.ClassificationAtOpen,
+			&it.Case.ID, &it.Case.TenantID, &it.Case.LoanID, &it.Case.CounterpartyID, &it.Case.Status, &it.Case.ClassificationAtOpen,
 			&it.Case.AssignedTo, &it.Case.AssignedAt, &it.Case.Priority, &it.Case.TotalContacts, &it.Case.LastContactAt, &it.Case.LastAction, &it.Case.Notes,
 			&it.Case.OpenedAt, &it.Case.ClosedAt, &it.Case.ClosedBy, &it.Case.ClosureReason,
-			&it.Loan.ID, &it.Loan.TenantID, &it.Loan.LoanNo, &it.Loan.ApplicationID, &it.Loan.MemberID, &it.Loan.ProductID, &it.Loan.Status,
+			&it.Loan.ID, &it.Loan.TenantID, &it.Loan.LoanNo, &it.Loan.ApplicationID, &it.Loan.CounterpartyID, &it.Loan.ProductID, &it.Loan.Status,
 			&it.Loan.Principal, &it.Loan.InterestRatePct, &it.Loan.InterestMethod, &it.Loan.RepaymentMethod,
 			&it.Loan.TermMonths, &it.Loan.GracePeriodMonths, &it.Loan.InstallmentCount, &it.Loan.FirstDueDate,
 			&it.Loan.DisbursementChannel, &it.Loan.DisbursementTargetAccountID, &it.Loan.DisbursementRef,

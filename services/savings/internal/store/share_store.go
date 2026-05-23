@@ -54,7 +54,7 @@ func nextSeq(ctx context.Context, tx pgx.Tx, kind, prefix string) (string, error
 func scanAccount(row pgx.Row) (*domain.ShareAccount, error) {
 	var a domain.ShareAccount
 	err := row.Scan(
-		&a.ID, &a.TenantID, &a.MemberID, &a.AccountNo, &a.Status,
+		&a.ID, &a.TenantID, &a.CounterpartyID, &a.AccountNo, &a.Status,
 		&a.SharesHeld, &a.SharesPledged, &a.ParValueAtOpen,
 		&a.FirstPurchaseAt, &a.ClosedAt, &a.CreatedAt, &a.UpdatedAt,
 	)
@@ -66,9 +66,9 @@ func scanAccount(row pgx.Row) (*domain.ShareAccount, error) {
 	return &a, nil
 }
 
-// accountCols projects counterparty_id where member_id used to be
+// accountCols projects counterparty_id where counterparty_id used to be
 // (Phase D sub-PR 2a). The scan destination is still
-// ShareAccount.MemberID — the field is a "lying name" stub that now
+// ShareAccount.CounterpartyID — the field is a "lying name" stub that now
 // holds a counterparty.id; sub-PR 2b renames the field.
 const accountCols = `
 	id, tenant_id, counterparty_id, account_no, status,
@@ -214,7 +214,7 @@ func (s *ShareStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostInput) (*d
 		          balance_after_amount, initiated_by, authorized_by, authorization_reason,
 		          posted_at, created_at
 	`,
-		in.Account.ID, in.Account.MemberID, txnNo, string(in.TxnType), in.SharesDelta,
+		in.Account.ID, in.Account.CounterpartyID, txnNo, string(in.TxnType), in.SharesDelta,
 		in.ParValueAtTxn, amount, pc, in.PaymentRef, in.Narration,
 		cpAcct, in.CounterpartyTxnID, newBalance,
 		balanceAfterAmount, in.InitiatedBy, in.AuthorizedBy, in.AuthorizationReason,
@@ -226,7 +226,7 @@ func scanTxn(row pgx.Row) (*domain.ShareTransaction, error) {
 	var t domain.ShareTransaction
 	var pc *string
 	err := row.Scan(
-		&t.ID, &t.TenantID, &t.AccountID, &t.MemberID, &t.TxnNo, &t.TxnType, &t.SharesDelta,
+		&t.ID, &t.TenantID, &t.AccountID, &t.CounterpartyID, &t.TxnNo, &t.TxnType, &t.SharesDelta,
 		&t.ParValueAtTxn, &t.Amount, &pc, &t.PaymentRef, &t.Narration,
 		&t.CounterpartyAccountID, &t.CounterpartyTxnID, &t.BalanceAfterShares,
 		&t.BalanceAfterAmount, &t.InitiatedBy, &t.AuthorizedBy, &t.AuthorizationReason,
@@ -344,7 +344,7 @@ func (s *ShareStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f ListFilter
 	for rows.Next() {
 		var it AccountListItem
 		err := rows.Scan(
-			&it.Account.ID, &it.Account.TenantID, &it.Account.MemberID, &it.Account.AccountNo,
+			&it.Account.ID, &it.Account.TenantID, &it.Account.CounterpartyID, &it.Account.AccountNo,
 			&it.Account.Status, &it.Account.SharesHeld, &it.Account.SharesPledged,
 			&it.Account.ParValueAtOpen, &it.Account.FirstPurchaseAt, &it.Account.ClosedAt,
 			&it.Account.CreatedAt, &it.Account.UpdatedAt,
@@ -624,7 +624,7 @@ func (s *ShareStore) IssueCertificateTx(ctx context.Context, tx pgx.Tx, accountI
 		RETURNING id, tenant_id, account_id, counterparty_id, certificate_no, shares_covered,
 		          par_value_at_issue, total_value, issued_at, retired_at, supersedes_id, issued_by
 	`, accountID, cpID, certNo, shares, parValue, total, priorID, issuedBy).Scan(
-		&c.ID, &c.TenantID, &c.AccountID, &c.MemberID, &c.CertificateNo, &c.SharesCovered,
+		&c.ID, &c.TenantID, &c.AccountID, &c.CounterpartyID, &c.CertificateNo, &c.SharesCovered,
 		&c.ParValueAtIssue, &c.TotalValue, &c.IssuedAt, &c.RetiredAt, &c.SupersedesID, &c.IssuedBy,
 	)
 	if err != nil {
@@ -641,7 +641,7 @@ func (s *ShareStore) CurrentCertificateTx(ctx context.Context, tx pgx.Tx, accoun
 		FROM share_certificates
 		WHERE account_id = $1 AND retired_at IS NULL
 	`, accountID).Scan(
-		&c.ID, &c.TenantID, &c.AccountID, &c.MemberID, &c.CertificateNo, &c.SharesCovered,
+		&c.ID, &c.TenantID, &c.AccountID, &c.CounterpartyID, &c.CertificateNo, &c.SharesCovered,
 		&c.ParValueAtIssue, &c.TotalValue, &c.IssuedAt, &c.RetiredAt, &c.SupersedesID, &c.IssuedBy,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

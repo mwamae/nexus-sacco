@@ -90,10 +90,10 @@ func (h *PendingApprovalsHandler) List(w http.ResponseWriter, r *http.Request) {
 		Limit:         limit,
 		Offset:        offset,
 	}
-	if v := q.Get("member_id"); v != "" {
+	if v := q.Get("counterparty_id"); v != "" {
 		id, err := uuid.Parse(v)
 		if err == nil {
-			f.MemberID = &id
+			f.CounterpartyID = &id
 		}
 	}
 	if v := q.Get("maker_user_id"); v != "" {

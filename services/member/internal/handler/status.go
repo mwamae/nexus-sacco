@@ -203,7 +203,7 @@ func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 		var sharesHeld int
 		err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 			return tx.QueryRow(r.Context(),
-				`SELECT COALESCE(shares_held, 0) FROM share_accounts WHERE member_id = $1`,
+				`SELECT COALESCE(shares_held, 0) FROM share_accounts WHERE counterparty_id = $1`,
 				m.ID,
 			).Scan(&sharesHeld)
 		})
@@ -233,7 +233,7 @@ func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 		err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 			c, err := h.Status.ApplyTx(r.Context(), tx, store.ApplyInput{
 				TenantID:          tenantID,
-				MemberID:          m.ID,
+				CounterpartyID:          m.ID,
 				FromStatus:        m.Status,
 				ToStatus:          target,
 				ReasonCategory:    reason,
@@ -272,7 +272,7 @@ func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 		var err error
 		proposal, err = h.Status.CreateProposalTx(r.Context(), tx, store.ProposalInput{
 			TenantID:           tenantID,
-			MemberID:           m.ID,
+			CounterpartyID:           m.ID,
 			WorkflowInstanceID: wfInstanceID,
 			ProposedStatus:     target,
 			ReasonCategory:     reason,
@@ -462,7 +462,7 @@ func (h *StatusHandler) dormancy(w http.ResponseWriter, r *http.Request, apply b
 		for _, c := range cands {
 			change, err := h.Status.ApplyTx(r.Context(), tx, store.ApplyInput{
 				TenantID:       tenantID,
-				MemberID:       c.MemberID,
+				CounterpartyID:       c.CounterpartyID,
 				FromStatus:     domain.StatusActive,
 				ToStatus:       domain.StatusDormant,
 				ReasonCategory: domain.ReasonDormancyInactivity,
@@ -612,7 +612,7 @@ func (h *StatusHandler) WorkflowCallback(w http.ResponseWriter, r *http.Request)
 		}
 		switch cb.Event {
 		case "approved":
-			m, err := h.Members.ByIDTx(r.Context(), tx, proposal.MemberID)
+			m, err := h.Members.ByIDTx(r.Context(), tx, proposal.CounterpartyID)
 			if err != nil {
 				return err
 			}
@@ -624,7 +624,7 @@ func (h *StatusHandler) WorkflowCallback(w http.ResponseWriter, r *http.Request)
 			}
 			_, err = h.Status.ApplyTx(r.Context(), tx, store.ApplyInput{
 				TenantID:           cb.TenantID,
-				MemberID:           proposal.MemberID,
+				CounterpartyID:           proposal.CounterpartyID,
 				FromStatus:         m.Status,
 				ToStatus:           proposal.ProposedStatus,
 				ReasonCategory:     proposal.ReasonCategory,
@@ -670,7 +670,7 @@ func (h *StatusHandler) createWorkflowInstance(r *http.Request, tenantID uuid.UU
 		"subject_kind": "member",
 		"subject_id":   m.ID.String(),
 		"context": map[string]any{
-			"member_id":      m.ID,
+			"counterparty_id":      m.ID,
 			"member_no":      m.MemberNo,
 			"from_status":    string(m.Status),
 			"to_status":      string(target),
@@ -796,7 +796,7 @@ func RunDormancyForTenant(ctx context.Context, h *StatusHandler, tenantID uuid.U
 		for _, c := range cands {
 			if _, err := h.Status.ApplyTx(ctx, tx, store.ApplyInput{
 				TenantID:       tenantID,
-				MemberID:       c.MemberID,
+				CounterpartyID:       c.CounterpartyID,
 				FromStatus:     domain.StatusActive,
 				ToStatus:       domain.StatusDormant,
 				ReasonCategory: domain.ReasonDormancyInactivity,

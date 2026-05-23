@@ -86,7 +86,7 @@ const (
 type ShareAccount struct {
 	ID              uuid.UUID       `json:"id"`
 	TenantID        uuid.UUID       `json:"tenant_id"`
-	MemberID        uuid.UUID       `json:"member_id"`
+	CounterpartyID        uuid.UUID       `json:"counterparty_id"`
 	AccountNo       string          `json:"account_no"`
 	Status          AccountStatus   `json:"status"`
 	SharesHeld      int             `json:"shares_held"`
@@ -104,7 +104,7 @@ type ShareTransaction struct {
 	ID                    uuid.UUID       `json:"id"`
 	TenantID              uuid.UUID       `json:"tenant_id"`
 	AccountID             uuid.UUID       `json:"account_id"`
-	MemberID              uuid.UUID       `json:"member_id"`
+	CounterpartyID              uuid.UUID       `json:"counterparty_id"`
 	TxnNo                 string          `json:"txn_no"`
 	TxnType               ShareTxnType    `json:"txn_type"`
 	SharesDelta           int             `json:"shares_delta"`
@@ -151,7 +151,7 @@ type ShareCertificate struct {
 	ID               uuid.UUID       `json:"id"`
 	TenantID         uuid.UUID       `json:"tenant_id"`
 	AccountID        uuid.UUID       `json:"account_id"`
-	MemberID         uuid.UUID       `json:"member_id"`
+	CounterpartyID         uuid.UUID       `json:"counterparty_id"`
 	CertificateNo    string          `json:"certificate_no"`
 	SharesCovered    int             `json:"shares_covered"`
 	ParValueAtIssue  decimal.Decimal `json:"par_value_at_issue"`

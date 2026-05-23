@@ -551,7 +551,7 @@ func (h *ApplicationHandler) Approve(w http.ResponseWriter, r *http.Request) {
 			EventCode:         "MEMBER_WELCOME",
 			Priority:          "normal",
 			Channels:          []notifier.Channel{notifier.ChannelSMS, notifier.ChannelEmail, notifier.ChannelInApp},
-			RecipientMemberID: &activation.MemberID,
+			RecipientMemberID: &activation.CounterpartyID,
 			RecipientName:     updated.ApplicantName,
 			RecipientPhone:    updated.PrimaryPhone,
 			RecipientEmail:    updated.PrimaryEmail,

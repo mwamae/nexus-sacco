@@ -242,7 +242,7 @@ func (s *DividendStore) UpdateWorkflowIDTx(ctx context.Context, tx pgx.Tx, runID
 // emits. handler.postDividendLine converts it into a DividendRunLine.
 type AccountBasis struct {
 	AccountID    uuid.UUID
-	MemberID     uuid.UUID
+	CounterpartyID     uuid.UUID
 	SharesBasis  decimal.Decimal
 	DaysHeldInFY *int   // only populated for pro_rated
 }
@@ -274,7 +274,7 @@ func (s *DividendStore) ComputeBasisTx(
 // posted any time on that date are captured.
 func (s *DividendStore) computeClosingBasisTx(ctx context.Context, tx pgx.Tx, fyEnd time.Time) ([]AccountBasis, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT a.id, a.member_id,
+		SELECT a.id, a.counterparty_id,
 		       COALESCE((
 		         SELECT t.balance_after_shares
 		         FROM share_transactions t
@@ -284,7 +284,7 @@ func (s *DividendStore) computeClosingBasisTx(ctx context.Context, tx pgx.Tx, fy
 		         LIMIT 1
 		       ), 0) AS closing_shares
 		FROM share_accounts a
-		JOIN members m ON m.id = a.member_id
+		JOIN members m ON m.id = a.counterparty_id
 		WHERE a.status = 'active'
 		  AND m.status NOT IN ('blacklisted', 'exited', 'deceased', 'rejected')
 		ORDER BY a.id
@@ -297,7 +297,7 @@ func (s *DividendStore) computeClosingBasisTx(ctx context.Context, tx pgx.Tx, fy
 	for rows.Next() {
 		var b AccountBasis
 		var shares int
-		if err := rows.Scan(&b.AccountID, &b.MemberID, &shares); err != nil {
+		if err := rows.Scan(&b.AccountID, &b.CounterpartyID, &shares); err != nil {
 			return nil, err
 		}
 		if shares <= 0 {
@@ -324,7 +324,7 @@ func (s *DividendStore) computeAverageMonthlyBasisTx(ctx context.Context, tx pgx
 		  SELECT UNNEST($1::date[]) AS d
 		),
 		basis AS (
-		  SELECT a.id AS account_id, a.member_id, me.d,
+		  SELECT a.id AS account_id, a.counterparty_id, me.d,
 		         COALESCE((
 		           SELECT t.balance_after_shares
 		           FROM share_transactions t
@@ -334,14 +334,14 @@ func (s *DividendStore) computeAverageMonthlyBasisTx(ctx context.Context, tx pgx
 		           LIMIT 1
 		         ), 0) AS shares_at_month_end
 		  FROM share_accounts a
-		  JOIN members m ON m.id = a.member_id
+		  JOIN members m ON m.id = a.counterparty_id
 		  CROSS JOIN month_ends me
 		  WHERE a.status = 'active'
 		    AND m.status NOT IN ('blacklisted', 'exited', 'deceased', 'rejected')
 		)
-		SELECT account_id, member_id, AVG(shares_at_month_end)::numeric(20,4) AS avg_shares
+		SELECT account_id, counterparty_id, AVG(shares_at_month_end)::numeric(20,4) AS avg_shares
 		FROM basis
-		GROUP BY account_id, member_id
+		GROUP BY account_id, counterparty_id
 		HAVING AVG(shares_at_month_end) > 0
 		ORDER BY account_id
 	`, monthEnds)
@@ -352,7 +352,7 @@ func (s *DividendStore) computeAverageMonthlyBasisTx(ctx context.Context, tx pgx
 	var out []AccountBasis
 	for rows.Next() {
 		var b AccountBasis
-		if err := rows.Scan(&b.AccountID, &b.MemberID, &b.SharesBasis); err != nil {
+		if err := rows.Scan(&b.AccountID, &b.CounterpartyID, &b.SharesBasis); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
@@ -366,7 +366,7 @@ func (s *DividendStore) computeAverageMonthlyBasisTx(ctx context.Context, tx pgx
 func (s *DividendStore) computeProRatedBasisTx(ctx context.Context, tx pgx.Tx, fyStart, fyEnd time.Time) ([]AccountBasis, error) {
 	rows, err := tx.Query(ctx, `
 		WITH closing AS (
-		  SELECT a.id AS account_id, a.member_id, a.first_purchase_at,
+		  SELECT a.id AS account_id, a.counterparty_id, a.first_purchase_at,
 		         COALESCE((
 		           SELECT t.balance_after_shares
 		           FROM share_transactions t
@@ -376,12 +376,12 @@ func (s *DividendStore) computeProRatedBasisTx(ctx context.Context, tx pgx.Tx, f
 		           LIMIT 1
 		         ), 0) AS closing_shares
 		  FROM share_accounts a
-		  JOIN members m ON m.id = a.member_id
+		  JOIN members m ON m.id = a.counterparty_id
 		  WHERE a.status = 'active'
 		    AND m.status NOT IN ('blacklisted', 'exited', 'deceased', 'rejected')
 		),
 		ratios AS (
-		  SELECT account_id, member_id, closing_shares,
+		  SELECT account_id, counterparty_id, closing_shares,
 		         GREATEST(0, LEAST(
 		           ($2::date - $1::date + 1),
 		           ($2::date - GREATEST($1::date, COALESCE(first_purchase_at::date, $1::date)) + 1)
@@ -389,7 +389,7 @@ func (s *DividendStore) computeProRatedBasisTx(ctx context.Context, tx pgx.Tx, f
 		         ($2::date - $1::date + 1) AS days_in_fy
 		  FROM closing
 		)
-		SELECT account_id, member_id, closing_shares, days_held, days_in_fy
+		SELECT account_id, counterparty_id, closing_shares, days_held, days_in_fy
 		FROM ratios
 		WHERE closing_shares > 0
 		ORDER BY account_id
@@ -403,7 +403,7 @@ func (s *DividendStore) computeProRatedBasisTx(ctx context.Context, tx pgx.Tx, f
 		var b AccountBasis
 		var closingShares int
 		var daysHeld, daysInFY int
-		if err := rows.Scan(&b.AccountID, &b.MemberID, &closingShares, &daysHeld, &daysInFY); err != nil {
+		if err := rows.Scan(&b.AccountID, &b.CounterpartyID, &closingShares, &daysHeld, &daysInFY); err != nil {
 			return nil, err
 		}
 		if daysInFY <= 0 || daysHeld <= 0 {
@@ -469,7 +469,7 @@ func (s *DividendStore) ReplaceLinesTx(ctx context.Context, tx pgx.Tx, runID uui
 		l := &lines[i]
 		_, err := tx.Exec(ctx, `
 			INSERT INTO dividend_run_lines (
-				tenant_id, run_id, share_account_id, member_id,
+				tenant_id, run_id, share_account_id, counterparty_id,
 				calc_method, shares_basis, par_value_at_run, capital_basis,
 				days_held_in_fy, days_in_fy, rate_applied_pct, wht_rate_pct,
 				gross_dividend, wht_amount, net_dividend,
@@ -482,7 +482,7 @@ func (s *DividendStore) ReplaceLinesTx(ctx context.Context, tx pgx.Tx, runID uui
 				$15
 			)
 		`,
-			runID, l.ShareAccountID, l.MemberID,
+			runID, l.ShareAccountID, l.CounterpartyID,
 			string(l.CalcMethod), l.SharesBasis, l.ParValueAtRun, l.CapitalBasis,
 			l.DaysHeldInFY, l.DaysInFY, l.RateAppliedPct, l.WHTRatePct,
 			l.GrossDividend, l.WHTAmount, l.NetDividend,
@@ -497,7 +497,7 @@ func (s *DividendStore) ReplaceLinesTx(ctx context.Context, tx pgx.Tx, runID uui
 
 func (s *DividendStore) LinesByRunTx(ctx context.Context, tx pgx.Tx, runID uuid.UUID) ([]domain.DividendRunLine, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, tenant_id, run_id, share_account_id, member_id,
+		SELECT id, tenant_id, run_id, share_account_id, counterparty_id,
 		       calc_method, shares_basis, par_value_at_run, capital_basis,
 		       days_held_in_fy, days_in_fy, rate_applied_pct, wht_rate_pct,
 		       gross_dividend, wht_amount, net_dividend,
@@ -506,7 +506,7 @@ func (s *DividendStore) LinesByRunTx(ctx context.Context, tx pgx.Tx, runID uuid.
 		       posted_at, posted_deposit_txn_id, posted_share_txn_id, notes
 		FROM dividend_run_lines
 		WHERE run_id = $1
-		ORDER BY member_id, share_account_id
+		ORDER BY counterparty_id, share_account_id
 	`, runID)
 	if err != nil {
 		return nil, err
@@ -516,7 +516,7 @@ func (s *DividendStore) LinesByRunTx(ctx context.Context, tx pgx.Tx, runID uuid.
 	for rows.Next() {
 		var l domain.DividendRunLine
 		err := rows.Scan(
-			&l.ID, &l.TenantID, &l.RunID, &l.ShareAccountID, &l.MemberID,
+			&l.ID, &l.TenantID, &l.RunID, &l.ShareAccountID, &l.CounterpartyID,
 			&l.CalcMethod, &l.SharesBasis, &l.ParValueAtRun, &l.CapitalBasis,
 			&l.DaysHeldInFY, &l.DaysInFY, &l.RateAppliedPct, &l.WHTRatePct,
 			&l.GrossDividend, &l.WHTAmount, &l.NetDividend,

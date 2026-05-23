@@ -409,7 +409,7 @@ func (h *LoanCollectionsHandler) Reschedule(w http.ResponseWriter, r *http.Reque
 			if err != nil {
 				return err
 			}
-			memberID := loan.MemberID
+			memberID := loan.CounterpartyID
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:            domain.ApprovalKindLoanReschedule,
 				Title:           "Reschedule loan " + loan.LoanNo,
@@ -481,7 +481,7 @@ func (h *LoanCollectionsHandler) Moratorium(w http.ResponseWriter, r *http.Reque
 			if err != nil {
 				return err
 			}
-			memberID := loan.MemberID
+			memberID := loan.CounterpartyID
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:            domain.ApprovalKindLoanMoratorium,
 				Title:           "Moratorium on loan " + loan.LoanNo,
@@ -551,7 +551,7 @@ func (h *LoanCollectionsHandler) SettlementDiscount(w http.ResponseWriter, r *ht
 			if err != nil {
 				return err
 			}
-			memberID := loan.MemberID
+			memberID := loan.CounterpartyID
 			amount := in.DiscountAmount
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:            domain.ApprovalKindLoanSettlementDiscount,

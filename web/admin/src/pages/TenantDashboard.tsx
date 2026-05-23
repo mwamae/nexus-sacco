@@ -309,14 +309,14 @@ export function MemberStatusPanel({ summary, canRun, busy, onRun }: {
               </thead>
               <tbody>
                 {summary.dormancy_pipeline.map((c) => (
-                  <tr key={c.member_id}>
+                  <tr key={c.counterparty_id}>
                     <td>
-                      <a href={`/members/${c.member_id}`} className="tbl-link">{c.full_name}</a>
+                      <a href={`/members/${c.counterparty_id}`} className="tbl-link">{c.full_name}</a>
                       <div className="tiny-mono">{c.member_no}</div>
                     </td>
                     <td className="tiny-mono">{c.last_activity_at ? c.last_activity_at.slice(0, 10) : '— never'}</td>
                     <td className="mono" style={{ textAlign: 'right' }}>{c.days_inactive}</td>
-                    <td><a className="btn btn-sm" href={`/members/${c.member_id}?tab=profile`}>View</a></td>
+                    <td><a className="btn btn-sm" href={`/members/${c.counterparty_id}?tab=profile`}>View</a></td>
                   </tr>
                 ))}
               </tbody>
@@ -345,7 +345,7 @@ export function MemberStatusPanel({ summary, canRun, busy, onRun }: {
                 {summary.recent_changes.slice(0, 10).map((c) => (
                   <tr key={c.id}>
                     <td>
-                      <a href={`/members/${c.member_id}`} className="tbl-link">{c.full_name}</a>
+                      <a href={`/members/${c.counterparty_id}`} className="tbl-link">{c.full_name}</a>
                       <div className="tiny-mono">{c.member_no}</div>
                     </td>
                     <td>

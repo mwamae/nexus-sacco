@@ -443,7 +443,7 @@ function LineRow({ line, runStatus, currency, onReload }: {
     <tr>
       <td className="tiny-mono">{line.account_id.slice(0, 8)}…</td>
       <td>
-        <a className="tbl-link" href={`/members/${line.member_id}?tab=accounts`}>{line.member_id.slice(0, 8)}…</a>
+        <a className="tbl-link" href={`/members/${line.counterparty_id}?tab=accounts`}>{line.counterparty_id.slice(0, 8)}…</a>
       </td>
       <td className="mono" style={{ textAlign: 'right' }}>
         {line.days_with_snapshots}/{line.days_in_fy}
@@ -554,7 +554,7 @@ function WHTScheduleModal({ fy, currency, onClose }: { fy: string; currency: str
               <thead><tr><th>Member #</th><th>Member name</th><th style={{ textAlign: 'right' }}>Gross</th><th style={{ textAlign: 'right' }}>WHT</th></tr></thead>
               <tbody>
                 {data.rows.map((r) => (
-                  <tr key={r.member_id}>
+                  <tr key={r.counterparty_id}>
                     <td className="tiny-mono">{r.member_no}</td>
                     <td>{r.member_name}</td>
                     <td className="mono" style={{ textAlign: 'right' }}>{currency} {fmt(r.gross_amount)}</td>
@@ -602,10 +602,10 @@ function fmt(s: string | number | undefined): string {
 }
 
 function downloadLinesCSV(run: InterestRun, lines: InterestRunLine[], currency: string) {
-  const rows = [['run_no', 'fy_label', 'account_id', 'member_id', 'days_in_fy', 'snapshot_days', 'weighted_avg', 'rate_pct', `gross (${currency})`, 'wht', `net (${currency})`, 'payout_method', 'posted_at']];
+  const rows = [['run_no', 'fy_label', 'account_id', 'counterparty_id', 'days_in_fy', 'snapshot_days', 'weighted_avg', 'rate_pct', `gross (${currency})`, 'wht', `net (${currency})`, 'payout_method', 'posted_at']];
   for (const l of lines) {
     rows.push([
-      run.run_no, run.financial_year_label, l.account_id, l.member_id,
+      run.run_no, run.financial_year_label, l.account_id, l.counterparty_id,
       String(l.days_in_fy), String(l.days_with_snapshots),
       l.weighted_avg_balance, l.rate_applied_pct,
       l.gross_interest, l.wht_amount, l.net_interest,

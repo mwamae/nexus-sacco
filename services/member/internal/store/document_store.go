@@ -5,6 +5,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -22,7 +23,7 @@ func NewDocumentStore(pool *pgxpool.Pool) *DocumentStore {
 }
 
 type CreateDocumentInput struct {
-	MemberID    uuid.UUID
+	CounterpartyID    uuid.UUID
 	TenantID    uuid.UUID
 	Kind        domain.DocumentKind
 	StoragePath string
@@ -33,19 +34,23 @@ type CreateDocumentInput struct {
 
 // UpsertTx writes/replaces the document of (member, kind). Returns the row.
 func (s *DocumentStore) UpsertTx(ctx context.Context, tx pgx.Tx, in CreateDocumentInput) (*domain.Document, error) {
+	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for document upsert: %w", err)
+	}
 	var d domain.Document
-	err := tx.QueryRow(ctx, `
-		INSERT INTO member_documents (member_id, tenant_id, kind, storage_path, mime, size_bytes, uploaded_by)
+	err = tx.QueryRow(ctx, `
+		INSERT INTO member_documents (counterparty_id, tenant_id, kind, storage_path, mime, size_bytes, uploaded_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (member_id, kind) DO UPDATE
+		ON CONFLICT (counterparty_id, kind) DO UPDATE
 		  SET storage_path = EXCLUDED.storage_path,
 		      mime = EXCLUDED.mime,
 		      size_bytes = EXCLUDED.size_bytes,
 		      uploaded_at = now(),
 		      uploaded_by = EXCLUDED.uploaded_by
-		RETURNING id, member_id, kind, storage_path, mime, size_bytes, uploaded_at
-	`, in.MemberID, in.TenantID, in.Kind, in.StoragePath, in.MIME, in.SizeBytes, in.UploadedBy).
-		Scan(&d.ID, &d.MemberID, &d.Kind, &d.StoragePath, &d.MIME, &d.SizeBytes, &d.UploadedAt)
+		RETURNING id, counterparty_id, kind, storage_path, mime, size_bytes, uploaded_at
+	`, cpID, in.TenantID, in.Kind, in.StoragePath, in.MIME, in.SizeBytes, in.UploadedBy).
+		Scan(&d.ID, &d.CounterpartyID, &d.Kind, &d.StoragePath, &d.MIME, &d.SizeBytes, &d.UploadedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -53,11 +58,15 @@ func (s *DocumentStore) UpsertTx(ctx context.Context, tx pgx.Tx, in CreateDocume
 }
 
 func (s *DocumentStore) ListForMemberTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) ([]*domain.Document, error) {
+	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for document list: %w", err)
+	}
 	rows, err := tx.Query(ctx, `
-		SELECT id, member_id, kind, storage_path, mime, size_bytes, uploaded_at
-		FROM member_documents WHERE member_id = $1
+		SELECT id, counterparty_id, kind, storage_path, mime, size_bytes, uploaded_at
+		FROM member_documents WHERE counterparty_id = $1
 		ORDER BY kind
-	`, memberID)
+	`, cpID)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +74,7 @@ func (s *DocumentStore) ListForMemberTx(ctx context.Context, tx pgx.Tx, memberID
 	out := []*domain.Document{}
 	for rows.Next() {
 		var d domain.Document
-		if err := rows.Scan(&d.ID, &d.MemberID, &d.Kind, &d.StoragePath, &d.MIME, &d.SizeBytes, &d.UploadedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.CounterpartyID, &d.Kind, &d.StoragePath, &d.MIME, &d.SizeBytes, &d.UploadedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, &d)
@@ -76,9 +85,9 @@ func (s *DocumentStore) ListForMemberTx(ctx context.Context, tx pgx.Tx, memberID
 func (s *DocumentStore) ByKindTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID, kind domain.DocumentKind) (*domain.Document, error) {
 	var d domain.Document
 	err := tx.QueryRow(ctx, `
-		SELECT id, member_id, kind, storage_path, mime, size_bytes, uploaded_at
-		FROM member_documents WHERE member_id = $1 AND kind = $2
-	`, memberID, kind).Scan(&d.ID, &d.MemberID, &d.Kind, &d.StoragePath, &d.MIME, &d.SizeBytes, &d.UploadedAt)
+		SELECT id, counterparty_id, kind, storage_path, mime, size_bytes, uploaded_at
+		FROM member_documents WHERE counterparty_id = $1 AND kind = $2
+	`, memberID, kind).Scan(&d.ID, &d.CounterpartyID, &d.Kind, &d.StoragePath, &d.MIME, &d.SizeBytes, &d.UploadedAt)
 	if err == pgx.ErrNoRows {
 		return nil, ErrNotFound
 	}

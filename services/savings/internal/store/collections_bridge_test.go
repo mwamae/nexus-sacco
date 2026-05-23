@@ -83,6 +83,14 @@ func TestRecalcDPDOpensCollectionsCase(t *testing.T) {
 	if err := tx.QueryRow(ctx, `SELECT id FROM loan_products WHERE tenant_id = $1 LIMIT 1`, tenantID).Scan(&productID); err != nil {
 		t.Fatalf("no loan products for tenant: %v", err)
 	}
+	// Resolve members.id → counterparty.id for the test inserts; the
+	// bridged tables drop member_id in Phase D sub-PR 2a destructive
+	// migration, so the test fixture builders write the counterparty_id
+	// column directly.
+	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
+	if err != nil {
+		t.Fatalf("resolve counterparty: %v", err)
+	}
 
 	// Insert a synthetic application + loan with status 'active' and
 	// no schedule yet. dpd = 0 initially so the bridge stays quiet.
@@ -90,18 +98,18 @@ func TestRecalcDPDOpensCollectionsCase(t *testing.T) {
 	var applicationID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO loan_applications (
-		  tenant_id, application_no, member_id, product_id, status,
+		  tenant_id, application_no, counterparty_id, product_id, status,
 		  requested_amount, requested_term_months, monthly_net_income, created_by
 		) VALUES ($1, $2, $3, $4, 'disbursed', 50000, 12, 30000, $5)
 		RETURNING id
-	`, tenantID, fmt.Sprintf("LA-BRIDGE-%d", uniq), memberID, productID, uuid.Nil).Scan(&applicationID); err != nil {
+	`, tenantID, fmt.Sprintf("LA-BRIDGE-%d", uniq), cpID, productID, uuid.Nil).Scan(&applicationID); err != nil {
 		t.Fatalf("insert application: %v", err)
 	}
 
 	var loanID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO loans (
-		  tenant_id, loan_no, application_id, member_id, product_id, status,
+		  tenant_id, loan_no, application_id, counterparty_id, product_id, status,
 		  principal, interest_rate_pct, interest_method, repayment_method,
 		  term_months, installment_count, first_due_date,
 		  principal_disbursed, principal_balance,
@@ -114,7 +122,7 @@ func TestRecalcDPDOpensCollectionsCase(t *testing.T) {
 		  now(), $6
 		)
 		RETURNING id
-	`, tenantID, fmt.Sprintf("L-BRIDGE-%d", uniq), applicationID, memberID, productID, uuid.Nil).Scan(&loanID); err != nil {
+	`, tenantID, fmt.Sprintf("L-BRIDGE-%d", uniq), applicationID, cpID, productID, uuid.Nil).Scan(&loanID); err != nil {
 		t.Fatalf("insert loan: %v", err)
 	}
 
@@ -187,21 +195,21 @@ func TestRecalcDPDOpensCollectionsCase(t *testing.T) {
 	// New loan so we start from 0 cases for it.
 	var loan2ID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO loan_applications (tenant_id, application_no, member_id, product_id, status,
+		INSERT INTO loan_applications (tenant_id, application_no, counterparty_id, product_id, status,
 		  requested_amount, requested_term_months, monthly_net_income, created_by)
 		VALUES ($1, $2, $3, $4, 'disbursed', 50000, 12, 30000, $5) RETURNING id
-	`, tenantID, fmt.Sprintf("LA-NOBRIDGE-%d", uniq), memberID, productID, uuid.Nil).Scan(&applicationID); err != nil {
+	`, tenantID, fmt.Sprintf("LA-NOBRIDGE-%d", uniq), cpID, productID, uuid.Nil).Scan(&applicationID); err != nil {
 		t.Fatalf("insert app2: %v", err)
 	}
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO loans (tenant_id, loan_no, application_id, member_id, product_id, status,
+		INSERT INTO loans (tenant_id, loan_no, application_id, counterparty_id, product_id, status,
 		  principal, interest_rate_pct, interest_method, repayment_method,
 		  term_months, installment_count, first_due_date,
 		  principal_disbursed, principal_balance, disbursed_at, disbursed_by)
 		VALUES ($1, $2, $3, $4, $5, 'active', 50000, 12.0, 'reducing_balance', 'reducing_balance',
 		  12, 12, CURRENT_DATE - INTERVAL '40 days', 50000, 50000, now(), $6)
 		RETURNING id
-	`, tenantID, fmt.Sprintf("L-NOBRIDGE-%d", uniq), applicationID, memberID, productID, uuid.Nil).Scan(&loan2ID); err != nil {
+	`, tenantID, fmt.Sprintf("L-NOBRIDGE-%d", uniq), applicationID, cpID, productID, uuid.Nil).Scan(&loan2ID); err != nil {
 		t.Fatalf("insert loan2: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `

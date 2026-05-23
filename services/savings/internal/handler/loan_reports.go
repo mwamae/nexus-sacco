@@ -7,7 +7,7 @@
 //   GET   /v1/loan-reports/writeoffs                      written-off register (+ recoveries to date)
 //   GET   /v1/loan-reports/crb-submission                 CRB submission JSON skeleton
 //
-//   GET   /v1/members/{member_id}/loan-history            per-member loan history
+//   GET   /v1/members/{counterparty_id}/loan-history            per-member loan history
 //
 //   POST  /v1/loans/{loan_id}/writeoff                    write off remaining balance (audit + state flip)
 
@@ -72,7 +72,7 @@ func (h *LoanReportsHandler) Aging(w http.ResponseWriter, r *http.Request) {
 // ─────────── Per-member loan history ───────────
 
 func (h *LoanReportsHandler) MemberHistory(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -174,7 +174,7 @@ func (h *LoanReportsHandler) WriteOff(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			memberID := loan.MemberID
+			memberID := loan.CounterpartyID
 			amt := loan.PrincipalBalance.Add(loan.InterestBalance).Add(loan.FeesBalance).Add(loan.PenaltyBalance)
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:            domain.ApprovalKindLoanWriteoff,

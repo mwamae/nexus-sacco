@@ -224,7 +224,7 @@ function LoanList() {
     try {
       const r = await listLoans({
         status: status || undefined,
-        member_id: memberFilter || undefined,
+        counterparty_id: memberFilter || undefined,
         limit: 100,
       });
       setItems(r.items); setTotal(r.total);
@@ -356,7 +356,7 @@ function NewApplicationModal({ onClose, onCreated }: { onClose: () => void; onCr
   const [expenses, setExpenses] = useState('');
   const [obligations, setObligations] = useState('0');
 
-  const [guarantors, setGuarantors] = useState<{ member_id: string; amount: string }[]>([]);
+  const [guarantors, setGuarantors] = useState<{ counterparty_id: string; amount: string }[]>([]);
   const [collateral, setCollateral] = useState<{ kind: LoanCollateralKind; description: string; estimated_value: string }[]>([]);
 
   useEffect(() => {
@@ -382,7 +382,7 @@ function NewApplicationModal({ onClose, onCreated }: { onClose: () => void; onCr
     setBusy(true); setErr(null);
     try {
       const r = await createLoanApplication({
-        member_id: memberID,
+        counterparty_id: memberID,
         product_id: product.id,
         requested_amount: amount,
         requested_term_months: term,
@@ -394,7 +394,7 @@ function NewApplicationModal({ onClose, onCreated }: { onClose: () => void; onCr
         other_income: otherIncome || '0',
         monthly_expenses: expenses,
         monthly_existing_obligations: obligations || '0',
-        guarantors: guarantors.map((g) => ({ member_id: g.member_id, amount_guaranteed: g.amount })),
+        guarantors: guarantors.map((g) => ({ counterparty_id: g.counterparty_id, amount_guaranteed: g.amount })),
         collateral: collateral,
       });
       onCreated(r.application.id);
@@ -466,8 +466,8 @@ function NewApplicationModal({ onClose, onCreated }: { onClose: () => void; onCr
         {guarantors.map((g, i) => (
           <div key={i} className="grid-3" style={{ alignItems: 'flex-end' }}>
             <Field label="Guarantor member">
-              <select className="input" value={g.member_id} onChange={(e) => {
-                const next = [...guarantors]; next[i].member_id = e.target.value; setGuarantors(next);
+              <select className="input" value={g.counterparty_id} onChange={(e) => {
+                const next = [...guarantors]; next[i].counterparty_id = e.target.value; setGuarantors(next);
               }}>
                 <option value="">— pick —</option>
                 {members.filter((m) => m.id !== memberID).map((m) => <option key={m.id} value={m.id}>{m.full_name}</option>)}
@@ -481,7 +481,7 @@ function NewApplicationModal({ onClose, onCreated }: { onClose: () => void; onCr
             <button className="btn btn-sm" style={{ color: 'var(--neg)', marginBottom: 10 }} onClick={() => setGuarantors(guarantors.filter((_, j) => j !== i))}>Remove</button>
           </div>
         ))}
-        <button className="btn btn-sm" onClick={() => setGuarantors([...guarantors, { member_id: '', amount: '0' }])}>+ Add guarantor</button>
+        <button className="btn btn-sm" onClick={() => setGuarantors([...guarantors, { counterparty_id: '', amount: '0' }])}>+ Add guarantor</button>
       </Section>
     </ModalShell>
   );
@@ -757,7 +757,7 @@ function LoanDetailView({ loanId }: { loanId: string }) {
     try {
       const v = await getLoan(loanId);
       setD(v);
-      const accts = await getDepositAccountsByMember(v.loan.member_id);
+      const accts = await getDepositAccountsByMember(v.loan.counterparty_id);
       setAccounts(accts);
       const rest = await listRestructurings(loanId);
       setRestructurings(rest);
@@ -795,7 +795,7 @@ function LoanDetailView({ loanId }: { loanId: string }) {
           <div className="eyebrow"><a href="/loans" style={{ color: 'inherit' }}>Loans</a> · {l.loan_no}</div>
           <h1>Loan {l.loan_no}</h1>
           <div className="page-sub">
-            <a href={`/members/${l.member_id}`} className="tbl-link">{l.member_id.slice(0, 8)}…</a> ·
+            <a href={`/members/${l.counterparty_id}`} className="tbl-link">{l.counterparty_id.slice(0, 8)}…</a> ·
             {' '}{currency} {fmt(l.principal)} @ {l.interest_rate_pct}% {l.interest_method.replace('_', ' ')} · {l.term_months} months
           </div>
         </div>

@@ -200,7 +200,7 @@ type accountDTO struct {
 }
 
 func (h *ShareHandler) GetByMember(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -246,7 +246,7 @@ func (h *ShareHandler) GetByMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ShareHandler) HistoryByMember(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -279,7 +279,7 @@ func (h *ShareHandler) HistoryByMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ShareHandler) CurrentCertificate(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -321,7 +321,7 @@ type postResp struct {
 }
 
 func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -351,7 +351,7 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 	tid, _ := middleware.TenantIDFrom(r)
 
 	payload := SharePurchasePayload{
-		MemberID:       memberID,
+		CounterpartyID:       memberID,
 		Shares:         in.Shares,
 		PaymentChannel: in.PaymentChannel,
 		PaymentRef:     in.PaymentRef,
@@ -470,7 +470,7 @@ type transferResp struct {
 }
 
 func (h *ShareHandler) Transfer(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -563,7 +563,7 @@ func (h *ShareHandler) emitSharePurchase(r *http.Request, tenantID, actorID uuid
 	var member *store.MemberLite
 	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
-		member, err = h.Members.GetTx(r.Context(), tx, result.Account.MemberID)
+		member, err = h.Members.GetByCounterpartyTx(r.Context(), tx, result.Account.CounterpartyID)
 		return err
 	})
 	if member == nil {
@@ -634,7 +634,7 @@ func (h *ShareHandler) emitShareTransfer(r *http.Request, tenantID, actorID uuid
 		var member *store.MemberLite
 		_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 			var err error
-			member, err = h.Members.GetTx(r.Context(), tx, side.r.Account.MemberID)
+			member, err = h.Members.GetByCounterpartyTx(r.Context(), tx, side.r.Account.CounterpartyID)
 			return err
 		})
 		if member == nil {
@@ -680,7 +680,7 @@ type adjustReq struct {
 }
 
 func (h *ShareHandler) Adjust(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -778,7 +778,7 @@ type placeLienReq struct {
 }
 
 func (h *ShareHandler) PlaceLien(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -800,7 +800,7 @@ func (h *ShareHandler) PlaceLien(w http.ResponseWriter, r *http.Request) {
 	tid, _ := middleware.TenantIDFrom(r)
 
 	payload := ShareLienPayload{
-		MemberID:      memberID,
+		CounterpartyID:      memberID,
 		Shares:        in.Shares,
 		Reason:        in.Reason,
 		ReferenceKind: in.ReferenceKind,

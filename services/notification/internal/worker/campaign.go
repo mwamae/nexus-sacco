@@ -141,7 +141,7 @@ func (w *CampaignWorker) dispatch(ctx context.Context, tenantID uuid.UUID, camp 
 	for _, r := range recipients {
 		if err := w.dispatchOne(ctx, tenantID, camp, basePayload, r); err != nil {
 			failed++
-			logger.Warn("campaign recipient failed", "member", r.MemberID, "err", err)
+			logger.Warn("campaign recipient failed", "member", r.CounterpartyID, "err", err)
 			_ = w.DB.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 				return w.Campaigns.IncrementProgressTx(ctx, tx, camp.ID, 0, 1)
 			})
@@ -178,7 +178,7 @@ func (w *CampaignWorker) dispatchOne(
 		payload["full_name"] = r.FullName
 		payload["recipient_name"] = r.FullName
 
-		memberID := r.MemberID
+		memberID := r.CounterpartyID
 		sourceModule := "notification.campaign"
 		sourceRecord := camp.ID
 		notif, err := w.Notifs.CreateTx(ctx, tx, store.CreateInput{

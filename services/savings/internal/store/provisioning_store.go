@@ -136,7 +136,7 @@ func (s *ProvisioningStore) CreateRun(
 		// than trusting loans.days_past_due — the latter is daily-stale and
 		// a provisioning run must reflect the as-of date precisely.
 		rows, err := tx.Query(ctx, `
-			SELECT l.id, l.member_id, l.loan_no, l.principal_balance, l.arrears_classification,
+			SELECT l.id, l.counterparty_id, l.loan_no, l.principal_balance, l.arrears_classification,
 			       (SELECT MIN(due_date) FROM loan_repayment_schedule
 			         WHERE loan_id = l.id
 			           AND status NOT IN ('paid', 'cancelled')
@@ -191,7 +191,7 @@ func (s *ProvisioningStore) CreateRun(
 
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO provision_run_lines (
-				  tenant_id, run_id, loan_id, member_id, loan_no,
+				  tenant_id, run_id, loan_id, counterparty_id, loan_no,
 				  days_past_due, classification, outstanding,
 				  provision_rate, provision_amount, previous_classification
 				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -356,7 +356,7 @@ func (s *ProvisioningStore) LinesByRun(ctx context.Context, tenantID, runID uuid
 	out := []domain.ProvisionRunLine{}
 	err := s.pool.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT id, run_id, loan_id, member_id, loan_no,
+			SELECT id, run_id, loan_id, counterparty_id, loan_no,
 			       days_past_due, classification, outstanding,
 			       provision_rate, provision_amount,
 			       previous_classification, previous_provision
@@ -375,7 +375,7 @@ func (s *ProvisioningStore) LinesByRun(ctx context.Context, tenantID, runID uuid
 		for rows.Next() {
 			var l domain.ProvisionRunLine
 			if err := rows.Scan(
-				&l.ID, &l.RunID, &l.LoanID, &l.MemberID, &l.LoanNo,
+				&l.ID, &l.RunID, &l.LoanID, &l.CounterpartyID, &l.LoanNo,
 				&l.DaysPastDue, &l.Classification, &l.Outstanding,
 				&l.ProvisionRate, &l.ProvisionAmount,
 				&l.PreviousClassification, &l.PreviousProvision,

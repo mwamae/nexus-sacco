@@ -627,7 +627,7 @@ func (h *MemberHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 	var doc *domain.Document
 	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		d, err := h.Documents.UpsertTx(r.Context(), tx, store.CreateDocumentInput{
-			MemberID:    id,
+			CounterpartyID:    id,
 			TenantID:    tenantID,
 			Kind:        kind,
 			StoragePath: path,

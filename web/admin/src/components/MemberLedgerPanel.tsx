@@ -7,7 +7,7 @@
 // Replaces the old "MODULE PENDING — Single timeline of debits and
 // credits. Pending the transactions ledger." placeholder in
 // AccountsTab. Source data:
-// GET /v1/member-ledger/{member_id}
+// GET /v1/member-ledger/{counterparty_id}
 // — see services/savings/internal/store/member_ledger_store.go for
 // the bucket semantics.
 

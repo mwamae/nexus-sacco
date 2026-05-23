@@ -79,7 +79,7 @@ type CollectionCase struct {
 	ID                    uuid.UUID            `json:"id"`
 	TenantID              uuid.UUID            `json:"tenant_id"`
 	LoanID                uuid.UUID            `json:"loan_id"`
-	MemberID              uuid.UUID            `json:"member_id"`
+	CounterpartyID              uuid.UUID            `json:"counterparty_id"`
 	Status                CollectionCaseStatus `json:"status"`
 	ClassificationAtOpen  *string              `json:"classification_at_open,omitempty"`
 	AssignedTo            *uuid.UUID           `json:"assigned_to,omitempty"`

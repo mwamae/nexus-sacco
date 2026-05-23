@@ -45,7 +45,7 @@ type LoanApplicationHandler struct {
 // ─────────── Create ───────────
 
 type guarantorIn struct {
-	MemberID         uuid.UUID       `json:"member_id"`
+	CounterpartyID         uuid.UUID       `json:"counterparty_id"`
 	AmountGuaranteed decimal.Decimal `json:"amount_guaranteed"`
 }
 
@@ -59,7 +59,7 @@ type collateralIn struct {
 }
 
 type createAppReq struct {
-	MemberID                     uuid.UUID                  `json:"member_id"`
+	CounterpartyID                     uuid.UUID                  `json:"counterparty_id"`
 	ProductID                    uuid.UUID                  `json:"product_id"`
 	RequestedAmount              decimal.Decimal            `json:"requested_amount"`
 	RequestedTermMonths          int                        `json:"requested_term_months"`
@@ -94,8 +94,8 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 		httpx.WriteErr(w, r, err)
 		return
 	}
-	if in.MemberID == uuid.Nil || in.ProductID == uuid.Nil {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("member_id and product_id are required"))
+	if in.CounterpartyID == uuid.Nil || in.ProductID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("counterparty_id and product_id are required"))
 		return
 	}
 	if in.RequestedAmount.LessThanOrEqual(decimal.Zero) {
@@ -138,7 +138,7 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 
 		// Insert application
 		app := &domain.LoanApplication{
-			MemberID:                   in.MemberID,
+			CounterpartyID:                   in.CounterpartyID,
 			ProductID:                  in.ProductID,
 			Status:                     domain.AppPendingScoring,
 			RequestedAmount:            in.RequestedAmount,
@@ -163,12 +163,12 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 
 		// Insert guarantees + collateral
 		for _, g := range in.Guarantors {
-			if g.MemberID == uuid.Nil || g.AmountGuaranteed.LessThanOrEqual(decimal.Zero) {
-				return httpx.ErrBadRequest("each guarantor needs member_id and a positive amount_guaranteed")
+			if g.CounterpartyID == uuid.Nil || g.AmountGuaranteed.LessThanOrEqual(decimal.Zero) {
+				return httpx.ErrBadRequest("each guarantor needs counterparty_id and a positive amount_guaranteed")
 			}
 			gp, err := h.Guarantees.CreateTx(r.Context(), tx, &domain.LoanGuarantee{
 				ApplicationID:     created.ID,
-				GuarantorMemberID: g.MemberID,
+				GuarantorMemberID: g.CounterpartyID,
 				AmountGuaranteed:  g.AmountGuaranteed,
 				RequestedBy:       userID,
 			})
@@ -244,7 +244,7 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 		var applicant *store.MemberLite
 		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 			var lerr error
-			applicant, lerr = h.Members.GetTx(r.Context(), tx, resp.Application.MemberID)
+			applicant, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, resp.Application.CounterpartyID)
 			return lerr
 		})
 		if applicant != nil {
@@ -377,7 +377,7 @@ func (h *LoanApplicationHandler) runScoringTx(ctx context.Context, tx pgx.Tx, ap
 		return nil, err
 	}
 	// Inputs.
-	in, err := h.Applications.GatherScoringInputsTx(ctx, tx, app.MemberID, app.ProductID)
+	in, err := h.Applications.GatherScoringInputsTx(ctx, tx, app.CounterpartyID, app.ProductID)
 	if err != nil {
 		return nil, err
 	}
@@ -503,10 +503,10 @@ func (h *LoanApplicationHandler) List(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	f := store.AppListFilter{Status: q.Get("status"), Q: q.Get("q"), Limit: limit, Offset: offset}
-	if v := q.Get("member_id"); v != "" {
+	if v := q.Get("counterparty_id"); v != "" {
 		id, err := uuid.Parse(v)
 		if err == nil {
-			f.MemberID = &id
+			f.CounterpartyID = &id
 		}
 	}
 	if v := q.Get("product_id"); v != "" {
@@ -703,7 +703,7 @@ func (h *LoanApplicationHandler) Decline(w http.ResponseWriter, r *http.Request)
 		var member *store.MemberLite
 		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 			var lerr error
-			member, lerr = h.Members.GetTx(r.Context(), tx, out.MemberID)
+			member, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, out.CounterpartyID)
 			return lerr
 		})
 		if member != nil {
@@ -748,7 +748,7 @@ type guaranteeRespondReq struct {
 // "Guarantorships" card; empty array → "no guarantorships on record"
 // empty state.
 func (h *LoanApplicationHandler) ListByGuarantor(w http.ResponseWriter, r *http.Request) {
-	memberID, err := parseUUIDParam(r, "member_id")
+	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
@@ -816,7 +816,7 @@ func (h *LoanApplicationHandler) GuaranteeRespond(w http.ResponseWriter, r *http
 			var applicant *store.MemberLite
 			_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 				var lerr error
-				applicant, lerr = h.Members.GetTx(r.Context(), tx, app.MemberID)
+				applicant, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, app.CounterpartyID)
 				return lerr
 			})
 			if applicant != nil {

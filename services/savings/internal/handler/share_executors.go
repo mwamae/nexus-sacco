@@ -27,7 +27,7 @@ import (
 // ─────────── Payloads ───────────
 
 type SharePurchasePayload struct {
-	MemberID       uuid.UUID             `json:"member_id"`
+	CounterpartyID       uuid.UUID             `json:"counterparty_id"`
 	Shares         int                   `json:"shares"`
 	PaymentChannel domain.PaymentChannel `json:"payment_channel"`
 	PaymentRef     string                `json:"payment_ref"`
@@ -48,7 +48,7 @@ type ShareBonusPayload struct {
 }
 
 type ShareLienPayload struct {
-	MemberID      uuid.UUID `json:"member_id"`
+	CounterpartyID      uuid.UUID `json:"counterparty_id"`
 	Shares        int       `json:"shares"`
 	Reason        string    `json:"reason"`
 	ReferenceKind string    `json:"reference_kind"`
@@ -80,7 +80,7 @@ func (h *ShareHandler) ExecuteSharePurchaseTx(
 	ctx context.Context, tx pgx.Tx,
 	p SharePurchasePayload, makerID uuid.UUID,
 ) (*SharePostResult, error) {
-	policy, member, acct, err := h.loadContext(ctx, tx, p.MemberID, true)
+	policy, member, acct, err := h.loadContext(ctx, tx, p.CounterpartyID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,7 @@ func (h *ShareHandler) ExecuteSharePurchaseTx(
 	if err != nil {
 		return nil, err
 	}
-	_ = h.Members.TouchActivityTx(ctx, tx, p.MemberID)
+	_ = h.Members.TouchActivityByCounterpartyTx(ctx, tx, p.CounterpartyID)
 	return &SharePostResult{Transaction: *txn, Account: *updated, Certificate: cert}, nil
 }
 
@@ -288,7 +288,7 @@ func (h *ShareHandler) ExecuteShareBonusTx(
 		if err != nil {
 			return nil, err
 		}
-		if _, err := h.Shares.IssueCertificateTx(ctx, tx, a.ID, a.MemberID, makerID,
+		if _, err := h.Shares.IssueCertificateTx(ctx, tx, a.ID, a.CounterpartyID, makerID,
 			updated.SharesHeld, policy.ParValue, policy.CertificatePrefix); err != nil {
 			return nil, err
 		}
@@ -302,7 +302,7 @@ func (h *ShareHandler) ExecuteShareLienTx(
 	ctx context.Context, tx pgx.Tx,
 	p ShareLienPayload, makerID uuid.UUID,
 ) (*domain.ShareLien, error) {
-	acct, err := h.Shares.GetAccountByMemberTx(ctx, tx, p.MemberID)
+	acct, err := h.Shares.GetAccountByMemberTx(ctx, tx, p.CounterpartyID)
 	if err != nil {
 		return nil, err
 	}

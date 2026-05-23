@@ -121,7 +121,7 @@ type InterestRunLine struct {
 	TenantID              uuid.UUID            `json:"tenant_id"`
 	RunID                 uuid.UUID            `json:"run_id"`
 	AccountID             uuid.UUID            `json:"account_id"`
-	MemberID              uuid.UUID            `json:"member_id"`
+	CounterpartyID              uuid.UUID            `json:"counterparty_id"`
 	ProductID             uuid.UUID            `json:"product_id"`
 	DaysInFY              int                  `json:"days_in_fy"`
 	DaysWithSnapshots     int                  `json:"days_with_snapshots"`
@@ -147,7 +147,7 @@ type TaxPayableEntry struct {
 	TenantID      uuid.UUID       `json:"tenant_id"`
 	SourceKind    string          `json:"source_kind"`
 	SourceID      *uuid.UUID      `json:"source_id,omitempty"`
-	MemberID      uuid.UUID       `json:"member_id"`
+	CounterpartyID      uuid.UUID       `json:"counterparty_id"`
 	MemberNo      string          `json:"member_no"`
 	MemberName    string          `json:"member_name"`
 	FYLabel       string          `json:"fy_label"`
@@ -185,7 +185,7 @@ var (
 // net = gross − wht.
 type CalcInputs struct {
 	AccountID            uuid.UUID
-	MemberID             uuid.UUID
+	CounterpartyID             uuid.UUID
 	ProductID            uuid.UUID
 	DaysInFY             int
 	DaysWithSnapshots    int
@@ -204,7 +204,7 @@ func CalcLine(in CalcInputs, ratePct, whtPct decimal.Decimal) InterestRunLine {
 	net := gross.Sub(wht)
 	return InterestRunLine{
 		AccountID:          in.AccountID,
-		MemberID:           in.MemberID,
+		CounterpartyID:           in.CounterpartyID,
 		ProductID:          in.ProductID,
 		DaysInFY:           in.DaysInFY,
 		DaysWithSnapshots:  in.DaysWithSnapshots,
@@ -223,7 +223,7 @@ func CalcLine(in CalcInputs, ratePct, whtPct decimal.Decimal) InterestRunLine {
 func SumLines(lines []InterestRunLine) (memberCount int, totalWeighted, totalGross, totalWHT, totalNet decimal.Decimal) {
 	seen := map[uuid.UUID]struct{}{}
 	for _, l := range lines {
-		seen[l.MemberID] = struct{}{}
+		seen[l.CounterpartyID] = struct{}{}
 		totalWeighted = totalWeighted.Add(l.WeightedAvgBalance)
 		totalGross = totalGross.Add(l.GrossInterest)
 		totalWHT = totalWHT.Add(l.WHTAmount)

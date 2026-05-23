@@ -33,7 +33,7 @@ func NewStatusChangeStore(pool *pgxpool.Pool) *StatusChangeStore {
 
 type ApplyInput struct {
 	TenantID           uuid.UUID
-	MemberID           uuid.UUID
+	CounterpartyID           uuid.UUID
 	FromStatus         domain.MemberStatus
 	ToStatus           domain.MemberStatus
 	ReasonCategory     domain.StatusReason
@@ -66,25 +66,29 @@ func (s *StatusChangeStore) ApplyTx(ctx context.Context, tx pgx.Tx, in ApplyInpu
 		  dormancy_warning_sent_at = CASE WHEN $2::member_status = 'active' THEN NULL ELSE dormancy_warning_sent_at END,
 		  last_activity_at    = CASE WHEN $2::member_status = 'active' AND last_activity_at IS NULL THEN now() ELSE last_activity_at END
 		WHERE id = $1
-	`, in.MemberID, string(in.ToStatus), in.ReasonNote, in.ChangedBy); err != nil {
+	`, in.CounterpartyID, string(in.ToStatus), in.ReasonNote, in.ChangedBy); err != nil {
 		return nil, fmt.Errorf("update member status: %w", err)
+	}
+	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for status change: %w", err)
 	}
 	var c domain.MemberStatusChange
 	var path *string
 	var mime *string
-	err := tx.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO member_status_changes (
-		  tenant_id, member_id, from_status, to_status,
+		  tenant_id, counterparty_id, from_status, to_status,
 		  reason_category, reason_note, supporting_doc_path, supporting_doc_mime,
 		  changed_by, workflow_instance_id, review_date
 		) VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), NULLIF($8,''), $9, $10, $11)
-		RETURNING id, member_id, from_status, to_status, reason_category, COALESCE(reason_note,''),
+		RETURNING id, counterparty_id, from_status, to_status, reason_category, COALESCE(reason_note,''),
 		          supporting_doc_path, supporting_doc_mime, changed_by, changed_at,
 		          workflow_instance_id, review_date
-	`, in.TenantID, in.MemberID, in.FromStatus, in.ToStatus,
+	`, in.TenantID, cpID, in.FromStatus, in.ToStatus,
 		in.ReasonCategory, in.ReasonNote, in.SupportingDocPath, in.SupportingDocMIME,
 		in.ChangedBy, in.WorkflowInstanceID, in.ReviewDate,
-	).Scan(&c.ID, &c.MemberID, &c.FromStatus, &c.ToStatus, &c.ReasonCategory, &c.ReasonNote,
+	).Scan(&c.ID, &c.CounterpartyID, &c.FromStatus, &c.ToStatus, &c.ReasonCategory, &c.ReasonNote,
 		&path, &mime, &c.ChangedBy, &c.ChangedAt, &c.WorkflowInstanceID, &c.ReviewDate)
 	if err != nil {
 		return nil, fmt.Errorf("insert status change row: %w", err)
@@ -104,14 +108,18 @@ func (s *StatusChangeStore) HistoryTx(ctx context.Context, tx pgx.Tx, memberID u
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for status history: %w", err)
+	}
 	rows, err := tx.Query(ctx, `
-		SELECT id, member_id, from_status, to_status, reason_category, COALESCE(reason_note,''),
+		SELECT id, counterparty_id, from_status, to_status, reason_category, COALESCE(reason_note,''),
 		       supporting_doc_path, supporting_doc_mime, changed_by, changed_at,
 		       workflow_instance_id, review_date
 		FROM member_status_changes
-		WHERE member_id = $1
+		WHERE counterparty_id = $1
 		ORDER BY changed_at DESC LIMIT $2
-	`, memberID, limit)
+	`, cpID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +128,7 @@ func (s *StatusChangeStore) HistoryTx(ctx context.Context, tx pgx.Tx, memberID u
 	for rows.Next() {
 		var c domain.MemberStatusChange
 		var path, mime *string
-		if err := rows.Scan(&c.ID, &c.MemberID, &c.FromStatus, &c.ToStatus, &c.ReasonCategory, &c.ReasonNote,
+		if err := rows.Scan(&c.ID, &c.CounterpartyID, &c.FromStatus, &c.ToStatus, &c.ReasonCategory, &c.ReasonNote,
 			&path, &mime, &c.ChangedBy, &c.ChangedAt, &c.WorkflowInstanceID, &c.ReviewDate); err != nil {
 			return nil, err
 		}
@@ -140,7 +148,7 @@ func (s *StatusChangeStore) HistoryTx(ctx context.Context, tx pgx.Tx, memberID u
 
 type ProposalInput struct {
 	TenantID           uuid.UUID
-	MemberID           uuid.UUID
+	CounterpartyID           uuid.UUID
 	WorkflowInstanceID uuid.UUID
 	ProposedStatus     domain.MemberStatus
 	ReasonCategory     domain.StatusReason
@@ -152,24 +160,28 @@ type ProposalInput struct {
 }
 
 func (s *StatusChangeStore) CreateProposalTx(ctx context.Context, tx pgx.Tx, in ProposalInput) (*domain.MemberStatusProposal, error) {
+	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for status proposal: %w", err)
+	}
 	var p domain.MemberStatusProposal
 	var path, mime *string
-	err := tx.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO member_status_proposals (
-		  tenant_id, member_id, workflow_instance_id, proposed_status,
+		  tenant_id, counterparty_id, workflow_instance_id, proposed_status,
 		  reason_category, reason_note,
 		  supporting_doc_path, supporting_doc_mime,
 		  review_date, proposed_by
 		) VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), NULLIF($8,''), $9, $10)
-		RETURNING id, member_id, workflow_instance_id, proposed_status,
+		RETURNING id, counterparty_id, workflow_instance_id, proposed_status,
 		          reason_category, COALESCE(reason_note,''),
 		          supporting_doc_path, supporting_doc_mime,
 		          review_date, proposed_by, proposed_at, resolved_at, COALESCE(resolution,'')
-	`, in.TenantID, in.MemberID, in.WorkflowInstanceID, in.ProposedStatus,
+	`, in.TenantID, cpID, in.WorkflowInstanceID, in.ProposedStatus,
 		in.ReasonCategory, in.ReasonNote,
 		in.SupportingDocPath, in.SupportingDocMIME,
 		in.ReviewDate, in.ProposedBy,
-	).Scan(&p.ID, &p.MemberID, &p.WorkflowInstanceID, &p.ProposedStatus,
+	).Scan(&p.ID, &p.CounterpartyID, &p.WorkflowInstanceID, &p.ProposedStatus,
 		&p.ReasonCategory, &p.ReasonNote,
 		&path, &mime,
 		&p.ReviewDate, &p.ProposedBy, &p.ProposedAt, &p.ResolvedAt, &p.Resolution,
@@ -186,13 +198,13 @@ func (s *StatusChangeStore) ProposalByWorkflowTx(ctx context.Context, tx pgx.Tx,
 	var p domain.MemberStatusProposal
 	var path, mime *string
 	err := tx.QueryRow(ctx, `
-		SELECT id, member_id, workflow_instance_id, proposed_status,
+		SELECT id, counterparty_id, workflow_instance_id, proposed_status,
 		       reason_category, COALESCE(reason_note,''),
 		       supporting_doc_path, supporting_doc_mime,
 		       review_date, proposed_by, proposed_at, resolved_at, COALESCE(resolution,'')
 		FROM member_status_proposals
 		WHERE workflow_instance_id = $1
-	`, workflowInstanceID).Scan(&p.ID, &p.MemberID, &p.WorkflowInstanceID, &p.ProposedStatus,
+	`, workflowInstanceID).Scan(&p.ID, &p.CounterpartyID, &p.WorkflowInstanceID, &p.ProposedStatus,
 		&p.ReasonCategory, &p.ReasonNote,
 		&path, &mime,
 		&p.ReviewDate, &p.ProposedBy, &p.ProposedAt, &p.ResolvedAt, &p.Resolution,
@@ -225,11 +237,11 @@ func (s *StatusChangeStore) ResolveProposalTx(ctx context.Context, tx pgx.Tx, id
 
 func (s *StatusChangeStore) OpenProposalsForMemberTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) ([]*domain.MemberStatusProposal, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, member_id, workflow_instance_id, proposed_status,
+		SELECT id, counterparty_id, workflow_instance_id, proposed_status,
 		       reason_category, COALESCE(reason_note,''),
 		       review_date, proposed_by, proposed_at, resolved_at, COALESCE(resolution,'')
 		FROM member_status_proposals
-		WHERE member_id = $1 AND resolved_at IS NULL
+		WHERE counterparty_id = $1 AND resolved_at IS NULL
 		ORDER BY proposed_at DESC
 	`, memberID)
 	if err != nil {
@@ -239,7 +251,7 @@ func (s *StatusChangeStore) OpenProposalsForMemberTx(ctx context.Context, tx pgx
 	var out []*domain.MemberStatusProposal
 	for rows.Next() {
 		var p domain.MemberStatusProposal
-		if err := rows.Scan(&p.ID, &p.MemberID, &p.WorkflowInstanceID, &p.ProposedStatus,
+		if err := rows.Scan(&p.ID, &p.CounterpartyID, &p.WorkflowInstanceID, &p.ProposedStatus,
 			&p.ReasonCategory, &p.ReasonNote,
 			&p.ReviewDate, &p.ProposedBy, &p.ProposedAt, &p.ResolvedAt, &p.Resolution); err != nil {
 			return nil, err
@@ -262,7 +274,7 @@ func (s *StatusChangeStore) TouchActivityTx(ctx context.Context, tx pgx.Tx, memb
 
 // DormancyCandidate is one row in the dormancy run report.
 type DormancyCandidate struct {
-	MemberID       uuid.UUID  `json:"member_id"`
+	CounterpartyID       uuid.UUID  `json:"counterparty_id"`
 	MemberNo       string     `json:"member_no"`
 	FullName       string     `json:"full_name"`
 	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
@@ -289,7 +301,7 @@ func (s *StatusChangeStore) DormancyCandidatesTx(ctx context.Context, tx pgx.Tx,
 	var out []*DormancyCandidate
 	for rows.Next() {
 		var c DormancyCandidate
-		if err := rows.Scan(&c.MemberID, &c.MemberNo, &c.FullName, &c.LastActivityAt, &c.DaysInactive); err != nil {
+		if err := rows.Scan(&c.CounterpartyID, &c.MemberNo, &c.FullName, &c.LastActivityAt, &c.DaysInactive); err != nil {
 			return nil, err
 		}
 		out = append(out, &c)
@@ -318,7 +330,7 @@ func (s *StatusChangeStore) DormancyPipelineTx(ctx context.Context, tx pgx.Tx, t
 	var out []*DormancyCandidate
 	for rows.Next() {
 		var c DormancyCandidate
-		if err := rows.Scan(&c.MemberID, &c.MemberNo, &c.FullName, &c.LastActivityAt, &c.DaysInactive); err != nil {
+		if err := rows.Scan(&c.CounterpartyID, &c.MemberNo, &c.FullName, &c.LastActivityAt, &c.DaysInactive); err != nil {
 			return nil, err
 		}
 		out = append(out, &c)
@@ -404,12 +416,12 @@ func (s *StatusChangeStore) RecentChangesTx(ctx context.Context, tx pgx.Tx, limi
 		limit = 20
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT c.id, c.member_id, c.from_status, c.to_status, c.reason_category, COALESCE(c.reason_note,''),
+		SELECT c.id, c.counterparty_id, c.from_status, c.to_status, c.reason_category, COALESCE(c.reason_note,''),
 		       c.supporting_doc_path, c.supporting_doc_mime, c.changed_by, c.changed_at,
 		       c.workflow_instance_id, c.review_date,
 		       m.member_no, m.full_name
 		FROM member_status_changes c
-		JOIN members m ON m.id = c.member_id
+		JOIN members m ON m.id = c.counterparty_id
 		ORDER BY c.changed_at DESC LIMIT $1
 	`, limit)
 	if err != nil {
@@ -421,7 +433,7 @@ func (s *StatusChangeStore) RecentChangesTx(ctx context.Context, tx pgx.Tx, limi
 		var c domain.MemberStatusChange
 		var path, mime *string
 		var memberNo, fullName string
-		if err := rows.Scan(&c.ID, &c.MemberID, &c.FromStatus, &c.ToStatus, &c.ReasonCategory, &c.ReasonNote,
+		if err := rows.Scan(&c.ID, &c.CounterpartyID, &c.FromStatus, &c.ToStatus, &c.ReasonCategory, &c.ReasonNote,
 			&path, &mime, &c.ChangedBy, &c.ChangedAt, &c.WorkflowInstanceID, &c.ReviewDate,
 			&memberNo, &fullName); err != nil {
 			return nil, err

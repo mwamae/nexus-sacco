@@ -1379,7 +1379,7 @@ export type ApiMember = {
 
 export type ApiRelation = {
   id: string;
-  member_id: string;
+  counterparty_id: string;
   kind: RelationKind;
   full_name: string;
   relationship: string;
@@ -1392,7 +1392,7 @@ export type ApiRelation = {
 
 export type ApiDocument = {
   id: string;
-  member_id: string;
+  counterparty_id: string;
   kind: DocumentKind;
   mime: string;
   size_bytes: number;
@@ -1496,7 +1496,7 @@ export type MemberStatusActions = {
 
 export type MemberStatusChange = {
   id: string;
-  member_id: string;
+  counterparty_id: string;
   from_status?: MemberStatus;
   to_status: MemberStatus;
   reason_category: MemberStatusReason;
@@ -1511,7 +1511,7 @@ export type MemberStatusChange = {
 
 export type MemberStatusProposal = {
   id: string;
-  member_id: string;
+  counterparty_id: string;
   workflow_instance_id: string;
   proposed_status: MemberStatus;
   reason_category: MemberStatusReason;
@@ -1533,7 +1533,7 @@ export type StatusChangeResponse = {
 };
 
 export type DormancyCandidate = {
-  member_id: string;
+  counterparty_id: string;
   member_no: string;
   full_name: string;
   last_activity_at?: string;
@@ -1940,7 +1940,7 @@ export type ShareAccountStatus = 'active' | 'closed';
 export type ShareAccount = {
   id: string;
   tenant_id: string;
-  member_id: string;
+  counterparty_id: string;
   account_no: string;
   status: ShareAccountStatus;
   shares_held: number;
@@ -1957,7 +1957,7 @@ export type ShareAccount = {
 export type ShareTransaction = {
   id: string;
   account_id: string;
-  member_id: string;
+  counterparty_id: string;
   txn_no: string;
   txn_type: ShareTxnType;
   shares_delta: number;
@@ -1995,7 +1995,7 @@ export type ShareLien = {
 export type ShareCertificate = {
   id: string;
   account_id: string;
-  member_id: string;
+  counterparty_id: string;
   certificate_no: string;
   shares_covered: number;
   par_value_at_issue: string;
@@ -2062,7 +2062,7 @@ export async function updateSharePolicy(p: SharePolicy): Promise<SharePolicy> {
 }
 
 export async function getShareAccountByMember(memberId: string): Promise<ShareAccountView> {
-  // Trailing slash matches chi.Route("/share-accounts/by-member/{member_id}").Get("/", ...)
+  // Trailing slash matches chi.Route("/share-accounts/by-member/{counterparty_id}").Get("/", ...)
   const r = await api.get(`/v1/share-accounts/by-member/${memberId}/`);
   return r.data.data;
 }
@@ -2228,7 +2228,7 @@ export type DepositProduct = {
 
 export type DepositAccount = {
   id: string;
-  member_id: string;
+  counterparty_id: string;
   product_id: string;
   account_no: string;
   status: DepositAccountStatus;
@@ -2256,7 +2256,7 @@ export type DepositAccount = {
 export type DepositTransaction = {
   id: string;
   account_id: string;
-  member_id: string;
+  counterparty_id: string;
   txn_no: string;
   txn_type: DepositTxnType;
   amount: string;
@@ -2377,7 +2377,7 @@ export async function getDepositAccount(id: string): Promise<DepositAccountView>
 }
 
 export async function openDepositAccount(input: {
-  member_id: string;
+  counterparty_id: string;
   product_id: string;
   opening_deposit: string;
   opening_channel?: DepositChannel;
@@ -2503,7 +2503,7 @@ export type InterestRunLine = {
   id: string;
   run_id: string;
   account_id: string;
-  member_id: string;
+  counterparty_id: string;
   product_id: string;
   days_in_fy: number;
   days_with_snapshots: number;
@@ -2529,7 +2529,7 @@ export type InterestRunDetail = {
 };
 
 export type WHTScheduleRow = {
-  member_id: string;
+  counterparty_id: string;
   member_no: string;
   member_name: string;
   gross_amount: string;
@@ -2546,7 +2546,7 @@ export type TaxPayableEntry = {
   id: string;
   source_kind: string;
   source_id?: string;
-  member_id: string;
+  counterparty_id: string;
   member_no: string;
   member_name: string;
   fy_label: string;
@@ -2557,7 +2557,7 @@ export type TaxPayableEntry = {
 };
 
 export type WHTCertificate = {
-  member_id: string;
+  counterparty_id: string;
   fy_label: string;
   entries: TaxPayableEntry[];
   totals: { gross_amount: string; wht_amount: string; net_amount: string };
@@ -2683,7 +2683,7 @@ export type DividendRunLine = {
   id: string;
   run_id: string;
   share_account_id: string;
-  member_id: string;
+  counterparty_id: string;
   calc_method: DividendCalcMethod;
   shares_basis: string;
   par_value_at_run: string;
@@ -2904,7 +2904,7 @@ export type LoanStatus =
 export type LoanApplication = {
   id: string;
   application_no: string;
-  member_id: string;
+  counterparty_id: string;
   product_id: string;
   status: LoanAppStatus;
   requested_amount: string;
@@ -3049,10 +3049,10 @@ export type LoanAppDetail = {
   schedule?: ScheduleSnapshot;
 };
 
-export async function listLoanApplications(opts: { status?: string; member_id?: string; product_id?: string; q?: string; limit?: number; offset?: number } = {}): Promise<{ items: LoanAppListItem[]; total: number }> {
+export async function listLoanApplications(opts: { status?: string; counterparty_id?: string; product_id?: string; q?: string; limit?: number; offset?: number } = {}): Promise<{ items: LoanAppListItem[]; total: number }> {
   const p = new URLSearchParams();
   if (opts.status) p.set('status', opts.status);
-  if (opts.member_id) p.set('member_id', opts.member_id);
+  if (opts.counterparty_id) p.set('counterparty_id', opts.counterparty_id);
   if (opts.product_id) p.set('product_id', opts.product_id);
   if (opts.q) p.set('q', opts.q);
   if (opts.limit) p.set('limit', String(opts.limit));
@@ -3067,7 +3067,7 @@ export async function getLoanApplication(id: string): Promise<LoanAppDetail> {
 }
 
 export async function createLoanApplication(input: {
-  member_id: string;
+  counterparty_id: string;
   product_id: string;
   requested_amount: string;
   requested_term_months: number;
@@ -3081,7 +3081,7 @@ export async function createLoanApplication(input: {
   other_income?: string;
   monthly_expenses: string;
   monthly_existing_obligations?: string;
-  guarantors: { member_id: string; amount_guaranteed: string }[];
+  guarantors: { counterparty_id: string; amount_guaranteed: string }[];
   collateral: { kind: LoanCollateralKind; description: string; estimated_value: string; forced_sale_value?: string; valuation_date?: string; notes?: string }[];
   notes?: string;
 }): Promise<CreateLoanAppResponse> {
@@ -3147,7 +3147,7 @@ export type Loan = {
   id: string;
   loan_no: string;
   application_id: string;
-  member_id: string;
+  counterparty_id: string;
   product_id: string;
   status: LoanStatus;
   principal: string;
@@ -3236,10 +3236,10 @@ export type LoanListItem = {
   product_name: string;
 };
 
-export async function listLoans(opts: { status?: string; member_id?: string; product_id?: string; q?: string; limit?: number; offset?: number } = {}): Promise<{ items: LoanListItem[]; total: number }> {
+export async function listLoans(opts: { status?: string; counterparty_id?: string; product_id?: string; q?: string; limit?: number; offset?: number } = {}): Promise<{ items: LoanListItem[]; total: number }> {
   const p = new URLSearchParams();
   if (opts.status) p.set('status', opts.status);
-  if (opts.member_id) p.set('member_id', opts.member_id);
+  if (opts.counterparty_id) p.set('counterparty_id', opts.counterparty_id);
   if (opts.product_id) p.set('product_id', opts.product_id);
   if (opts.q) p.set('q', opts.q);
   if (opts.limit) p.set('limit', String(opts.limit));
@@ -3378,7 +3378,7 @@ export type PTPStatus = 'open' | 'kept' | 'partial' | 'broken' | 'cancelled';
 export type CollectionCase = {
   id: string;
   loan_id: string;
-  member_id: string;
+  counterparty_id: string;
   status: CollectionCaseStatus;
   classification_at_open?: string;
   assigned_to?: string;
@@ -3632,7 +3632,7 @@ export async function getRestructuringRegister(kind = ''): Promise<Restructuring
 export type LoanWriteoff = {
   id: string;
   loan_id: string;
-  member_id: string;
+  counterparty_id: string;
   principal_written_off: string;
   interest_written_off: string;
   fees_written_off: string;
@@ -3664,7 +3664,7 @@ export async function writeOffLoan(loanId: string, reason: string): Promise<Cash
 
 export type CRBRecord = {
   loan_no: string;
-  member_id: string;
+  counterparty_id: string;
   member_name: string;
   id_doc_number: string;
   disbursed_at?: string;
@@ -3681,7 +3681,7 @@ export async function getCRBSubmission(): Promise<{ records: CRBRecord[]; record
 }
 
 export type MemberLoanHistory = {
-  member_id: string;
+  counterparty_id: string;
   total_loans_ever_taken: number;
   active_loans: number;
   total_disbursed: string;
@@ -3801,7 +3801,7 @@ export type ApprovalToggles = {
 export async function listPendingApprovals(opts: {
   status?: string;
   kind?: string;
-  member_id?: string;
+  counterparty_id?: string;
   maker_user_id?: string;
   include_closed?: boolean;
   limit?: number;
@@ -3810,7 +3810,7 @@ export async function listPendingApprovals(opts: {
   const p = new URLSearchParams();
   if (opts.status) p.set('status', opts.status);
   if (opts.kind) p.set('kind', opts.kind);
-  if (opts.member_id) p.set('member_id', opts.member_id);
+  if (opts.counterparty_id) p.set('counterparty_id', opts.counterparty_id);
   if (opts.maker_user_id) p.set('maker_user_id', opts.maker_user_id);
   if (opts.include_closed) p.set('include_closed', '1');
   if (opts.limit) p.set('limit', String(opts.limit));
@@ -4754,7 +4754,7 @@ export type ProvisionRunLine = {
   id: string;
   run_id: string;
   loan_id: string;
-  member_id: string;
+  counterparty_id: string;
   loan_no: string;
   days_past_due: number;
   classification: 'performing' | 'watch' | 'substandard' | 'doubtful' | 'loss';
@@ -5524,7 +5524,7 @@ export async function getFinanceDashboard(asOf?: string): Promise<Dashboard> {
 // ─────────── Member 360° Statement ───────────
 
 export type MemberStatement = {
-  member_id: string;
+  counterparty_id: string;
   generated_at: string;
   member: {
     id: string;

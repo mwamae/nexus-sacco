@@ -238,7 +238,7 @@ func (s *NotificationStore) MarkAllReadForUserTx(ctx context.Context, tx pgx.Tx,
 // FeedFilter narrows the inbox listing.
 type FeedFilter struct {
 	UserID   *uuid.UUID
-	MemberID *uuid.UUID
+	CounterpartyID *uuid.UUID
 	UnreadOnly bool
 	Limit    int
 	Offset   int
@@ -248,7 +248,7 @@ type FeedFilter struct {
 // The query returns one row per notification with its in-app delivery
 // embedded so the frontend doesn't have to join.
 func (s *NotificationStore) FeedForRecipientTx(ctx context.Context, tx pgx.Tx, f FeedFilter) ([]domain.FeedItem, int, error) {
-	if f.UserID == nil && f.MemberID == nil {
+	if f.UserID == nil && f.CounterpartyID == nil {
 		return []domain.FeedItem{}, 0, nil
 	}
 	where := []string{"d.channel = 'in_app'"}
@@ -258,9 +258,9 @@ func (s *NotificationStore) FeedForRecipientTx(ctx context.Context, tx pgx.Tx, f
 		where = append(where, "n.recipient_user_id = $"+strconv.Itoa(idx))
 		args = append(args, *f.UserID)
 		idx++
-	} else if f.MemberID != nil {
+	} else if f.CounterpartyID != nil {
 		where = append(where, "n.recipient_member_id = $"+strconv.Itoa(idx))
-		args = append(args, *f.MemberID)
+		args = append(args, *f.CounterpartyID)
 		idx++
 	}
 	if f.UnreadOnly {
