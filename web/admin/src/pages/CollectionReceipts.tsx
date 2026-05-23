@@ -8,6 +8,8 @@ import {
   getCurrentTillSession,
   getReceipt,
   listReceipts,
+  receiptPDFDownloadURL,
+  renderReceiptPDF,
   voidReceiptLine,
   type ApiReceipt,
   type ApiReceiptLine,
@@ -140,6 +142,7 @@ function ReceiptDetail({ id }: { id: string }) {
   const [receipt, setReceipt] = useState<ApiReceipt | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [voidingLineId, setVoidingLineId] = useState<string | null>(null);
+  const [renderingPDF, setRenderingPDF] = useState(false);
 
   async function reload() {
     try {
@@ -149,6 +152,22 @@ function ReceiptDetail({ id }: { id: string }) {
     }
   }
   useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
+
+  async function renderPDF() {
+    setRenderingPDF(true);
+    setErr(null);
+    try {
+      const out = await renderReceiptPDF(id);
+      // Open the freshly-rendered PDF in a new tab so the cashier can
+      // print without leaving the desk page.
+      window.open(receiptPDFDownloadURL(out.pdf_document_id), '_blank', 'noopener');
+      await reload();
+    } catch (e) {
+      setErr(extractError(e));
+    } finally {
+      setRenderingPDF(false);
+    }
+  }
 
   async function voidLine(line: ApiReceiptLine) {
     const reason = window.prompt(`Void reason for line ${line.line_no} (${line.kind})?`);
@@ -179,6 +198,26 @@ function ReceiptDetail({ id }: { id: string }) {
             {' · '}KES {receipt.channel_amount}
             {' · '}{receipt.value_date}
           </div>
+        </div>
+        <div className="page-hd-actions">
+          {receipt.pdf_document_id ? (
+            <a
+              className="btn btn-sm btn-accent"
+              href={receiptPDFDownloadURL(receipt.pdf_document_id)}
+              target="_blank"
+              rel="noopener"
+            >
+              Download PDF
+            </a>
+          ) : (
+            <button
+              className="btn btn-sm btn-accent"
+              onClick={renderPDF}
+              disabled={renderingPDF}
+            >
+              {renderingPDF ? 'Rendering…' : 'Render PDF'}
+            </button>
+          )}
         </div>
       </div>
 

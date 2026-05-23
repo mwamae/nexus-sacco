@@ -269,6 +269,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        '/api/v1/pdf-documents': {
+          target: notificationTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         // Platform-side notification endpoints — must be the SPECIFIC
         // subpaths the notification service owns, NOT a catch-all on
         // /api/v1/platform (the identity service owns the rest, e.g.

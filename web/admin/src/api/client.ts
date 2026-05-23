@@ -1905,6 +1905,24 @@ export async function voidReceiptLine(receiptId: string, lineId: string, reason:
   await api.post(`/v1/receipts/${receiptId}/lines/${lineId}/void`, { reason });
 }
 
+export type RenderReceiptPDFResponse = {
+  pdf_document_id: string;
+  download_url: string; // backend returns "/v1/pdf-documents/<id>/download"; client.ts prepends /api
+};
+
+export async function renderReceiptPDF(receiptId: string): Promise<RenderReceiptPDFResponse> {
+  const r = await api.post(`/v1/receipts/${receiptId}/pdf`);
+  return r.data.data;
+}
+
+// receiptPDFDownloadURL — builds the absolute admin-download URL for
+// a generated receipt PDF. Routed to the notification service via
+// vite's /api/v1/pdf-documents proxy (same auth + Host header as
+// the rest of the SPA's calls).
+export function receiptPDFDownloadURL(pdfDocumentID: string): string {
+  return `/api/v1/pdf-documents/${pdfDocumentID}/download`;
+}
+
 // ─── Workflow engine ───
 
 export type WFStatus =

@@ -67,7 +67,12 @@ func (g *Generator) Generate(ctx context.Context, in GenerateInput) (*domain.PDF
 	}
 
 	// 2. Render HTML with payload + tenant-wide auto-injected vars.
-	merged := mergeAutoVars(in.Payload, in.TenantID)
+	merged, brandErr := g.mergeAutoVars(ctx, in.Payload, in.TenantID)
+	if brandErr != nil {
+		// Don't fail the render on a branding lookup error — log and
+		// fall back to the placeholder strings.
+		merged = fallbackBrandingVars(in.Payload)
+	}
 	rendered := store.RenderTemplate(tpl.HTMLBody, merged)
 
 	// 3. Print to PDF via chromedp.
@@ -126,10 +131,59 @@ func (g *Generator) Generate(ctx context.Context, in GenerateInput) (*domain.PDF
 
 // mergeAutoVars injects tenant-wide branding variables alongside the
 // caller's payload, without overwriting any explicit field.
-func mergeAutoVars(payload map[string]any, _ uuid.UUID) map[string]any {
+//
+// Phase G: reads tenant_name from the tenants row and tenant_address
+// from the HQ branch's physical_address (best-effort). Anything the
+// caller's payload sets explicitly still wins — branding is purely
+// auto-fill for templates that don't otherwise care.
+func (g *Generator) mergeAutoVars(ctx context.Context, payload map[string]any, tenantID uuid.UUID) (map[string]any, error) {
+	merged := fallbackBrandingVars(payload)
+	merged["generated_date"] = time.Now().Format("2 January 2006")
+
+	// Pull the real tenant name + (best-effort) HQ branch address. RLS
+	// would block this if we ran it under the tenant context, since
+	// the tenants row itself isn't visible — so we use a plain pool
+	// query bypassing the WithTenantTx wrapper. Errors here are
+	// non-fatal; the caller falls back to the stub.
+	var name string
+	var legalName *string
+	if err := g.DB.QueryRow(ctx,
+		`SELECT name, legal_name FROM tenants WHERE id = $1`, tenantID,
+	).Scan(&name, &legalName); err != nil {
+		return nil, err
+	}
+	if name != "" {
+		merged["tenant_name"] = name
+	}
+	if legalName != nil && *legalName != "" {
+		merged["tenant_legal_name"] = *legalName
+	}
+
+	// Address — first HQ branch's physical_address, falling back to
+	// the first branch of any kind. Soft failure: missing is fine.
+	var addr *string
+	_ = g.DB.QueryRow(ctx, `
+		SELECT physical_address FROM tenant_branches
+		 WHERE tenant_id = $1 AND COALESCE(NULLIF(physical_address,''), '') <> ''
+		 ORDER BY (kind = 'hq') DESC, position ASC LIMIT 1
+	`, tenantID).Scan(&addr)
+	if addr != nil && *addr != "" {
+		merged["tenant_address"] = *addr
+	}
+
+	// Caller's explicit payload always wins (already merged in
+	// fallbackBrandingVars). Re-apply at the end as belt-and-braces.
+	for k, v := range payload {
+		merged[k] = v
+	}
+	return merged, nil
+}
+
+// fallbackBrandingVars is the placeholder-only flavor used when the
+// tenants lookup fails. Keeps the renderer working even if the row is
+// missing (test rigs / pre-seed dev DBs).
+func fallbackBrandingVars(payload map[string]any) map[string]any {
 	merged := map[string]any{}
-	// Stage 5 keeps these stubbed at strings; stage 8 will join against
-	// tenants + tenant_branding to inject real values per tenant.
 	merged["generated_date"] = time.Now().Format("2 January 2006")
 	merged["tenant_name"] = "Your SACCO"
 	merged["tenant_address"] = ""

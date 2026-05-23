@@ -34,6 +34,7 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -47,6 +48,7 @@ type CollectionDeskHandler struct {
 	Shares         *store.ShareStore
 	Tenants        *store.TenantStore
 	Counterparties *store.CounterpartyStore
+	Notifier       *notifier.Client
 	Logger         *slog.Logger
 }
 
@@ -610,6 +612,188 @@ func (h *CollectionDeskHandler) VoidLine(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	httpx.OK(w, map[string]any{"status": "voided", "line_id": lineID})
+}
+
+// ─────────── POST /v1/receipts/{id}/pdf ───────────
+//
+// Renders the receipt to PDF via the notification service, stamps the
+// resulting pdf_documents.id back onto receipts.pdf_document_id, and
+// returns a small envelope the frontend uses to build the download
+// link. Synchronous — the chromedp render takes ~1–3s for an A5 page;
+// fine inside a normal request lifecycle.
+type renderPDFResponse struct {
+	PDFDocumentID uuid.UUID `json:"pdf_document_id"`
+	DownloadURL   string    `json:"download_url"`
+}
+
+func (h *CollectionDeskHandler) RenderPDF(w http.ResponseWriter, r *http.Request) {
+	id, err := parseUUIDParam(r, "id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if h.Notifier == nil {
+		httpx.WriteErr(w, r, fmt.Errorf("notifier client not configured"))
+		return
+	}
+	tenantID, _ := middleware.TenantIDFrom(r)
+	userID, _ := middleware.UserIDFrom(r)
+	var receipt *domain.Receipt
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		r2, err := h.Receipts.GetByIDTx(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		receipt = r2
+		return nil
+	})
+	if err != nil {
+		writeDeskErr(w, r, err)
+		return
+	}
+
+	// Build the template payload. The bespoke {{lines_html}} render
+	// happens here because the simple {{var}} engine in the
+	// notification service doesn't support loops.
+	cpName, cpNumber, cpLegacy, cashierName, tillCode := receiptDisplayContext(r.Context(), h, tenantID, receipt)
+	payload := map[string]any{
+		"serial":           receipt.Serial,
+		"till_code":        tillCode,
+		"cashier_name":     cashierName,
+		"cp_display_name":  cpName,
+		"cp_cp_number":     cpNumber,
+		"cp_legacy_id":     cpLegacy,
+		"value_date":       receipt.ValueDate.Format("2 January 2006"),
+		"channel":          string(receipt.Channel),
+		"channel_ref":      deref(receipt.ChannelRef),
+		"channel_amount":   receipt.ChannelAmount.StringFixed(2),
+		"lines_html":       renderLinesHTML(receipt.Lines),
+		"narration_block":  renderNarrationBlock(receipt.Narration),
+	}
+
+	uid := userID
+	gen, err := h.Notifier.GeneratePDF(r.Context(), notifier.PDFGenerateRequest{
+		TenantID:        tenantID,
+		DocumentType:    "CASH_RECEIPT",
+		SubjectMemberID: &receipt.CounterpartyID,
+		SubjectLabel:    "Cash receipt · " + receipt.Serial,
+		Payload:         payload,
+		GeneratedBy:     &uid,
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+
+	if err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		return h.Receipts.SetPDFDocumentIDTx(r.Context(), tx, receipt.ID, gen.ID)
+	}); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, renderPDFResponse{
+		PDFDocumentID: gen.ID,
+		// The authenticated admin download path. Frontend constructs
+		// the full URL using the notification service base.
+		DownloadURL: fmt.Sprintf("/v1/pdf-documents/%s/download", gen.ID),
+	})
+}
+
+// receiptDisplayContext fetches the cosmetic strings the template
+// needs (counterparty name, till code, cashier name). All best-effort:
+// the PDF still renders if any lookup misses (falls back to a uuid
+// prefix).
+func receiptDisplayContext(ctx context.Context, h *CollectionDeskHandler, tenantID uuid.UUID, r *domain.Receipt) (cpName, cpNumber, cpLegacy, cashierName, tillCode string) {
+	cashierName = r.CashierUserID.String()[:8] + "…"
+	tillCode = "—"
+	_ = h.DB.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		// Counterparty
+		if cp, err := h.Counterparties.GetByIDTx(ctx, tx, r.CounterpartyID); err == nil {
+			cpName = cp.FullName
+			cpNumber = cp.MemberNo
+			if cp.LegacyID != nil {
+				cpLegacy = *cp.LegacyID
+			}
+		}
+		// Cashier — best-effort lookup against users table (shared DB).
+		var fullName *string
+		_ = tx.QueryRow(ctx,
+			`SELECT full_name FROM users WHERE id = $1`, r.CashierUserID,
+		).Scan(&fullName)
+		if fullName != nil && *fullName != "" {
+			cashierName = *fullName
+		}
+		// Till code
+		if r.TillSessionID != nil {
+			_ = tx.QueryRow(ctx, `
+				SELECT t.code FROM till_sessions s JOIN tills t ON t.id = s.till_id WHERE s.id = $1
+			`, *r.TillSessionID).Scan(&tillCode)
+		} else {
+			// virtual till — use the channel slug for the serial-prefix
+			// match.
+			tillCode = string(r.Channel)
+		}
+		return nil
+	})
+	if cpLegacy == "" {
+		cpLegacy = "—"
+	}
+	return
+}
+
+// renderLinesHTML pre-renders the <tr>...</tr> rows for the receipt
+// template. Kept HTML-escape-conservative; line narration is treated
+// as plain text via html.EscapeString.
+func renderLinesHTML(lines []domain.ReceiptLine) string {
+	var b []byte
+	for _, l := range lines {
+		desc := lineKindLabel(l.Kind)
+		if l.Narration != nil && *l.Narration != "" {
+			desc += `<div style="color:#777;font-size:8pt">` + htmlEscape(*l.Narration) + `</div>`
+		}
+		b = append(b, []byte(fmt.Sprintf(
+			`<tr><td>%d</td><td>%s</td><td class="amt">%s</td></tr>`,
+			l.LineNo, desc, l.Amount.StringFixed(2),
+		))...)
+	}
+	return string(b)
+}
+
+func renderNarrationBlock(narration *string) string {
+	if narration == nil || *narration == "" {
+		return ""
+	}
+	return `<div class="narration">` + htmlEscape(*narration) + `</div>`
+}
+
+func lineKindLabel(k domain.ReceiptLineKind) string {
+	switch k {
+	case domain.LineSavingsDeposit:
+		return "Savings deposit"
+	case domain.LineSharePurchase:
+		return "Share purchase"
+	case domain.LineLoanRepayment:
+		return "Loan repayment"
+	case domain.LineFee:
+		return "Fee payment"
+	case domain.LineWelfare:
+		return "Welfare contribution"
+	}
+	return string(k)
+}
+
+// htmlEscape is a tiny stand-in for html.EscapeString avoiding the
+// stdlib import in this handler file's existing import set. Same
+// semantics — &<>'"
+func htmlEscape(s string) string {
+	repl := strings.NewReplacer(
+		`&`, `&amp;`,
+		`<`, `&lt;`,
+		`>`, `&gt;`,
+		`"`, `&quot;`,
+		`'`, `&#39;`,
+	)
+	return repl.Replace(s)
 }
 
 // ─────────── helpers ───────────

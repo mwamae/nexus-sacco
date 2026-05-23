@@ -427,6 +427,16 @@ func (s *ReceiptStore) AttachApprovalTx(ctx context.Context, tx pgx.Tx, lineID, 
 	return err
 }
 
+// SetPDFDocumentIDTx stamps the pdf_documents.id onto the receipt
+// header so the frontend can render a download link. Called after
+// POST /v1/receipts/{id}/pdf finishes its synchronous render.
+func (s *ReceiptStore) SetPDFDocumentIDTx(ctx context.Context, tx pgx.Tx, receiptID, pdfDocID uuid.UUID) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE receipts SET pdf_document_id = $2, updated_at = now() WHERE id = $1`,
+		receiptID, pdfDocID)
+	return err
+}
+
 // VoidLineTx is the per-line void from the plan. The line's underlying
 // posted txn must be reversed by the caller through the appropriate
 // handler (deposit reverse, share reverse, loan reverse) — this method

@@ -103,6 +103,76 @@ func (c *Client) Notify(ctx context.Context, req Request) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 }
 
+// ─────────── PDF render (Phase G) ───────────
+
+// PDFGenerateRequest mirrors the internal /pdf/generate endpoint's
+// body shape (services/notification/internal/handler/pdf.go). Returned
+// PDF document id is what the savings receipt stores as
+// receipts.pdf_document_id so the frontend can deep-link to download.
+type PDFGenerateRequest struct {
+	TenantID         uuid.UUID      `json:"tenant_id"`
+	DocumentType     string         `json:"document_type"`
+	SubjectMemberID  *uuid.UUID     `json:"subject_member_id,omitempty"`
+	SubjectLoanID    *uuid.UUID     `json:"subject_loan_id,omitempty"`
+	SubjectAccountID *uuid.UUID     `json:"subject_account_id,omitempty"`
+	SubjectLabel     string         `json:"subject_label,omitempty"`
+	Payload          map[string]any `json:"payload,omitempty"`
+	GeneratedBy      *uuid.UUID     `json:"generated_by,omitempty"`
+}
+
+type PDFGenerateResponse struct {
+	ID             uuid.UUID `json:"id"`
+	DocumentType   string    `json:"document_type"`
+	DownloadToken  string    `json:"download_token"`
+	TokenExpiresAt time.Time `json:"token_expires_at"`
+	StoragePath    string    `json:"storage_path"`
+}
+
+// GeneratePDF synchronously renders a PDF via the notification
+// service. Unlike Notify, this DOES return an error because the
+// caller cares about the result (a missing PDF means a broken
+// "Download receipt" button on the desk's posted view).
+func (c *Client) GeneratePDF(ctx context.Context, req PDFGenerateRequest) (*PDFGenerateResponse, error) {
+	if c == nil || c.BaseURL == "" {
+		return nil, fmt.Errorf("notifier client disabled (empty BaseURL)")
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal pdf request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.BaseURL+"/internal/v1/pdf/generate", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build pdf request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.InternalToken != "" {
+		httpReq.Header.Set("X-Internal-Token", c.InternalToken)
+	}
+	// PDF rendering is heavier than a normal notify — chromedp + disk
+	// write can take a few seconds for big templates. Use a generous
+	// timeout but still bounded.
+	hc := &http.Client{Timeout: 30 * time.Second}
+	resp, err := hc.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("send pdf request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("notification pdf service returned %d: %s", resp.StatusCode, string(b))
+	}
+	// The /internal/v1/pdf/generate handler responds with the canonical
+	// envelope { "data": {...PDFDocument} }. Decode through that.
+	var env struct {
+		Data PDFGenerateResponse `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return nil, fmt.Errorf("decode pdf response: %w", err)
+	}
+	return &env.Data, nil
+}
+
 func (c *Client) log(stage string, err error, req Request) {
 	if c.Logger == nil {
 		return

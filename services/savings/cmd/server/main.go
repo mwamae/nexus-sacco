@@ -245,6 +245,7 @@ func main() {
 		Shares:         shareStore,
 		Tenants:        tenants,
 		Counterparties: counterparties,
+		Notifier:       notifyClient,
 		Logger:         logger,
 	}
 	dividendH := &handler.DividendHandler{

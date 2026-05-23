@@ -232,6 +232,7 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("savings:transact")).Get("/receipts", d.Collection.ListReceipts)
 			r.With(middleware.RequirePermission("savings:transact")).Get("/receipts/{id}", d.Collection.GetReceipt)
 			r.With(middleware.RequirePermission("approvals:act")).Post("/receipts/{id}/lines/{line_id}/void", d.Collection.VoidLine)
+			r.With(middleware.RequirePermission("savings:transact")).Post("/receipts/{id}/pdf", d.Collection.RenderPDF)
 
 			// ─────────── Maker-checker (Phase 7b) ───────────
 			r.With(middleware.RequirePermission("approvals:view")).Get("/pending-approvals", d.Approvals.List)
