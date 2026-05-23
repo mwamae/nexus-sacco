@@ -101,14 +101,9 @@ func (s *LoanStore) CreateOnAcceptanceTx(ctx context.Context, tx pgx.Tx, in Crea
 	if err != nil {
 		return nil, err
 	}
-	// Resolve members.id → counterparty.id at the boundary; the caller
-	// (loan-application acceptance path) still passes a real members.id
-	// in CreateLoanInput.CounterpartyID. The column FKs counterparties(id)
-	// post-Phase D sub-PR 2a.
-	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve counterparty for loan create: %w", err)
-	}
+	// Phase D sub-PR 3: in.CounterpartyID is a counterparty.id directly
+	// (caller now extracts it from the loan_applications row, which holds
+	// the counterparty bridge already).
 	row := tx.QueryRow(ctx, `
 		INSERT INTO loans (
 			tenant_id, loan_no, application_id, counterparty_id, product_id, status,
@@ -122,7 +117,7 @@ func (s *LoanStore) CreateOnAcceptanceTx(ctx context.Context, tx pgx.Tx, in Crea
 			0, 0, 0, 0
 		)
 		RETURNING `+loanCols,
-		loanNo, in.ApplicationID, cpID, in.ProductID,
+		loanNo, in.ApplicationID, in.CounterpartyID, in.ProductID,
 		in.Principal, in.InterestRatePct, string(in.InterestMethod), string(in.RepaymentMethod),
 		in.TermMonths, in.GracePeriodMonths, in.InstallmentCount,
 	)
@@ -177,7 +172,7 @@ func (s *LoanStore) ListTx(ctx context.Context, tx pgx.Tx, f LoanListFilter) ([]
 		idx++
 	}
 	if f.CounterpartyID != nil {
-		where += fmt.Sprintf(" AND l.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $%d)", idx)
+		where += fmt.Sprintf(" AND l.counterparty_id = $%d", idx)
 		args = append(args, *f.CounterpartyID); idx++
 	}
 	if f.ProductID != nil {
@@ -190,14 +185,14 @@ func (s *LoanStore) ListTx(ctx context.Context, tx pgx.Tx, f LoanListFilter) ([]
 	}
 	var total int
 	if err := tx.QueryRow(ctx,
-		"SELECT COUNT(*) FROM loans l JOIN members m ON m.id = l.counterparty_id JOIN loan_products p ON p.id = l.product_id "+where, args...).Scan(&total); err != nil {
+		"SELECT COUNT(*) FROM loans l JOIN members m ON m.counterparty_id = l.counterparty_id JOIN loan_products p ON p.id = l.product_id "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, f.Limit, f.Offset)
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT %s, m.member_no, m.full_name, p.code, p.name
 		FROM loans l
-		JOIN members m ON m.id = l.counterparty_id
+		JOIN members m ON m.counterparty_id = l.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		%s
 		ORDER BY l.created_at DESC

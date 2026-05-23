@@ -594,7 +594,7 @@ func (s *ApplicationStore) OpenDefaultIndividualAccountsTx(
 	}
 
 	result := &ActivationResult{
-		CounterpartyID: memberID, MemberNo: memberNo,
+		CounterpartyID: cpID, MemberNo: memberNo,
 		ShareAccountID: shareAcctID, ShareAccountNo: shareAcctNo,
 	}
 

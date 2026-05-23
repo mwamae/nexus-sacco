@@ -140,7 +140,7 @@ type Selection =
 
 // ─────────── Main panel ───────────
 
-export function MemberAccountsPanel({ memberId, currency }: { memberId: string; currency: string }) {
+export function MemberAccountsPanel({ counterpartyId, currency }: { counterpartyId: string; currency: string }) {
   const { hasPermission } = useAuth();
   const [selected, setSelected] = useState<Selection>({ kind: 'shares' });
   const [modal, setModal] = useState<ModalState>({ kind: null });
@@ -155,14 +155,14 @@ export function MemberAccountsPanel({ memberId, currency }: { memberId: string; 
     // are required for the rest of the UI; their failure goes to the
     // error branch.
     const [sv, d, p] = await Promise.all([
-      getShareAccountByMember(memberId).catch(() => null),
-      getDepositAccountsByMember(memberId),
+      getShareAccountByMember(counterpartyId).catch(() => null),
+      getDepositAccountsByMember(counterpartyId),
       listDepositProducts(false),
     ]);
     return { shares: sv, deposits: d, products: p };
-  }, [memberId, reloadNonce]);
+  }, [counterpartyId, reloadNonce]);
 
-  const { state, retry } = useAsyncPanel(fetcher, [memberId, reloadNonce]);
+  const { state, retry } = useAsyncPanel(fetcher, [counterpartyId, reloadNonce]);
 
   const shares: ShareAccountView | null = state.kind === 'data' ? state.value.shares : null;
   const deposits: MemberDepositItem[] = state.kind === 'data' ? state.value.deposits : [];
@@ -236,7 +236,7 @@ export function MemberAccountsPanel({ memberId, currency }: { memberId: string; 
           <div style={{ flex: 1, padding: 14, borderLeft: '1px solid var(--border)', minWidth: 0 }}>
             {selected.kind === 'shares' && shares && (
               <SharesDetail
-                memberId={memberId}
+                counterpartyId={counterpartyId}
                 view={shares}
                 currency={currency}
                 onOpenModal={(m) => setModal(m)}
@@ -248,7 +248,7 @@ export function MemberAccountsPanel({ memberId, currency }: { memberId: string; 
               return it ? (
                 <DepositDetail
                   it={it}
-                  memberId={memberId}
+                  counterpartyId={counterpartyId}
                   deposits={deposits}
                   currency={currency}
                   onOpenModal={(m) => setModal(m)}
@@ -277,7 +277,7 @@ export function MemberAccountsPanel({ memberId, currency }: { memberId: string; 
 
       <Modals
         modal={modal}
-        memberId={memberId}
+        counterpartyId={counterpartyId}
         currency={currency}
         shares={shares}
         deposits={deposits}
@@ -362,9 +362,9 @@ function RailItem({
 // ─────────── Shares detail pane ───────────
 
 function SharesDetail({
-  memberId, view, currency, onOpenModal, onReload,
+  counterpartyId, view, currency, onOpenModal, onReload,
 }: {
-  memberId: string;
+  counterpartyId: string;
   view: ShareAccountView;
   currency: string;
   onOpenModal: (m: ModalState) => void;
@@ -385,14 +385,14 @@ function SharesDetail({
   async function loadHistory() {
     try {
       const [t, c] = await Promise.all([
-        listShareTransactions(memberId, { limit: 10 }),
-        getCurrentCertificate(memberId),
+        listShareTransactions(counterpartyId, { limit: 10 }),
+        getCurrentCertificate(counterpartyId),
       ]);
       setTxns(t);
       setCert(c);
     } catch { /* swallow — handled by the parent error state */ }
   }
-  useEffect(() => { void loadHistory(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [memberId, a.id]);
+  useEffect(() => { void loadHistory(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [counterpartyId, a.id]);
 
   const canBuy = hasPermission('shares:buy');
   const canTransfer = hasPermission('shares:transfer');
@@ -415,7 +415,7 @@ function SharesDetail({
           {/* Symmetric with the Loans tab's "View in lending →" — drops the
               officer into the full /shares workflow for cases where they
               need transaction history or the certificate detail view. */}
-          <a className="btn btn-sm" href={`/shares?member=${memberId}`}>View in shares →</a>
+          <a className="btn btn-sm" href={`/shares?member=${counterpartyId}`}>View in shares →</a>
         </div>
       </div>
 
@@ -493,10 +493,10 @@ function SharesDetail({
 // ─────────── Deposit detail pane ───────────
 
 function DepositDetail({
-  it, memberId, deposits, currency, onOpenModal,
+  it, counterpartyId, deposits, currency, onOpenModal,
 }: {
   it: MemberDepositItem;
-  memberId: string;
+  counterpartyId: string;
   deposits: MemberDepositItem[];
   currency: string;
   onOpenModal: (m: ModalState) => void;
@@ -513,7 +513,7 @@ function DepositDetail({
       .then(setStatement)
       .catch(() => setStatement(null));
   }, [a.id]);
-  const _mid = memberId; void _mid;
+  const _mid = counterpartyId; void _mid;
 
   const canTransact = hasPermission('savings:transact');
   const otherAccounts = deposits.filter((d) => d.account.id !== a.id);
@@ -539,7 +539,7 @@ function DepositDetail({
           {/* Symmetric with the Loans tab's "View in lending →" — drops the
               officer into the full /deposits workflow for cases where they
               need the long-form ledger or interest run history. */}
-          <a className="btn btn-sm" href={`/deposits?member=${memberId}&account=${a.id}`}>View in savings →</a>
+          <a className="btn btn-sm" href={`/deposits?member=${counterpartyId}&account=${a.id}`}>View in savings →</a>
         </div>
       </div>
 
@@ -739,10 +739,10 @@ type ModalState =
   | { kind: 'depStatement'; accountId: string };
 
 function Modals({
-  modal, memberId, currency, shares, deposits, products, onClose, onChanged,
+  modal, counterpartyId, currency, shares, deposits, products, onClose, onChanged,
 }: {
   modal: ModalState;
-  memberId: string;
+  counterpartyId: string;
   currency: string;
   shares: ShareAccountView | null;
   deposits: MemberDepositItem[];
@@ -752,19 +752,19 @@ function Modals({
 }) {
   if (modal.kind === null) return null;
   if (modal.kind === 'open') {
-    return <OpenAccountModal memberId={memberId} products={products} onClose={onClose} onSaved={onChanged} />;
+    return <OpenAccountModal counterpartyId={counterpartyId} products={products} onClose={onClose} onSaved={onChanged} />;
   }
   if (modal.kind === 'shareBuy' && shares) {
-    return <ShareBuyModal memberId={memberId} onClose={onClose} onSaved={onChanged} />;
+    return <ShareBuyModal counterpartyId={counterpartyId} onClose={onClose} onSaved={onChanged} />;
   }
   if (modal.kind === 'shareTransfer' && shares) {
-    return <ShareTransferModal memberId={memberId} max={shares.account.shares_available} onClose={onClose} onSaved={onChanged} />;
+    return <ShareTransferModal counterpartyId={counterpartyId} max={shares.account.shares_available} onClose={onClose} onSaved={onChanged} />;
   }
   if (modal.kind === 'shareAdjust' && shares) {
-    return <ShareAdjustModal memberId={memberId} onClose={onClose} onSaved={onChanged} />;
+    return <ShareAdjustModal counterpartyId={counterpartyId} onClose={onClose} onSaved={onChanged} />;
   }
   if (modal.kind === 'shareLien' && shares) {
-    return <ShareLienModal memberId={memberId} max={shares.account.shares_available} onClose={onClose} onSaved={onChanged} />;
+    return <ShareLienModal counterpartyId={counterpartyId} max={shares.account.shares_available} onClose={onClose} onSaved={onChanged} />;
   }
   if (modal.kind === 'depDeposit' || modal.kind === 'depWithdraw' || modal.kind === 'depTransfer' || modal.kind === 'depAdjust' || modal.kind === 'depStatement') {
     const it = deposits.find((d) => d.account.id === modal.accountId);
@@ -819,7 +819,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 // ─────────── Shares modals ───────────
 
-function ShareBuyModal({ memberId, onClose, onSaved }: { memberId: string; onClose: () => void; onSaved: () => Promise<void> | void }) {
+function ShareBuyModal({ counterpartyId, onClose, onSaved }: { counterpartyId: string; onClose: () => void; onSaved: () => Promise<void> | void }) {
   const [shares, setShares] = useState(1);
   const [channel, setChannel] = useState<SharePaymentChannel>('cash');
   const [ref, setRef] = useState('');
@@ -832,7 +832,7 @@ function ShareBuyModal({ memberId, onClose, onSaved }: { memberId: string; onClo
       onSubmit={async () => {
         setErr(null); setBusy(true);
         try {
-          const r = await purchaseShares(memberId, { shares, payment_channel: channel, payment_ref: ref || undefined, narration: note || undefined });
+          const r = await purchaseShares(counterpartyId, { shares, payment_channel: channel, payment_ref: ref || undefined, narration: note || undefined });
           if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
           await onSaved();
         } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
@@ -856,8 +856,8 @@ function ShareBuyModal({ memberId, onClose, onSaved }: { memberId: string; onClo
 // and cannot be redeemed. Exiting members use ShareTransferModal to
 // move their shares to another active member instead.
 
-function ShareTransferModal({ memberId, max, onClose, onSaved }: {
-  memberId: string; max: number; onClose: () => void; onSaved: () => Promise<void> | void;
+function ShareTransferModal({ counterpartyId, max, onClose, onSaved }: {
+  counterpartyId: string; max: number; onClose: () => void; onSaved: () => Promise<void> | void;
 }) {
   const [shares, setShares] = useState(1);
   const [to, setTo] = useState('');
@@ -868,11 +868,11 @@ function ShareTransferModal({ memberId, max, onClose, onSaved }: {
   const validUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(to);
   return (
     <ModalShell title="Transfer shares" busy={busy} onClose={onClose} submitLabel="Transfer"
-      disabled={shares <= 0 || shares > max || !validUUID || !reason.trim() || to === memberId}
+      disabled={shares <= 0 || shares > max || !validUUID || !reason.trim() || to === counterpartyId}
       onSubmit={async () => {
         setErr(null); setBusy(true);
         try {
-          const r = await transferShares(memberId, { shares, to_member_id: to, reason, narration: note || undefined });
+          const r = await transferShares(counterpartyId, { shares, to_member_id: to, reason, narration: note || undefined });
           if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
           await onSaved();
         } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
@@ -886,7 +886,7 @@ function ShareTransferModal({ memberId, max, onClose, onSaved }: {
   );
 }
 
-function ShareAdjustModal({ memberId, onClose, onSaved }: { memberId: string; onClose: () => void; onSaved: () => Promise<void> | void }) {
+function ShareAdjustModal({ counterpartyId, onClose, onSaved }: { counterpartyId: string; onClose: () => void; onSaved: () => Promise<void> | void }) {
   const [delta, setDelta] = useState(0);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
@@ -896,7 +896,7 @@ function ShareAdjustModal({ memberId, onClose, onSaved }: { memberId: string; on
       disabled={delta === 0 || !reason.trim()}
       onSubmit={async () => {
         setErr(null); setBusy(true);
-        try { await adjustShares(memberId, { shares_delta: delta, reason }); await onSaved(); }
+        try { await adjustShares(counterpartyId, { shares_delta: delta, reason }); await onSaved(); }
         catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>
       {err && <div className="alert alert-error">{err}</div>}
@@ -907,7 +907,7 @@ function ShareAdjustModal({ memberId, onClose, onSaved }: { memberId: string; on
   );
 }
 
-function ShareLienModal({ memberId, max, onClose, onSaved }: { memberId: string; max: number; onClose: () => void; onSaved: () => Promise<void> | void }) {
+function ShareLienModal({ counterpartyId, max, onClose, onSaved }: { counterpartyId: string; max: number; onClose: () => void; onSaved: () => Promise<void> | void }) {
   const [shares, setShares] = useState(1);
   const [reason, setReason] = useState('');
   const [kind, setKind] = useState('loan');
@@ -920,7 +920,7 @@ function ShareLienModal({ memberId, max, onClose, onSaved }: { memberId: string;
       onSubmit={async () => {
         setErr(null); setBusy(true);
         try {
-          const r = await placeShareLien(memberId, { shares, reason, reference_kind: kind, reference_id: ref || undefined });
+          const r = await placeShareLien(counterpartyId, { shares, reason, reference_kind: kind, reference_id: ref || undefined });
           if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
           await onSaved();
         } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
@@ -940,8 +940,8 @@ function ShareLienModal({ memberId, max, onClose, onSaved }: { memberId: string;
 
 // ─────────── Deposit modals ───────────
 
-function OpenAccountModal({ memberId, products, onClose, onSaved }: {
-  memberId: string; products: DepositProduct[];
+function OpenAccountModal({ counterpartyId, products, onClose, onSaved }: {
+  counterpartyId: string; products: DepositProduct[];
   onClose: () => void; onSaved: () => Promise<void> | void;
 }) {
   const [productID, setProductID] = useState(products[0]?.id ?? '');
@@ -972,7 +972,7 @@ function OpenAccountModal({ memberId, products, onClose, onSaved }: {
         setErr(null); setBusy(true);
         try {
           await openDepositAccount({
-            counterparty_id: memberId,
+            counterparty_id: counterpartyId,
             product_id: product.id,
             opening_deposit: openingDeposit,
             opening_channel: parseFloat(openingDeposit) > 0 ? channel : undefined,

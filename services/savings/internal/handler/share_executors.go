@@ -125,7 +125,7 @@ func (h *ShareHandler) ExecuteSharePurchaseTx(
 	if err != nil {
 		return nil, err
 	}
-	cert, err := h.Shares.IssueCertificateTx(ctx, tx, acct.ID, member.ID, makerID,
+	cert, err := h.Shares.IssueCertificateTx(ctx, tx, acct.ID, acct.CounterpartyID, makerID,
 		updated.SharesHeld, policy.ParValue, policy.CertificatePrefix)
 	if err != nil {
 		return nil, err
@@ -228,18 +228,18 @@ func (h *ShareHandler) ExecuteShareTransferTx(
 	if err != nil {
 		return nil, err
 	}
-	fromCert, err := h.Shares.IssueCertificateTx(ctx, tx, fromAcct.ID, fromMember.ID, makerID,
+	fromCert, err := h.Shares.IssueCertificateTx(ctx, tx, fromAcct.ID, fromAcct.CounterpartyID, makerID,
 		fromAcct.SharesHeld, policy.ParValue, policy.CertificatePrefix)
 	if err != nil {
 		return nil, err
 	}
-	toCert, err := h.Shares.IssueCertificateTx(ctx, tx, toAcct.ID, toMember.ID, makerID,
+	toCert, err := h.Shares.IssueCertificateTx(ctx, tx, toAcct.ID, toAcct.CounterpartyID, makerID,
 		toAcct.SharesHeld, policy.ParValue, policy.CertificatePrefix)
 	if err != nil {
 		return nil, err
 	}
-	_ = h.Members.TouchActivityTx(ctx, tx, p.FromMemberID)
-	_ = h.Members.TouchActivityTx(ctx, tx, p.ToMemberID)
+	_ = h.Members.TouchActivityByCounterpartyTx(ctx, tx, p.FromMemberID)
+	_ = h.Members.TouchActivityByCounterpartyTx(ctx, tx, p.ToMemberID)
 	return &ShareTransferResult{
 		From: SharePostResult{Transaction: *outTxn, Account: *fromAcct, Certificate: fromCert},
 		To:   SharePostResult{Transaction: *inTxn, Account: *toAcct, Certificate: toCert},
@@ -302,7 +302,7 @@ func (h *ShareHandler) ExecuteShareLienTx(
 	ctx context.Context, tx pgx.Tx,
 	p ShareLienPayload, makerID uuid.UUID,
 ) (*domain.ShareLien, error) {
-	acct, err := h.Shares.GetAccountByMemberTx(ctx, tx, p.CounterpartyID)
+	acct, err := h.Shares.GetAccountByCounterpartyTx(ctx, tx, p.CounterpartyID)
 	if err != nil {
 		return nil, err
 	}

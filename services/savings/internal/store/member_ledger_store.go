@@ -132,7 +132,7 @@ WITH deposits AS (
     t.balance_after                              AS balance_after
     FROM deposit_transactions t
     JOIN deposit_accounts a ON a.id = t.account_id
-   WHERE t.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
+   WHERE t.counterparty_id = $1
      AND t.posted_at < $2
 ),
 loans AS (
@@ -156,7 +156,7 @@ loans AS (
     l.principal_balance                          AS balance_after
     FROM loan_transactions t
     JOIN loans l ON l.id = t.loan_id
-   WHERE t.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
+   WHERE t.counterparty_id = $1
      AND t.posted_at < $2
 ),
 shares AS (
@@ -177,7 +177,7 @@ shares AS (
     t.balance_after_amount                       AS balance_after
     FROM share_transactions t
     JOIN share_accounts a ON a.id = t.account_id
-   WHERE t.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
+   WHERE t.counterparty_id = $1
      AND t.posted_at < $2
 )
 SELECT * FROM deposits

@@ -64,14 +64,16 @@ func parseUUIDParam(r *http.Request, key string) (uuid.UUID, error) {
 	return id, nil
 }
 
-// loadContext fetches the policy, member, and (optionally creates) account
-// inside a single transaction. The caller continues mutations on the same tx.
-func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, memberID uuid.UUID, ensure bool) (*store.SharePolicy, *store.MemberLite, *domain.ShareAccount, error) {
+// loadContext fetches the policy, counterparty's member view, and
+// (optionally creates) share account inside a single transaction.
+// Phase D sub-PR 3: the `cpID` parameter is now a counterparty.id
+// (was a members.id with internal resolve).
+func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, cpID uuid.UUID, ensure bool) (*store.SharePolicy, *store.MemberLite, *domain.ShareAccount, error) {
 	policy, err := h.Tenants.SharePolicyTx(ctx, tx)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	member, err := h.Members.GetTx(ctx, tx, memberID)
+	member, err := h.Members.GetByCounterpartyTx(ctx, tx, cpID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, nil, nil, httpx.ErrNotFound("member not found")
@@ -85,9 +87,9 @@ func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, memberID uuid
 	// requireWriteEligible.
 	var account *domain.ShareAccount
 	if ensure {
-		account, err = h.Shares.EnsureAccountTx(ctx, tx, memberID, policy.ParValue)
+		account, err = h.Shares.EnsureAccountTx(ctx, tx, cpID, policy.ParValue)
 	} else {
-		account, err = h.Shares.GetAccountByMemberTx(ctx, tx, memberID)
+		account, err = h.Shares.GetAccountByCounterpartyTx(ctx, tx, cpID)
 	}
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -257,7 +259,7 @@ func (h *ShareHandler) HistoryByMember(w http.ResponseWriter, r *http.Request) {
 
 	var out []domain.ShareTransaction
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		acct, err := h.Shares.GetAccountByMemberTx(r.Context(), tx, memberID)
+		acct, err := h.Shares.GetAccountByCounterpartyTx(r.Context(), tx, memberID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				out = nil
@@ -287,7 +289,7 @@ func (h *ShareHandler) CurrentCertificate(w http.ResponseWriter, r *http.Request
 	tid, _ := middleware.TenantIDFrom(r)
 	var cert *domain.ShareCertificate
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		acct, err := h.Shares.GetAccountByMemberTx(r.Context(), tx, memberID)
+		acct, err := h.Shares.GetAccountByCounterpartyTx(r.Context(), tx, memberID)
 		if err != nil {
 			return err
 		}
@@ -707,7 +709,7 @@ func (h *ShareHandler) Adjust(w http.ResponseWriter, r *http.Request) {
 
 	var resp postResp
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		policy, member, acct, err := h.loadContext(r.Context(), tx, memberID, true)
+		policy, _, acct, err := h.loadContext(r.Context(), tx, memberID, true)
 		if err != nil {
 			return err
 		}
@@ -753,7 +755,7 @@ func (h *ShareHandler) Adjust(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		cert, err := h.Shares.IssueCertificateTx(r.Context(), tx, acct.ID, member.ID, userID,
+		cert, err := h.Shares.IssueCertificateTx(r.Context(), tx, acct.ID, acct.CounterpartyID, userID,
 			updated.SharesHeld, policy.ParValue, policy.CertificatePrefix)
 		if err != nil {
 			return err

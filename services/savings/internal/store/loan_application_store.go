@@ -74,12 +74,8 @@ func (s *LoanApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in *doma
 		return nil, err
 	}
 	in.ApplicationNo = appNo
-	// Resolve members.id → counterparty.id at the boundary; the column
-	// FKs counterparties(id) post-Phase D sub-PR 2a.
-	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve counterparty for loan application create: %w", err)
-	}
+	// Phase D sub-PR 3: in.CounterpartyID is a counterparty.id directly
+	// (the URL contract and the frontend payload both carry counterparty.id).
 	row := tx.QueryRow(ctx, `
 		INSERT INTO loan_applications (
 			tenant_id, application_no, counterparty_id, product_id, status,
@@ -97,7 +93,7 @@ func (s *LoanApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in *doma
 			$17, $18
 		)
 		RETURNING `+loanAppCols,
-		in.ApplicationNo, cpID, in.ProductID, string(in.Status),
+		in.ApplicationNo, in.CounterpartyID, in.ProductID, string(in.Status),
 		in.RequestedAmount, in.RequestedTermMonths,
 		in.PurposeCategoryID, in.PurposeNote, in.PreferredDisbursementChannel,
 		in.EmploymentType, in.EmployerName, in.EmployerPayrollContact,
@@ -149,7 +145,7 @@ func (s *LoanApplicationStore) ListTx(ctx context.Context, tx pgx.Tx, f AppListF
 		// Filter by the counterparty bridge (Phase D sub-PR 1) — the
 		// caller still passes a members.id, but we resolve through the
 		// indexed counterparty_id column.
-		where += fmt.Sprintf(" AND a.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $%d)", idx)
+		where += fmt.Sprintf(" AND a.counterparty_id = $%d", idx)
 		args = append(args, *f.CounterpartyID)
 		idx++
 	}
@@ -165,14 +161,14 @@ func (s *LoanApplicationStore) ListTx(ctx context.Context, tx pgx.Tx, f AppListF
 	}
 	var total int
 	if err := tx.QueryRow(ctx,
-		"SELECT COUNT(*) FROM loan_applications a JOIN members m ON m.id = a.counterparty_id JOIN loan_products p ON p.id = a.product_id "+where, args...).Scan(&total); err != nil {
+		"SELECT COUNT(*) FROM loan_applications a JOIN members m ON m.counterparty_id = a.counterparty_id JOIN loan_products p ON p.id = a.product_id "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, f.Limit, f.Offset)
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT %s, m.member_no, m.full_name, p.code, p.name
 		FROM loan_applications a
-		JOIN members m ON m.id = a.counterparty_id
+		JOIN members m ON m.counterparty_id = a.counterparty_id
 		JOIN loan_products p ON p.id = a.product_id
 		%s
 		ORDER BY a.created_at DESC
@@ -346,7 +342,7 @@ func (s *LoanApplicationStore) GatherScoringInputsTx(
 	// Shares.
 	if err := tx.QueryRow(ctx, `
 		SELECT COALESCE(a.shares_held, 0)
-		FROM share_accounts a WHERE a.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
+		FROM share_accounts a WHERE a.counterparty_id = $1
 	`, memberID).Scan(&in.SharesHeld); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
@@ -357,13 +353,13 @@ func (s *LoanApplicationStore) GatherScoringInputsTx(
 	// Deposit balance + 12-month inflow stats.
 	_ = tx.QueryRow(ctx, `
 		SELECT COALESCE(SUM(current_balance), 0)
-		FROM deposit_accounts WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1) AND status = 'active'
+		FROM deposit_accounts WHERE counterparty_id = $1 AND status = 'active'
 	`, memberID).Scan(&in.DepositsBalance)
 
 	_ = tx.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(amount), 0)
 		FROM deposit_transactions
-		WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
+		WHERE counterparty_id = $1
 		  AND txn_type IN ('deposit', 'transfer_in', 'opening_balance')
 		  AND posted_at > now() - INTERVAL '12 months'
 	`, memberID).Scan(&in.DepositTxnCount12mo, &in.TotalDeposited12mo)
@@ -380,7 +376,7 @@ func (s *LoanApplicationStore) GatherScoringInputsTx(
 			COALESCE(SUM(CASE WHEN status IN ('active', 'in_arrears', 'restructured') AND product_id = $2 THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'settled' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'written_off' THEN 1 ELSE 0 END), 0)
-		FROM loans WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
+		FROM loans WHERE counterparty_id = $1
 	`, memberID, productID).Scan(
 		&in.ActiveLoans, &in.ActiveLoansInArrears, &in.ActiveLoansSameProduct,
 		&in.SettledLoans, &writtenOff,

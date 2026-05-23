@@ -259,7 +259,7 @@ func (s *LoanReportsStore) MemberLoanHistoryTx(ctx context.Context, tx pgx.Tx, m
 		       COALESCE(SUM(CASE WHEN status IN ('active','in_arrears','restructured') THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(principal_disbursed), 0),
 		       COALESCE(SUM(CASE WHEN status IN ('active','in_arrears','restructured') THEN principal_balance + interest_balance + fees_balance + penalty_balance ELSE 0 END), 0)
-		FROM loans WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
+		FROM loans WHERE counterparty_id = $1
 	`, memberID).Scan(&out.TotalLoansEverTaken, &out.ActiveLoans, &out.TotalDisbursed, &out.TotalOutstanding)
 	if err != nil {
 		return nil, err
@@ -268,7 +268,7 @@ func (s *LoanReportsStore) MemberLoanHistoryTx(ctx context.Context, tx pgx.Tx, m
 		SELECT `+prefixCols(loanCols, "l")+`, p.code, p.name
 		FROM loans l
 		JOIN loan_products p ON p.id = l.product_id
-		WHERE l.counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
+		WHERE l.counterparty_id = $1
 		ORDER BY l.created_at DESC
 	`, memberID)
 	if err != nil {
@@ -325,7 +325,7 @@ func (s *LoanReportsStore) MaturingLoansTx(ctx context.Context, tx pgx.Tx, withi
 		SELECT `+prefixCols(loanCols, "l")+`,
 		       m.member_no, m.full_name, p.name, f.final_due
 		FROM loans l
-		JOIN members m ON m.id = l.counterparty_id
+		JOIN members m ON m.counterparty_id = l.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		JOIN final_dues f ON f.loan_id = l.id
 		WHERE l.status IN ('active', 'in_arrears', 'restructured')
@@ -389,7 +389,7 @@ func (s *LoanReportsStore) RestructuringRegisterTx(ctx context.Context, tx pgx.T
 		       l.loan_no, m.member_no, m.full_name, p.name
 		FROM loan_restructurings r
 		JOIN loans l ON l.id = r.loan_id
-		JOIN members m ON m.id = l.counterparty_id
+		JOIN members m ON m.counterparty_id = l.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		`+where+`
 		ORDER BY r.created_at DESC
@@ -549,7 +549,7 @@ func (s *LoanReportsStore) WriteoffRegisterTx(ctx context.Context, tx pgx.Tx) ([
 		       COALESCE((SELECT SUM(amount) FROM loan_recoveries WHERE writeoff_id = w.id), 0)
 		FROM loan_writeoffs w
 		JOIN loans l ON l.id = w.loan_id
-		JOIN members m ON m.id = w.counterparty_id
+		JOIN members m ON m.counterparty_id = w.counterparty_id
 		ORDER BY w.authorized_at DESC
 	`)
 	if err != nil {
@@ -596,7 +596,7 @@ func (s *LoanReportsStore) CRBSubmissionTx(ctx context.Context, tx pgx.Tx) ([]CR
 		       (l.principal_balance + l.interest_balance + l.fees_balance + l.penalty_balance),
 		       l.days_past_due, l.arrears_classification
 		FROM loans l
-		JOIN members m ON m.id = l.counterparty_id
+		JOIN members m ON m.counterparty_id = l.counterparty_id
 		WHERE l.status IN ('active', 'in_arrears', 'restructured', 'written_off')
 		ORDER BY l.disbursed_at
 	`)

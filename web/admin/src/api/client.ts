@@ -1576,17 +1576,17 @@ export type MemberStatusSummary = {
   dormancy_threshold_days: number;
 };
 
-export async function getMemberStatusActions(memberId: string): Promise<MemberStatusActions> {
-  const r = await api.get(`/v1/members/${memberId}/status-actions`);
+export async function getMemberStatusActions(counterpartyId: string): Promise<MemberStatusActions> {
+  const r = await api.get(`/v1/members/${counterpartyId}/status-actions`);
   return r.data.data;
 }
 
-export async function listMemberStatusHistory(memberId: string): Promise<MemberStatusChange[]> {
-  const r = await api.get(`/v1/members/${memberId}/status-history`);
+export async function listMemberStatusHistory(counterpartyId: string): Promise<MemberStatusChange[]> {
+  const r = await api.get(`/v1/members/${counterpartyId}/status-history`);
   return r.data.data ?? [];
 }
 
-export async function changeMemberStatus(memberId: string, input: {
+export async function changeMemberStatus(counterpartyId: string, input: {
   target_status: MemberStatus;
   reason_category: MemberStatusReason;
   reason_note?: string;
@@ -1594,14 +1594,14 @@ export async function changeMemberStatus(memberId: string, input: {
   supporting_doc_path?: string;
   supporting_doc_mime?: string;
 }): Promise<StatusChangeResponse> {
-  const r = await api.post(`/v1/members/${memberId}/status-change`, input);
+  const r = await api.post(`/v1/members/${counterpartyId}/status-change`, input);
   return r.data.data;
 }
 
-export async function uploadStatusSupportingDoc(memberId: string, file: Blob): Promise<{ storage_path: string; mime: string; size_bytes: number }> {
+export async function uploadStatusSupportingDoc(counterpartyId: string, file: Blob): Promise<{ storage_path: string; mime: string; size_bytes: number }> {
   const form = new FormData();
   form.append('file', file, (file as File).name ?? `support.${(file.type || 'application/pdf').split('/')[1] ?? 'bin'}`);
-  const r = await api.post(`/v1/members/${memberId}/status-supporting-doc`, form, {
+  const r = await api.post(`/v1/members/${counterpartyId}/status-supporting-doc`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return r.data.data;
@@ -1713,27 +1713,27 @@ export async function runDormancy(): Promise<{ threshold_days: number; candidate
 }
 
 export async function uploadMemberDocument(
-  memberId: string,
+  counterpartyId: string,
   kind: DocumentKind,
   file: Blob,
   filename?: string,
 ): Promise<ApiDocument> {
   const form = new FormData();
   form.append('file', file, filename ?? `${kind}.${(file.type || 'image/png').split('/')[1] ?? 'bin'}`);
-  const r = await api.post(`/v1/members/${memberId}/documents/${kind}`, form, {
+  const r = await api.post(`/v1/members/${counterpartyId}/documents/${kind}`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return r.data.data;
 }
 
-export function memberDocumentURL(memberId: string, kind: DocumentKind): string {
-  return `${apiBase}/v1/members/${memberId}/documents/${kind}`;
+export function memberDocumentURL(counterpartyId: string, kind: DocumentKind): string {
+  return `${apiBase}/v1/members/${counterpartyId}/documents/${kind}`;
 }
 
 // fetchMemberDocument loads the raw bytes (with auth) and returns a Blob
 // the caller can convert to an object URL for <img src>.
-export async function fetchMemberDocument(memberId: string, kind: DocumentKind): Promise<Blob> {
-  const r = await api.get(`/v1/members/${memberId}/documents/${kind}`, { responseType: 'blob' });
+export async function fetchMemberDocument(counterpartyId: string, kind: DocumentKind): Promise<Blob> {
+  const r = await api.get(`/v1/members/${counterpartyId}/documents/${kind}`, { responseType: 'blob' });
   return r.data as Blob;
 }
 
@@ -2061,23 +2061,23 @@ export async function updateSharePolicy(p: SharePolicy): Promise<SharePolicy> {
   return r.data.data;
 }
 
-export async function getShareAccountByMember(memberId: string): Promise<ShareAccountView> {
-  // Trailing slash matches chi.Route("/share-accounts/by-member/{counterparty_id}").Get("/", ...)
-  const r = await api.get(`/v1/share-accounts/by-member/${memberId}/`);
+export async function getShareAccountByMember(counterpartyId: string): Promise<ShareAccountView> {
+  // Trailing slash matches chi.Route("/share-accounts/by-counterparty/{counterparty_id}").Get("/", ...)
+  const r = await api.get(`/v1/share-accounts/by-counterparty/${counterpartyId}/`);
   return r.data.data;
 }
 
-export async function listShareTransactions(memberId: string, opts: { limit?: number; offset?: number } = {}): Promise<ShareTransaction[]> {
+export async function listShareTransactions(counterpartyId: string, opts: { limit?: number; offset?: number } = {}): Promise<ShareTransaction[]> {
   const q = new URLSearchParams();
   if (opts.limit) q.set('limit', String(opts.limit));
   if (opts.offset) q.set('offset', String(opts.offset));
-  const r = await api.get(`/v1/share-accounts/by-member/${memberId}/transactions${q.toString() ? '?' + q.toString() : ''}`);
+  const r = await api.get(`/v1/share-accounts/by-counterparty/${counterpartyId}/transactions${q.toString() ? '?' + q.toString() : ''}`);
   return r.data.data ?? [];
 }
 
-export async function getCurrentCertificate(memberId: string): Promise<ShareCertificate | null> {
+export async function getCurrentCertificate(counterpartyId: string): Promise<ShareCertificate | null> {
   try {
-    const r = await api.get(`/v1/share-accounts/by-member/${memberId}/certificate`);
+    const r = await api.get(`/v1/share-accounts/by-counterparty/${counterpartyId}/certificate`);
     return r.data.data;
   } catch (e: unknown) {
     if (axiosErrStatus(e) === 404) return null;
@@ -2085,23 +2085,23 @@ export async function getCurrentCertificate(memberId: string): Promise<ShareCert
   }
 }
 
-export async function purchaseShares(memberId: string, input: {
+export async function purchaseShares(counterpartyId: string, input: {
   shares: number;
   payment_channel: SharePaymentChannel;
   payment_ref?: string;
   narration?: string;
 }): Promise<CashActionResult<ShareTxnResponse>> {
-  const r = await api.post(`/v1/share-accounts/by-member/${memberId}/purchase`, input);
+  const r = await api.post(`/v1/share-accounts/by-counterparty/${counterpartyId}/purchase`, input);
   return unwrapCash(r);
 }
 
-export async function transferShares(memberId: string, input: {
+export async function transferShares(counterpartyId: string, input: {
   shares: number;
   to_member_id: string;
   reason: string;
   narration?: string;
 }): Promise<CashActionResult<ShareTransferResponse>> {
-  const r = await api.post(`/v1/share-accounts/by-member/${memberId}/transfer`, input);
+  const r = await api.post(`/v1/share-accounts/by-counterparty/${counterpartyId}/transfer`, input);
   return unwrapCash(r);
 }
 
@@ -2109,21 +2109,21 @@ export async function transferShares(memberId: string, input: {
 // equity in this SACCO. Exiting members must use `transferShares` to
 // move their balance to another active member.
 
-export async function adjustShares(memberId: string, input: {
+export async function adjustShares(counterpartyId: string, input: {
   shares_delta: number;
   reason: string;
 }): Promise<ShareTxnResponse> {
-  const r = await api.post(`/v1/share-accounts/by-member/${memberId}/adjust`, input);
+  const r = await api.post(`/v1/share-accounts/by-counterparty/${counterpartyId}/adjust`, input);
   return r.data.data;
 }
 
-export async function placeShareLien(memberId: string, input: {
+export async function placeShareLien(counterpartyId: string, input: {
   shares: number;
   reason: string;
   reference_kind?: string;
   reference_id?: string;
 }): Promise<CashActionResult<ShareLien>> {
-  const r = await api.post(`/v1/share-accounts/by-member/${memberId}/lien`, input);
+  const r = await api.post(`/v1/share-accounts/by-counterparty/${counterpartyId}/lien`, input);
   return unwrapCash(r);
 }
 
@@ -2366,8 +2366,8 @@ export async function getDepositsSummary(): Promise<DepositsSummary> {
   return r.data.data;
 }
 
-export async function getDepositAccountsByMember(memberId: string): Promise<MemberDepositItem[]> {
-  const r = await api.get(`/v1/deposit-accounts/by-member/${memberId}`);
+export async function getDepositAccountsByMember(counterpartyId: string): Promise<MemberDepositItem[]> {
+  const r = await api.get(`/v1/deposit-accounts/by-counterparty/${counterpartyId}`);
   return r.data.data ?? [];
 }
 
@@ -2637,8 +2637,8 @@ export async function getWHTSchedule(fy: string): Promise<WHTSchedule> {
   return r.data.data;
 }
 
-export async function getWHTCertificate(memberId: string, fy: string): Promise<WHTCertificate> {
-  const r = await api.get(`/v1/wht-certificate/${memberId}?fy=${encodeURIComponent(fy)}`);
+export async function getWHTCertificate(counterpartyId: string, fy: string): Promise<WHTCertificate> {
+  const r = await api.get(`/v1/wht-certificate/${counterpartyId}?fy=${encodeURIComponent(fy)}`);
   return r.data.data;
 }
 
@@ -3116,7 +3116,7 @@ export async function respondToGuarantee(guaranteeId: string, accept: boolean, d
 
 // MemberGuarantorship — a loan-guarantee row joined with the borrower
 // + product so the Member Profile People tab can render a row without
-// follow-up lookups. Returned by /v1/loan-guarantees/by-member/{id}.
+// follow-up lookups. Returned by /v1/loan-guarantees/by-counterparty/{id}.
 export type MemberGuarantorship = LoanGuarantee & {
   loan_no: string | null;
   application_no: string;
@@ -3126,8 +3126,8 @@ export type MemberGuarantorship = LoanGuarantee & {
   product_name: string;
 };
 
-export async function listGuaranteesByMember(memberId: string): Promise<MemberGuarantorship[]> {
-  const r = await api.get(`/v1/loan-guarantees/by-member/${memberId}`);
+export async function listGuaranteesByMember(counterpartyId: string): Promise<MemberGuarantorship[]> {
+  const r = await api.get(`/v1/loan-guarantees/by-counterparty/${counterpartyId}`);
   return r.data.data ?? [];
 }
 
@@ -3689,8 +3689,8 @@ export type MemberLoanHistory = {
   loans: Array<{ loan: Loan; product_code: string; product_name: string }>;
 };
 
-export async function getMemberLoanHistory(memberId: string): Promise<MemberLoanHistory> {
-  const r = await api.get(`/v1/loan-reports/by-member/${memberId}`);
+export async function getMemberLoanHistory(counterpartyId: string): Promise<MemberLoanHistory> {
+  const r = await api.get(`/v1/loan-reports/by-counterparty/${counterpartyId}`);
   return r.data.data;
 }
 
@@ -3736,13 +3736,13 @@ export type LedgerPage = {
 };
 
 export async function getMemberLedger(
-  memberId: string,
+  counterpartyId: string,
   opts: { limit?: number; before?: string } = {},
 ): Promise<LedgerPage> {
   const q = new URLSearchParams();
   if (opts.limit) q.set('limit', String(opts.limit));
   if (opts.before) q.set('before', opts.before);
-  const path = `/v1/member-ledger/${memberId}${q.toString() ? '?' + q.toString() : ''}`;
+  const path = `/v1/member-ledger/${counterpartyId}${q.toString() ? '?' + q.toString() : ''}`;
   const r = await api.get(path);
   return r.data.data;
 }

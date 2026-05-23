@@ -26,12 +26,8 @@ func NewLoanGuaranteeStore(pool *pgxpool.Pool) *LoanGuaranteeStore {
 // ─────────── Guarantees ───────────
 
 func (s *LoanGuaranteeStore) CreateTx(ctx context.Context, tx pgx.Tx, g *domain.LoanGuarantee) (*domain.LoanGuarantee, error) {
-	// Resolve members.id → counterparty.id at the boundary; the handler
-	// still receives a real members.id from the request payload.
-	guarantorCPID, err := ResolveCounterpartyID(ctx, tx, g.GuarantorMemberID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve counterparty for guarantor: %w", err)
-	}
+	// Phase D sub-PR 3: g.GuarantorMemberID is a counterparty.id directly
+	// (the loan-application request payload now carries counterparty.id).
 	row := tx.QueryRow(ctx, `
 		INSERT INTO loan_guarantees (
 			tenant_id, application_id, guarantor_counterparty_id, amount_guaranteed,
@@ -42,7 +38,7 @@ func (s *LoanGuaranteeStore) CreateTx(ctx context.Context, tx pgx.Tx, g *domain.
 		RETURNING id, tenant_id, application_id, loan_id, guarantor_counterparty_id,
 		          amount_guaranteed, status, requested_at, requested_by,
 		          responded_at, released_at, called_upon_at, decline_reason, notes
-	`, g.ApplicationID, guarantorCPID, g.AmountGuaranteed, g.RequestedBy)
+	`, g.ApplicationID, g.GuarantorMemberID, g.AmountGuaranteed, g.RequestedBy)
 	var out domain.LoanGuarantee
 	if err := row.Scan(
 		&out.ID, &out.TenantID, &out.ApplicationID, &out.LoanID, &out.GuarantorMemberID,
@@ -151,7 +147,7 @@ func (s *LoanGuaranteeStore) ByGuarantorMemberTx(ctx context.Context, tx pgx.Tx,
 		  JOIN members          m ON m.id = a.counterparty_id
 		  JOIN loan_products    p ON p.id = a.product_id
 		  LEFT JOIN loans       l ON l.id = g.loan_id
-		 WHERE g.guarantor_counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
+		 WHERE g.guarantor_counterparty_id = $1
 		 ORDER BY g.requested_at DESC
 	`, memberID)
 	if err != nil {
@@ -182,7 +178,7 @@ func (s *LoanGuaranteeStore) ExposureForMemberTx(ctx context.Context, tx pgx.Tx,
 	err := tx.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount_guaranteed), 0)
 		FROM loan_guarantees
-		WHERE guarantor_counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)
+		WHERE guarantor_counterparty_id = $1
 		  AND status IN ('pending_consent', 'accepted')
 	`, memberID).Scan(&total)
 	return total, err

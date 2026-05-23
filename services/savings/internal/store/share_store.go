@@ -76,14 +76,14 @@ const accountCols = `
 	first_purchase_at, closed_at, created_at, updated_at
 `
 
-// EnsureAccountTx returns the member's share account, creating it if
-// missing. The first-purchase timestamp stays nil until the first
-// crediting transaction posts.
-func (s *ShareStore) EnsureAccountTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID, parValue decimal.Decimal) (*domain.ShareAccount, error) {
-	// Try existing first. Read by counterparty_id (Phase D sub-PR 1);
-	// the BEFORE INSERT trigger keeps the bridge column populated, so
-	// the row we may have just inserted is found via the same filter.
-	row := tx.QueryRow(ctx, `SELECT `+accountCols+` FROM share_accounts WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)`, memberID)
+// EnsureAccountTx returns the counterparty's share account, creating it
+// if missing. The first-purchase timestamp stays nil until the first
+// crediting transaction posts. Phase D sub-PR 3: parameter is now a
+// counterparty.id (was a members.id with internal resolve); callers
+// that still hold a members.id must resolve at the call site via
+// ResolveCounterpartyID.
+func (s *ShareStore) EnsureAccountTx(ctx context.Context, tx pgx.Tx, cpID uuid.UUID, parValue decimal.Decimal) (*domain.ShareAccount, error) {
+	row := tx.QueryRow(ctx, `SELECT `+accountCols+` FROM share_accounts WHERE counterparty_id = $1`, cpID)
 	acc, err := scanAccount(row)
 	if err == nil {
 		return acc, nil
@@ -92,14 +92,9 @@ func (s *ShareStore) EnsureAccountTx(ctx context.Context, tx pgx.Tx, memberID uu
 		return nil, err
 	}
 
-	// Create.
 	accountNo, err := nextSeq(ctx, tx, "account", "SHA")
 	if err != nil {
 		return nil, err
-	}
-	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve counterparty for share account create: %w", err)
 	}
 	row = tx.QueryRow(ctx, `
 		INSERT INTO share_accounts (tenant_id, counterparty_id, account_no, par_value_at_open)
@@ -117,8 +112,11 @@ func (s *ShareStore) GetAccountTx(ctx context.Context, tx pgx.Tx, accountID uuid
 	return acc, err
 }
 
-func (s *ShareStore) GetAccountByMemberTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) (*domain.ShareAccount, error) {
-	row := tx.QueryRow(ctx, `SELECT `+accountCols+` FROM share_accounts WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1)`, memberID)
+// GetAccountByCounterpartyTx fetches the share account for the given
+// counterparty. Renamed from GetAccountByMemberTx in Phase D sub-PR 3
+// when the input semantics changed from members.id to counterparty.id.
+func (s *ShareStore) GetAccountByCounterpartyTx(ctx context.Context, tx pgx.Tx, cpID uuid.UUID) (*domain.ShareAccount, error) {
+	row := tx.QueryRow(ctx, `SELECT `+accountCols+` FROM share_accounts WHERE counterparty_id = $1`, cpID)
 	acc, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -589,7 +587,11 @@ func (s *ShareStore) LiensForAccountTx(ctx context.Context, tx pgx.Tx, accountID
 
 // IssueCertificateTx retires the current certificate (if any) and
 // issues a new one reflecting the post-txn balance.
-func (s *ShareStore) IssueCertificateTx(ctx context.Context, tx pgx.Tx, accountID, memberID, issuedBy uuid.UUID, shares int, parValue decimal.Decimal, prefix string) (*domain.ShareCertificate, error) {
+// IssueCertificateTx writes the share certificate row. Phase D sub-PR 3:
+// the cpID parameter is now a counterparty.id directly (was a members.id
+// with internal resolve); callers that still hold a members.id must
+// resolve at the call site via ResolveCounterpartyID.
+func (s *ShareStore) IssueCertificateTx(ctx context.Context, tx pgx.Tx, accountID, cpID, issuedBy uuid.UUID, shares int, parValue decimal.Decimal, prefix string) (*domain.ShareCertificate, error) {
 	// Retire prior current cert.
 	var priorID *uuid.UUID
 	if err := tx.QueryRow(ctx, `
@@ -604,13 +606,6 @@ func (s *ShareStore) IssueCertificateTx(ctx context.Context, tx pgx.Tx, accountI
 	certNo, err := nextSeq(ctx, tx, "certificate", prefix)
 	if err != nil {
 		return nil, err
-	}
-	// Resolve members.id → counterparty.id at the boundary (the
-	// callers of IssueCertificateTx still pass a member id from
-	// account context that pre-2a held a real members.id).
-	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve counterparty for certificate issue: %w", err)
 	}
 	total := decimal.NewFromInt(int64(shares)).Mul(parValue)
 	var c domain.ShareCertificate

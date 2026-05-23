@@ -365,13 +365,29 @@ function InstitutionalProfileSection({ o }: { o: ApiOrgDetail }) {
 
 function AccountsTab({ entity, currency }: { entity: Entity; currency: string }) {
   if (entity.kind === 'individual') {
-    // Shares + deposit + loan history all hang off members.id today.
-    // Reuses the already-shipped components from prior prompts.
+    // Post-Phase D sub-PR 3: shares + deposit + loan history hang off
+    // counterparties.id. counterparty_id is always set on individual
+    // members post-backfill (member migration 0008); render an error
+    // panel if it's somehow missing to surface the broken state
+    // rather than silently passing the wrong id.
+    if (!entity.m.counterparty_id) {
+      return (
+        <div className="card pending-card">
+          <div className="card-hd"><h3>Accounts</h3></div>
+          <div className="card-body">
+            <div className="empty">
+              This member has no counterparty bridge — re-run the Phase A
+              backfill or contact engineering.
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <>
-        <MemberAccountsSummary memberId={entity.m.id} currency={currency} />
-        <MemberAccountsPanel memberId={entity.m.id} currency={currency} />
-        <MemberLedgerPanel memberId={entity.m.id} currency={currency} />
+        <MemberAccountsSummary counterpartyId={entity.m.counterparty_id} currency={currency} />
+        <MemberAccountsPanel counterpartyId={entity.m.counterparty_id} currency={currency} />
+        <MemberLedgerPanel counterpartyId={entity.m.counterparty_id} currency={currency} />
       </>
     );
   }

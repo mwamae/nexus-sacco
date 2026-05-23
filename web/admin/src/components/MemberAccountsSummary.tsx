@@ -35,10 +35,10 @@ function fmtMoney(s: string | number | undefined | null): string {
 }
 
 export function MemberAccountsSummary({
-  memberId,
+  counterpartyId,
   currency,
 }: {
-  memberId: string;
+  counterpartyId: string;
   currency: string;
 }) {
   // Three parallel fetches via Promise.all — same shape as the
@@ -46,12 +46,12 @@ export function MemberAccountsSummary({
   // instead of aggregates so we can render per-account links.
   const fetcher = useCallback(async (): Promise<Bundle> => {
     const [deposits, loanHistory, share] = await Promise.all([
-      getDepositAccountsByMember(memberId),
-      getMemberLoanHistory(memberId),
-      getShareAccountByMember(memberId).catch(() => null),
+      getDepositAccountsByMember(counterpartyId),
+      getMemberLoanHistory(counterpartyId),
+      getShareAccountByMember(counterpartyId).catch(() => null),
     ]);
     return { deposits, loans: loanHistory.loans ?? [], share };
-  }, [memberId]);
+  }, [counterpartyId]);
 
   return (
     <div className="card" style={{ marginTop: 14 }}>
@@ -64,7 +64,7 @@ export function MemberAccountsSummary({
       <div className="card-body flush">
         <AsyncPanel
           fetcher={fetcher}
-          deps={[memberId]}
+          deps={[counterpartyId]}
           isEmpty={(b) => b.deposits.length === 0 && b.loans.length === 0 && !b.share}
           empty={(
             <div className="empty" style={{ padding: 20 }}>
@@ -77,7 +77,7 @@ export function MemberAccountsSummary({
             : "We couldn't fetch this member's accounts."}
           skeleton={<SummarySkeleton />}
         >
-          {(b) => <SummaryTable bundle={b} memberId={memberId} currency={currency} />}
+          {(b) => <SummaryTable bundle={b} counterpartyId={counterpartyId} currency={currency} />}
         </AsyncPanel>
       </div>
     </div>
@@ -86,11 +86,11 @@ export function MemberAccountsSummary({
 
 function SummaryTable({
   bundle,
-  memberId,
+  counterpartyId,
   currency,
 }: {
   bundle: Bundle;
-  memberId: string;
+  counterpartyId: string;
   currency: string;
 }) {
   return (
@@ -119,7 +119,7 @@ function SummaryTable({
               {currency} {fmtMoney(bundle.share.account.total_value)}
             </td>
             <td>
-              <a className="btn btn-sm" href={`/shares?member=${memberId}`}>Open →</a>
+              <a className="btn btn-sm" href={`/shares?member=${counterpartyId}`}>Open →</a>
             </td>
           </tr>
         )}
@@ -136,7 +136,7 @@ function SummaryTable({
               {currency} {fmtMoney(d.account.current_balance)}
             </td>
             <td>
-              <a className="btn btn-sm" href={`/deposits?member=${memberId}&account=${d.account.id}`}>Open →</a>
+              <a className="btn btn-sm" href={`/deposits?member=${counterpartyId}&account=${d.account.id}`}>Open →</a>
             </td>
           </tr>
         ))}

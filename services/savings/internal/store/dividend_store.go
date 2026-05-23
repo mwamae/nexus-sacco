@@ -284,7 +284,7 @@ func (s *DividendStore) computeClosingBasisTx(ctx context.Context, tx pgx.Tx, fy
 		         LIMIT 1
 		       ), 0) AS closing_shares
 		FROM share_accounts a
-		JOIN members m ON m.id = a.counterparty_id
+		JOIN members m ON m.counterparty_id = a.counterparty_id
 		WHERE a.status = 'active'
 		  AND m.status NOT IN ('blacklisted', 'exited', 'deceased', 'rejected')
 		ORDER BY a.id
@@ -334,7 +334,7 @@ func (s *DividendStore) computeAverageMonthlyBasisTx(ctx context.Context, tx pgx
 		           LIMIT 1
 		         ), 0) AS shares_at_month_end
 		  FROM share_accounts a
-		  JOIN members m ON m.id = a.counterparty_id
+		  JOIN members m ON m.counterparty_id = a.counterparty_id
 		  CROSS JOIN month_ends me
 		  WHERE a.status = 'active'
 		    AND m.status NOT IN ('blacklisted', 'exited', 'deceased', 'rejected')
@@ -376,7 +376,7 @@ func (s *DividendStore) computeProRatedBasisTx(ctx context.Context, tx pgx.Tx, f
 		           LIMIT 1
 		         ), 0) AS closing_shares
 		  FROM share_accounts a
-		  JOIN members m ON m.id = a.counterparty_id
+		  JOIN members m ON m.counterparty_id = a.counterparty_id
 		  WHERE a.status = 'active'
 		    AND m.status NOT IN ('blacklisted', 'exited', 'deceased', 'rejected')
 		),

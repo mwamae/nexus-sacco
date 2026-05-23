@@ -79,14 +79,14 @@ function fmtMoney(s: string): string {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-export function MemberLedgerPanel({ memberId, currency }: { memberId: string; currency: string }) {
+export function MemberLedgerPanel({ counterpartyId, currency }: { counterpartyId: string; currency: string }) {
   // The first page is loaded via AsyncPanel (uses our standard
   // skeleton + typed error). Subsequent pages are loaded via the
   // "Load more" button below, which calls the API directly and
   // appends to state.
   const fetcher = useCallback(
-    () => getMemberLedger(memberId, { limit: PAGE_SIZE }),
-    [memberId],
+    () => getMemberLedger(counterpartyId, { limit: PAGE_SIZE }),
+    [counterpartyId],
   );
 
   return (
@@ -100,7 +100,7 @@ export function MemberLedgerPanel({ memberId, currency }: { memberId: string; cu
       <div className="card-body flush">
         <AsyncPanel
           fetcher={fetcher}
-          deps={[memberId]}
+          deps={[counterpartyId]}
           isEmpty={(p) => p.rows.length === 0}
           empty={(
             <div className="empty" style={{ padding: 24, textAlign: 'center' }}>
@@ -115,7 +115,7 @@ export function MemberLedgerPanel({ memberId, currency }: { memberId: string; cu
         >
           {(firstPage) => (
             <LedgerView
-              memberId={memberId}
+              counterpartyId={counterpartyId}
               currency={currency}
               firstPage={firstPage}
             />
@@ -127,9 +127,9 @@ export function MemberLedgerPanel({ memberId, currency }: { memberId: string; cu
 }
 
 function LedgerView({
-  memberId, currency, firstPage,
+  counterpartyId, currency, firstPage,
 }: {
-  memberId: string;
+  counterpartyId: string;
   currency: string;
   firstPage: LedgerPage;
 }) {
@@ -144,7 +144,7 @@ function LedgerView({
     setLoadingMore(true);
     setLoadErr(null);
     try {
-      const next = await getMemberLedger(memberId, { limit: PAGE_SIZE, before: cursor });
+      const next = await getMemberLedger(counterpartyId, { limit: PAGE_SIZE, before: cursor });
       setRows((prev) => [...prev, ...next.rows]);
       setCursor(next.next_cursor ?? null);
       setHasMore(next.has_more);

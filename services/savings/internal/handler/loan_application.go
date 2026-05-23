@@ -277,7 +277,7 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 			var guarantor *store.MemberLite
 			_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 				var lerr error
-				guarantor, lerr = h.Members.GetTx(r.Context(), tx, g.GuarantorMemberID)
+				guarantor, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, g.GuarantorMemberID)
 				return lerr
 			})
 			if guarantor == nil {
@@ -805,7 +805,7 @@ func (h *LoanApplicationHandler) GuaranteeRespond(w http.ResponseWriter, r *http
 			if lerr != nil {
 				return lerr
 			}
-			guarantor, lerr = h.Members.GetTx(r.Context(), tx, out.GuarantorMemberID)
+			guarantor, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, out.GuarantorMemberID)
 			return lerr
 		})
 		if app != nil && guarantor != nil {

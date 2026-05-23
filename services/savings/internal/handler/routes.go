@@ -63,7 +63,7 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("shares:bonus_issue")).
 				Post("/share-accounts/bonus-issue", d.Share.BonusIssue)
 
-			r.Route("/share-accounts/by-member/{counterparty_id}", func(r chi.Router) {
+			r.Route("/share-accounts/by-counterparty/{counterparty_id}", func(r chi.Router) {
 				r.With(middleware.RequirePermission("shares:view")).Get("/", d.Share.GetByMember)
 				r.With(middleware.RequirePermission("shares:view")).Get("/transactions", d.Share.HistoryByMember)
 				r.With(middleware.RequirePermission("shares:view")).Get("/certificate", d.Share.CurrentCertificate)
@@ -98,7 +98,7 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("savings:transact")).
 				Post("/deposit-accounts", d.Deposit.Open)
 			r.With(middleware.RequirePermission("savings:view")).
-				Get("/deposit-accounts/by-member/{counterparty_id}", d.Deposit.AccountsByMember)
+				Get("/deposit-accounts/by-counterparty/{counterparty_id}", d.Deposit.AccountsByMember)
 
 			r.Route("/deposit-accounts/{account_id}", func(r chi.Router) {
 				r.With(middleware.RequirePermission("savings:view")).Get("/", d.Deposit.GetAccount)
@@ -161,7 +161,7 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("loans:guarantee")).Post("/loan-guarantees/{guarantee_id}/respond", d.LoanApp.GuaranteeRespond)
 			// Member-scoped — every loan this member guarantees, joined
 			// with borrower + loan number for the Member Profile People tab.
-			r.With(middleware.RequirePermission("loans:view")).Get("/loan-guarantees/by-member/{counterparty_id}", d.LoanApp.ListByGuarantor)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-guarantees/by-counterparty/{counterparty_id}", d.LoanApp.ListByGuarantor)
 
 			// ─────────── Loan offer + acceptance + disbursement ───────────
 			r.With(middleware.RequirePermission("loans:offer")).Post("/loan-applications/{app_id}/send-offer", d.Loan.SendOffer)
@@ -203,7 +203,7 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/restructured", d.LoanReports.Restructured)
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/writeoffs", d.LoanReports.WriteoffRegister)
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/crb-submission", d.LoanReports.CRB)
-			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/by-member/{counterparty_id}", d.LoanReports.MemberHistory)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-reports/by-counterparty/{counterparty_id}", d.LoanReports.MemberHistory)
 			r.With(middleware.RequirePermission("loans:writeoff")).Post("/loans/{loan_id}/writeoff", d.LoanReports.WriteOff)
 
 			// ─────────── Member 360° statement ───────────

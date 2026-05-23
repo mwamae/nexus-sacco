@@ -521,7 +521,7 @@ func (s *InterestStore) PerMemberCertificateTx(
 		       fy_label, gross_amount, wht_rate_pct, wht_amount,
 		       posted_at, posted_by, remitted_at, remittance_ref
 		FROM tax_payable_ledger
-		WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1) AND fy_label = $2
+		WHERE counterparty_id = $1 AND fy_label = $2
 		ORDER BY posted_at
 	`, memberID, fyLabel)
 	if err != nil {

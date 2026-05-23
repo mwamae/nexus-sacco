@@ -100,13 +100,9 @@ func (s *DepositStore) OpenAccountTx(ctx context.Context, tx pgx.Tx, in OpenInpu
 	}
 	now := time.Now()
 
-	// Resolve members.id → counterparty.id at the boundary; the handler
-	// still passes a real members.id (OpenInput.CounterpartyID); the column
-	// FKs counterparties(id) post-Phase D sub-PR 2a.
-	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("resolve counterparty for deposit open: %w", err)
-	}
+	// Phase D sub-PR 3: in.CounterpartyID is now a counterparty.id
+	// directly (the URL contract changed from members.id to
+	// counterparty.id). No resolve needed.
 	row := tx.QueryRow(ctx, `
 		INSERT INTO deposit_accounts (
 			tenant_id, counterparty_id, product_id, account_no, status,
@@ -126,7 +122,7 @@ func (s *DepositStore) OpenAccountTx(ctx context.Context, tx pgx.Tx, in OpenInpu
 			$13
 		)
 		RETURNING `+acctCols,
-		cpID, in.ProductID, accountNo,
+		in.CounterpartyID, in.ProductID, accountNo,
 		now, matures,
 		in.FixedTermMonths, in.FixedInterestRatePct,
 		in.GoalTargetAmount, in.GoalTargetDate, in.GoalDescription,
@@ -172,7 +168,7 @@ func (s *DepositStore) GetAccountTx(ctx context.Context, tx pgx.Tx, id uuid.UUID
 }
 
 func (s *DepositStore) AccountsByMemberTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) ([]domain.DepositAccount, error) {
-	rows, err := tx.Query(ctx, `SELECT `+acctCols+` FROM deposit_accounts WHERE counterparty_id = (SELECT counterparty_id FROM members WHERE id = $1) ORDER BY opened_at DESC NULLS LAST`, memberID)
+	rows, err := tx.Query(ctx, `SELECT `+acctCols+` FROM deposit_accounts WHERE counterparty_id = $1 ORDER BY opened_at DESC NULLS LAST`, memberID)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +229,7 @@ func (s *DepositStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f AcctList
 
 	var total int
 	if err := tx.QueryRow(ctx,
-		"SELECT COUNT(*) FROM deposit_accounts a JOIN members m ON m.id = a.counterparty_id JOIN deposit_products p ON p.id = a.product_id "+where,
+		"SELECT COUNT(*) FROM deposit_accounts a JOIN members m ON m.counterparty_id = a.counterparty_id JOIN deposit_products p ON p.id = a.product_id "+where,
 		args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -244,7 +240,7 @@ func (s *DepositStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f AcctList
 		       m.member_no, m.full_name, m.status::text,
 		       p.code, p.name, p.product_type
 		FROM deposit_accounts a
-		JOIN members m ON m.id = a.counterparty_id
+		JOIN members m ON m.counterparty_id = a.counterparty_id
 		JOIN deposit_products p ON p.id = a.product_id
 		%s
 		ORDER BY a.current_balance DESC, m.full_name ASC
