@@ -702,8 +702,10 @@ export type MembershipApplication = {
   withdrawn_by?: string | null;
   withdraw_reason?: string | null;
 
-  // Activation linkage (Phase D)
-  materialized_member_id?: string | null;
+  // Activation linkage (Phase D, simplified in Phase E C — drops the
+  // legacy materialized_member_id / materialized_org_id pair in favour
+  // of the canonical counterparty bridge).
+  materialized_counterparty_id?: string | null;
   materialized_at?: string | null;
   fee_journal_entry_id?: string | null;
   fee_refund_journal_entry_id?: string | null;

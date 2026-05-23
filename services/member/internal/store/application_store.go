@@ -35,6 +35,9 @@ var (
 	ErrApplicationNotFound = errors.New("application not found")
 )
 
+// Phase E C: materialized_member_id + materialized_org_id columns
+// dropped; materialized_counterparty_id is the canonical post-approval
+// bridge from an application to the unified register.
 const appCols = `
 	id, tenant_id, application_no, kind::text, status::text,
 	applicant_name, entity_type, primary_phone, primary_email, branch_id,
@@ -46,7 +49,7 @@ const appCols = `
 	reviewer_user_id, review_started_at, review_completed_at, review_summary_note,
 	approver_user_id, approved_at, decline_reason, approval_conditions, workflow_instance_id,
 	withdrawn_at, withdrawn_by, withdraw_reason,
-	materialized_member_id, materialized_at, fee_journal_entry_id, fee_refund_journal_entry_id,
+	materialized_counterparty_id, materialized_at, fee_journal_entry_id, fee_refund_journal_entry_id,
 	created_at, updated_at,
 	EXTRACT(EPOCH FROM (now() - submitted_at))::int / 86400 AS days_in_queue
 `
@@ -66,7 +69,7 @@ func scanApplication(row pgx.Row) (*domain.MembershipApplication, error) {
 		&a.ReviewerUserID, &a.ReviewStartedAt, &a.ReviewCompletedAt, &a.ReviewSummaryNote,
 		&a.ApproverUserID, &a.ApprovedAt, &a.DeclineReason, &a.ApprovalConditions, &a.WorkflowInstanceID,
 		&a.WithdrawnAt, &a.WithdrawnBy, &a.WithdrawReason,
-		&a.MaterializedMemberID, &a.MaterializedAt, &a.FeeJournalEntryID, &a.FeeRefundJournalEntryID,
+		&a.MaterializedCounterpartyID, &a.MaterializedAt, &a.FeeJournalEntryID, &a.FeeRefundJournalEntryID,
 		&a.CreatedAt, &a.UpdatedAt,
 		&a.DaysInQueue,
 	); err != nil {
@@ -621,14 +624,16 @@ func (s *ApplicationStore) OpenDefaultIndividualAccountsTx(
 		result.DepositAccountNo = &depAcctNo
 	}
 
+	// Phase E C: materialized_member_id column dropped. Just stamp
+	// materialized_at; the canonical bridge (materialized_counterparty_id)
+	// is stamped by the handler after the counterparty co-create runs.
 	if _, err := tx.Exec(ctx, `
 		UPDATE membership_applications
-		   SET materialized_member_id = $2,
-		       materialized_at        = now(),
-		       updated_at             = now()
+		   SET materialized_at = now(),
+		       updated_at      = now()
 		 WHERE id = $1
-	`, app.ID, memberID); err != nil {
-		return nil, fmt.Errorf("update application materialized_*: %w", err)
+	`, app.ID); err != nil {
+		return nil, fmt.Errorf("update application materialized_at: %w", err)
 	}
 
 	return result, nil
@@ -718,16 +723,16 @@ func (s *ApplicationStore) activateInstitutionalTx(
 		return nil, fmt.Errorf("insert org_member: %w", err)
 	}
 
-	// Stamp the application's materialized_org_id (the org-side
-	// twin of materialized_member_id from migration 0005).
+	// Phase E C: materialized_org_id column dropped. Just stamp
+	// materialized_at; the canonical bridge (materialized_counterparty_id)
+	// is stamped by the handler after the org-counterparty co-create.
 	if _, err := tx.Exec(ctx, `
 		UPDATE membership_applications
-		   SET materialized_org_id = $2,
-		       materialized_at     = now(),
-		       updated_at          = now()
+		   SET materialized_at = now(),
+		       updated_at      = now()
 		 WHERE id = $1
-	`, app.ID, orgID); err != nil {
-		return nil, fmt.Errorf("update application materialized_org_id: %w", err)
+	`, app.ID); err != nil {
+		return nil, fmt.Errorf("update application materialized_at: %w", err)
 	}
 
 	return &ActivationResult{OrgID: orgID, OrgNo: orgNo}, nil

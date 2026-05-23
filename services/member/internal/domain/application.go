@@ -174,13 +174,14 @@ type MembershipApplication struct {
 	WithdrawnBy          *uuid.UUID        `json:"withdrawn_by,omitempty"`
 	WithdrawReason       *string           `json:"withdraw_reason,omitempty"`
 
-	// Activation linkage (Phase D) — populated when the application is
-	// approved and the auto-activation pipeline materialises the
-	// member + share + savings + GL post.
-	MaterializedMemberID    *uuid.UUID `json:"materialized_member_id,omitempty"`
-	MaterializedAt          *time.Time `json:"materialized_at,omitempty"`
-	FeeJournalEntryID       *uuid.UUID `json:"fee_journal_entry_id,omitempty"`
-	FeeRefundJournalEntryID *uuid.UUID `json:"fee_refund_journal_entry_id,omitempty"`
+	// Activation linkage (Phase D, simplified in Phase E C). Populated
+	// when the application is approved and the auto-activation pipeline
+	// materialises the counterparty + share + savings + GL post.
+	// Frontend follows the deep-link via /counterparties/<id>.
+	MaterializedCounterpartyID *uuid.UUID `json:"materialized_counterparty_id,omitempty"`
+	MaterializedAt             *time.Time `json:"materialized_at,omitempty"`
+	FeeJournalEntryID          *uuid.UUID `json:"fee_journal_entry_id,omitempty"`
+	FeeRefundJournalEntryID    *uuid.UUID `json:"fee_refund_journal_entry_id,omitempty"`
 
 	CreatedAt            time.Time         `json:"created_at"`
 	UpdatedAt            time.Time         `json:"updated_at"`

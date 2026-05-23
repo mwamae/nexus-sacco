@@ -127,14 +127,14 @@ export default function ApplicationDetailPage() {
       {err && <div className="alert alert-error" style={{ marginTop: 12 }}>{err}</div>}
       {info && <div className="alert" style={{ marginTop: 12, background: 'var(--pos-bg, #e6f5ea)', borderColor: 'var(--pos)' }}>{info}</div>}
 
-      {a.status === 'approved_active' && a.materialized_member_id && (
+      {a.status === 'approved_active' && a.materialized_counterparty_id && (
         <div className="card" style={{ marginTop: 12, borderColor: 'var(--pos)' }}>
           <div className="card-hd"><h3>Activation</h3><span className="card-sub" style={{ color: 'var(--pos)' }}>✓ materialized</span></div>
           <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-            <Field label="Member ID" value={a.materialized_member_id.slice(0, 8) + '…'} mono />
+            <Field label="Counterparty ID" value={a.materialized_counterparty_id.slice(0, 8) + '…'} mono />
             <Field label="Materialized at" value={a.materialized_at?.slice(0, 19).replace('T', ' ') ?? '—'} mono />
             <Field label="Fee journal entry" value={a.fee_journal_entry_id ? a.fee_journal_entry_id.slice(0, 8) + '…' : '—'} mono />
-            <a className="btn" href={`/members/${a.materialized_member_id}`} style={{ alignSelf: 'center' }}>Open member →</a>
+            <a className="btn" href={`/counterparties/${a.materialized_counterparty_id}`} style={{ alignSelf: 'center' }}>Open counterparty →</a>
           </div>
         </div>
       )}
