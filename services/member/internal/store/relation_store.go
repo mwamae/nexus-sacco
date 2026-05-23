@@ -6,7 +6,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,11 +32,10 @@ type RelationInput struct {
 	SharePercent  *float64
 }
 
-func (s *RelationStore) ReplaceTx(ctx context.Context, tx pgx.Tx, tenantID, memberID uuid.UUID, kind domain.RelationKind, rows []RelationInput) error {
-	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
-	if err != nil {
-		return fmt.Errorf("resolve counterparty for relation replace: %w", err)
-	}
+// ReplaceTx — Phase E A: cpID parameter is a counterparty.id directly.
+// Callers with a members.id (member-onboarding flow) must resolve
+// at the call site.
+func (s *RelationStore) ReplaceTx(ctx context.Context, tx pgx.Tx, tenantID, cpID uuid.UUID, kind domain.RelationKind, rows []RelationInput) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM member_relations WHERE counterparty_id = $1 AND kind = $2`, cpID, kind); err != nil {
 		return err
 	}
@@ -54,11 +52,9 @@ func (s *RelationStore) ReplaceTx(ctx context.Context, tx pgx.Tx, tenantID, memb
 	return nil
 }
 
-func (s *RelationStore) ListForMemberTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) ([]*domain.Relation, error) {
-	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve counterparty for relation list: %w", err)
-	}
+// ListForCounterpartyTx — Phase E A: cpID parameter is a counterparty.id
+// directly. Renamed from ListForMemberTx.
+func (s *RelationStore) ListForCounterpartyTx(ctx context.Context, tx pgx.Tx, cpID uuid.UUID) ([]*domain.Relation, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT id, counterparty_id, kind, full_name, relationship,
 		       COALESCE(phone,''), COALESCE(email,''), COALESCE(id_doc_number,''),

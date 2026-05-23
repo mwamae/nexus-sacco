@@ -320,7 +320,7 @@ function IndividualProfileSection({ m }: { m: ApiMemberDetail }) {
           </KVS>
         </ProfileCard>
       </div>
-      <MemberStatusCard memberId={m.id} currentStatus={m.status} onChanged={async () => { window.location.reload(); }} />
+      <MemberStatusCard counterpartyId={m.counterparty_id ?? m.id} currentStatus={m.status} onChanged={async () => { window.location.reload(); }} />
     </>
   );
 }

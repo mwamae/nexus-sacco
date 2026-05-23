@@ -113,6 +113,14 @@ func (s *MemberStore) ByIDTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*dom
 	return scanMember(tx.QueryRow(ctx, memberSelect+` WHERE id = $1`, id))
 }
 
+// ByCounterpartyTx — Phase E A: look up a member via the
+// counterparty bridge column. Used by the status handlers (and any
+// other /counterparties/{id}/... routes that still need member-only
+// columns like status / phone / employer).
+func (s *MemberStore) ByCounterpartyTx(ctx context.Context, tx pgx.Tx, cpID uuid.UUID) (*domain.Member, error) {
+	return scanMember(tx.QueryRow(ctx, memberSelect+` WHERE counterparty_id = $1`, cpID))
+}
+
 type ListInput struct {
 	Status domain.MemberStatus // "" for any
 	Query  string              // optional ILIKE on full_name + member_no

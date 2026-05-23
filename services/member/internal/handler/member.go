@@ -172,27 +172,29 @@ func (h *MemberHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
+		// Phase E A: relations stores key off counterparty.id now.
+		// We have a fresh members.id from CreateTx; the counterparty
+		// hasn't been created yet (that happens further down), so we
+		// have to defer relations writes until after the CP is stamped.
+		var nokInput *store.RelationInput
 		if req.NextOfKin != nil && req.NextOfKin.FullName != "" {
-			if err := h.Relations.ReplaceTx(r.Context(), tx, tenantID, m.ID, domain.RelNextOfKin, []store.RelationInput{
-				{
-					Kind:         domain.RelNextOfKin,
-					FullName:     req.NextOfKin.FullName,
-					Relationship: req.NextOfKin.Relationship,
-					Phone:        req.NextOfKin.Phone,
-					Email:        req.NextOfKin.Email,
-					IDDocNumber:  req.NextOfKin.IDDocNumber,
-				},
-			}); err != nil {
-				return err
+			nokInput = &store.RelationInput{
+				Kind:         domain.RelNextOfKin,
+				FullName:     req.NextOfKin.FullName,
+				Relationship: req.NextOfKin.Relationship,
+				Phone:        req.NextOfKin.Phone,
+				Email:        req.NextOfKin.Email,
+				IDDocNumber:  req.NextOfKin.IDDocNumber,
 			}
 		}
+		var benefInput []store.RelationInput
 		if len(req.Beneficiaries) > 0 {
-			ins := make([]store.RelationInput, 0, len(req.Beneficiaries))
+			benefInput = make([]store.RelationInput, 0, len(req.Beneficiaries))
 			for _, b := range req.Beneficiaries {
 				if strings.TrimSpace(b.FullName) == "" {
 					continue
 				}
-				ins = append(ins, store.RelationInput{
+				benefInput = append(benefInput, store.RelationInput{
 					Kind:         domain.RelBeneficiary,
 					FullName:     b.FullName,
 					Relationship: b.Relationship,
@@ -202,9 +204,6 @@ func (h *MemberHandler) Create(w http.ResponseWriter, r *http.Request) {
 					SharePercent: b.SharePercent,
 				})
 			}
-			if err := h.Relations.ReplaceTx(r.Context(), tx, tenantID, m.ID, domain.RelBeneficiary, ins); err != nil {
-				return err
-			}
 		}
 		created = m
 
@@ -213,11 +212,31 @@ func (h *MemberHandler) Create(w http.ResponseWriter, r *http.Request) {
 		// bridge inside the same tx so the unified register sees
 		// the new entity immediately. Application-approval has its
 		// own co-create in ApplicationHandler.Approve.
+		var cpID uuid.UUID
 		if h.Counterparties != nil {
-			if _, err := createCounterpartyForMemberTx(
+			id, err := createCounterpartyForMemberTx(
 				r.Context(), tx, h.Counterparties, tenantID, m, actorID,
-			); err != nil {
+			)
+			if err != nil {
 				return fmt.Errorf("create counterparty: %w", err)
+			}
+			cpID = id
+		}
+		// Phase E A: write relations now that the counterparty bridge is
+		// stamped. Deferred from above for the same reason
+		// OpenDefaultIndividualAccountsTx is deferred in
+		// application_store: dependent writes can't fire until the
+		// bridge column is populated.
+		if cpID != uuid.Nil {
+			if nokInput != nil {
+				if err := h.Relations.ReplaceTx(r.Context(), tx, tenantID, cpID, domain.RelNextOfKin, []store.RelationInput{*nokInput}); err != nil {
+					return err
+				}
+			}
+			if len(benefInput) > 0 {
+				if err := h.Relations.ReplaceTx(r.Context(), tx, tenantID, cpID, domain.RelBeneficiary, benefInput); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -331,7 +350,15 @@ func (h *MemberHandler) Get(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		out.Member = m
-		rels, err := h.Relations.ListForMemberTx(r.Context(), tx, id)
+		// Phase E A: relations + documents stores key off counterparty.id
+		// now. Resolve at the boundary since this handler still serves
+		// the legacy /members/{id} GET route (URL parameter is a
+		// members.id).
+		cpID, err := store.ResolveCounterpartyID(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		rels, err := h.Relations.ListForCounterpartyTx(r.Context(), tx, cpID)
 		if err != nil {
 			return err
 		}
@@ -344,23 +371,19 @@ func (h *MemberHandler) Get(w http.ResponseWriter, r *http.Request) {
 				out.Beneficiaries = append(out.Beneficiaries, r)
 			}
 		}
-		docs, err := h.Documents.ListForMemberTx(r.Context(), tx, id)
+		docs, err := h.Documents.ListForCounterpartyTx(r.Context(), tx, cpID)
 		if err != nil {
 			return err
 		}
 		out.Documents = docs
 
-		// Bridge to the unified register. Single LEFT JOIN so that a
-		// member created before the backfill (unlikely; backfill
-		// catches everything) doesn't blow up the response.
-		var cpID, cpNo *string
+		// Bridge to the unified register. cpID already resolved above;
+		// fetch the cp_number for display.
+		var cpIDStr, cpNo *string
 		_ = tx.QueryRow(r.Context(), `
-			SELECT c.id::text, c.cp_number
-			  FROM counterparties c
-			  JOIN members m ON m.counterparty_id = c.id
-			 WHERE m.id = $1
-		`, id).Scan(&cpID, &cpNo)
-		out.CounterpartyID = cpID
+			SELECT id::text, cp_number FROM counterparties WHERE id = $1
+		`, cpID).Scan(&cpIDStr, &cpNo)
+		out.CounterpartyID = cpIDStr
 		out.CPNumber = cpNo
 		return nil
 	})
@@ -561,9 +584,11 @@ func (h *MemberHandler) Reject(w http.ResponseWriter, r *http.Request) {
 
 func (h *MemberHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := middleware.TenantIDFrom(r)
+	// Phase E A: URL parameter is now a counterparty.id (route is
+	// /counterparties/{id}/documents/{kind}).
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid member id"))
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid counterparty id"))
 		return
 	}
 	kind, err := parseDocKind(chi.URLParam(r, "kind"))
@@ -596,24 +621,16 @@ func (h *MemberHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// First check member exists (RLS will hide cross-tenant ids).
-	var memberOK bool
+	// First check counterparty exists (RLS will hide cross-tenant ids).
 	if err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
-		_, err := h.Members.ByIDTx(r.Context(), tx, id)
-		if err == nil {
-			memberOK = true
-		}
+		_, err := h.Counterparties.GetTx(r.Context(), tx, id)
 		return err
 	}); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			httpx.WriteErr(w, r, httpx.ErrNotFound("member not found"))
+			httpx.WriteErr(w, r, httpx.ErrNotFound("counterparty not found"))
 			return
 		}
 		httpx.WriteErr(w, r, err)
-		return
-	}
-	if !memberOK {
-		httpx.WriteErr(w, r, httpx.ErrNotFound("member not found"))
 		return
 	}
 
@@ -657,9 +674,10 @@ func (h *MemberHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 
 func (h *MemberHandler) DownloadDocument(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := middleware.TenantIDFrom(r)
+	// Phase E A: URL parameter is now a counterparty.id.
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid member id"))
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid counterparty id"))
 		return
 	}
 	kind, err := parseDocKind(chi.URLParam(r, "kind"))

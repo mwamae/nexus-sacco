@@ -48,11 +48,13 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:approve")).Post("/members/{id}/reject", d.Member.Reject)
 			r.With(middleware.RequirePermission("members:edit")).Post("/members/{id}/status", d.Member.SetStatus)
 
-			// Documents.
+			// Documents. Phase E A: route by counterparty.id directly;
+			// the URL contract for member-level documents now matches the
+			// savings-side /by-counterparty/ pattern from sub-PR 3.
 			r.With(middleware.RequirePermission("members:create")).
-				Post("/members/{id}/documents/{kind}", d.Member.UploadDocument)
+				Post("/counterparties/{id}/documents/{kind}", d.Member.UploadDocument)
 			r.With(middleware.RequirePermission("members:view")).
-				Get("/members/{id}/documents/{kind}", d.Member.DownloadDocument)
+				Get("/counterparties/{id}/documents/{kind}", d.Member.DownloadDocument)
 
 			// ─────────── Organisations (non-individual members) ───────────
 			// Reuses the members:* permission catalog so existing roles
@@ -83,12 +85,15 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/banking", d.Org.UpsertBanking)
 			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/contacts", d.Org.ReplaceContacts)
 
-			// ─────────── Member status lifecycle ───────────
-			r.With(middleware.RequirePermission("members:view")).Get("/members/{id}/status-actions", d.Status.Actions)
-			r.With(middleware.RequirePermission("members:view")).Get("/members/{id}/status-history", d.Status.History)
-			r.With(middleware.RequirePermission("members:edit")).Post("/members/{id}/status-change", d.Status.Change)
-			r.With(middleware.RequirePermission("members:edit")).Post("/members/{id}/status-supporting-doc", d.Status.UploadSupportingDoc)
-			r.With(middleware.RequirePermission("members:view")).Get("/members/{id}/status-history/{change_id}/doc", d.Status.DownloadSupportingDoc)
+			// ─────────── Status lifecycle ───────────
+			// Phase E A: /counterparties/{id}/status-* — the URL value is
+			// a counterparty.id directly; handler + store accept it
+			// without an internal bridge.
+			r.With(middleware.RequirePermission("members:view")).Get("/counterparties/{id}/status-actions", d.Status.Actions)
+			r.With(middleware.RequirePermission("members:view")).Get("/counterparties/{id}/status-history", d.Status.History)
+			r.With(middleware.RequirePermission("members:edit")).Post("/counterparties/{id}/status-change", d.Status.Change)
+			r.With(middleware.RequirePermission("members:edit")).Post("/counterparties/{id}/status-supporting-doc", d.Status.UploadSupportingDoc)
+			r.With(middleware.RequirePermission("members:view")).Get("/counterparties/{id}/status-history/{change_id}/doc", d.Status.DownloadSupportingDoc)
 			r.With(middleware.RequirePermission("members:view")).Get("/members/status/summary", d.Status.Summary)
 			r.With(middleware.RequirePermission("members:view")).Get("/members/status/counts", d.Status.Counts)
 

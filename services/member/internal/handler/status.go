@@ -69,14 +69,16 @@ type allowedAction struct {
 
 func (h *StatusHandler) Actions(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := middleware.TenantIDFrom(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	// Phase E A: URL parameter is now a counterparty.id (route is
+	// /counterparties/{id}/status-actions).
+	cpID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid member id"))
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid counterparty id"))
 		return
 	}
 	out := &statusActionsResponse{}
 	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
-		m, err := h.Members.ByIDTx(r.Context(), tx, id)
+		m, err := h.Members.ByCounterpartyTx(r.Context(), tx, cpID)
 		if err != nil {
 			return err
 		}
@@ -84,7 +86,7 @@ func (h *StatusHandler) Actions(w http.ResponseWriter, r *http.Request) {
 		out.SystemBehavior = domain.SystemBehavior(m.Status)
 		out.Visibility = domain.VisibilityFor(m.Status)
 		out.Transitions = domain.AllowedTransitionsFrom(m.Status)
-		out.OpenProposals, err = h.Status.OpenProposalsForMemberTx(r.Context(), tx, m.ID)
+		out.OpenProposals, err = h.Status.OpenProposalsForCounterpartyTx(r.Context(), tx, cpID)
 		return err
 	})
 	if err != nil {
@@ -138,9 +140,10 @@ type statusChangeResponse struct {
 
 func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := middleware.TenantIDFrom(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	// Phase E A: URL parameter is now a counterparty.id.
+	cpID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid member id"))
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid counterparty id"))
 		return
 	}
 	var req statusChangeRequest
@@ -178,7 +181,7 @@ func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 	var m *domain.Member
 	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
-		m, err = h.Members.ByIDTx(r.Context(), tx, id)
+		m, err = h.Members.ByCounterpartyTx(r.Context(), tx, cpID)
 		return err
 	})
 	if err != nil {
@@ -204,7 +207,7 @@ func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 		err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 			return tx.QueryRow(r.Context(),
 				`SELECT COALESCE(shares_held, 0) FROM share_accounts WHERE counterparty_id = $1`,
-				m.ID,
+				cpID,
 			).Scan(&sharesHeld)
 		})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, store.ErrNotFound) {
@@ -233,7 +236,7 @@ func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 		err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 			c, err := h.Status.ApplyTx(r.Context(), tx, store.ApplyInput{
 				TenantID:          tenantID,
-				CounterpartyID:          m.ID,
+				CounterpartyID:    cpID,
 				FromStatus:        m.Status,
 				ToStatus:          target,
 				ReasonCategory:    reason,
@@ -272,7 +275,7 @@ func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 		var err error
 		proposal, err = h.Status.CreateProposalTx(r.Context(), tx, store.ProposalInput{
 			TenantID:           tenantID,
-			CounterpartyID:           m.ID,
+			CounterpartyID:     cpID,
 			WorkflowInstanceID: wfInstanceID,
 			ProposedStatus:     target,
 			ReasonCategory:     reason,
@@ -301,19 +304,20 @@ func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ─────────── GET /v1/members/{id}/status-history ───────────
+// ─────────── GET /v1/counterparties/{id}/status-history ───────────
 
 func (h *StatusHandler) History(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := middleware.TenantIDFrom(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	// Phase E A: URL parameter is now a counterparty.id.
+	cpID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid member id"))
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid counterparty id"))
 		return
 	}
 	var out []*domain.MemberStatusChange
 	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
-		out, err = h.Status.HistoryTx(r.Context(), tx, id, 200)
+		out, err = h.Status.HistoryTx(r.Context(), tx, cpID, 200)
 		return err
 	})
 	if err != nil {
@@ -335,9 +339,10 @@ func (h *StatusHandler) History(w http.ResponseWriter, r *http.Request) {
 
 func (h *StatusHandler) UploadSupportingDoc(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := middleware.TenantIDFrom(r)
+	// Phase E A: URL parameter is now a counterparty.id.
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid member id"))
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid counterparty id"))
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, h.MaxUpload+1024)
@@ -362,13 +367,13 @@ func (h *StatusHandler) UploadSupportingDoc(w http.ResponseWriter, r *http.Reque
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("supporting doc must be PNG, JPEG, WebP, or PDF"))
 		return
 	}
-	// Verify the member exists in this tenant.
+	// Verify the counterparty exists in this tenant.
 	if err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
-		_, err := h.Members.ByIDTx(r.Context(), tx, id)
+		_, err := h.Members.ByCounterpartyTx(r.Context(), tx, id)
 		return err
 	}); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			httpx.WriteErr(w, r, httpx.ErrNotFound("member not found"))
+			httpx.WriteErr(w, r, httpx.ErrNotFound("counterparty not found"))
 			return
 		}
 		httpx.WriteErr(w, r, err)
@@ -612,7 +617,8 @@ func (h *StatusHandler) WorkflowCallback(w http.ResponseWriter, r *http.Request)
 		}
 		switch cb.Event {
 		case "approved":
-			m, err := h.Members.ByIDTx(r.Context(), tx, proposal.CounterpartyID)
+			// proposal.CounterpartyID is a counterparty.id post-Phase E A.
+			m, err := h.Members.ByCounterpartyTx(r.Context(), tx, proposal.CounterpartyID)
 			if err != nil {
 				return err
 			}

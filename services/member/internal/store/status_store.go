@@ -53,6 +53,10 @@ func (s *StatusChangeStore) ApplyTx(ctx context.Context, tx pgx.Tx, in ApplyInpu
 	// The $2::member_status casts are required because pgx can't infer
 	// the parameter type when the same placeholder is compared against
 	// multiple enum literals.
+	// Phase E A: in.CounterpartyID is a counterparty.id; locate the
+	// members row via the bridge column. The status workflow is
+	// member-only, so institutional counterparties simply UPDATE 0
+	// rows (caller should never call ApplyTx for an institutional).
 	if _, err := tx.Exec(ctx, `
 		UPDATE members SET
 		  status              = $2::member_status,
@@ -65,18 +69,14 @@ func (s *StatusChangeStore) ApplyTx(ctx context.Context, tx pgx.Tx, in ApplyInpu
 		  exit_completed_at   = CASE WHEN $2::member_status = 'exited' THEN now() ELSE exit_completed_at END,
 		  dormancy_warning_sent_at = CASE WHEN $2::member_status = 'active' THEN NULL ELSE dormancy_warning_sent_at END,
 		  last_activity_at    = CASE WHEN $2::member_status = 'active' AND last_activity_at IS NULL THEN now() ELSE last_activity_at END
-		WHERE id = $1
+		WHERE counterparty_id = $1
 	`, in.CounterpartyID, string(in.ToStatus), in.ReasonNote, in.ChangedBy); err != nil {
 		return nil, fmt.Errorf("update member status: %w", err)
-	}
-	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve counterparty for status change: %w", err)
 	}
 	var c domain.MemberStatusChange
 	var path *string
 	var mime *string
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		INSERT INTO member_status_changes (
 		  tenant_id, counterparty_id, from_status, to_status,
 		  reason_category, reason_note, supporting_doc_path, supporting_doc_mime,
@@ -85,7 +85,7 @@ func (s *StatusChangeStore) ApplyTx(ctx context.Context, tx pgx.Tx, in ApplyInpu
 		RETURNING id, counterparty_id, from_status, to_status, reason_category, COALESCE(reason_note,''),
 		          supporting_doc_path, supporting_doc_mime, changed_by, changed_at,
 		          workflow_instance_id, review_date
-	`, in.TenantID, cpID, in.FromStatus, in.ToStatus,
+	`, in.TenantID, in.CounterpartyID, in.FromStatus, in.ToStatus,
 		in.ReasonCategory, in.ReasonNote, in.SupportingDocPath, in.SupportingDocMIME,
 		in.ChangedBy, in.WorkflowInstanceID, in.ReviewDate,
 	).Scan(&c.ID, &c.CounterpartyID, &c.FromStatus, &c.ToStatus, &c.ReasonCategory, &c.ReasonNote,
@@ -103,14 +103,11 @@ func (s *StatusChangeStore) ApplyTx(ctx context.Context, tx pgx.Tx, in ApplyInpu
 	return &c, nil
 }
 
-// HistoryTx lists status changes for a member, newest first.
-func (s *StatusChangeStore) HistoryTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID, limit int) ([]*domain.MemberStatusChange, error) {
+// HistoryTx lists status changes for a counterparty, newest first.
+// Phase E A: cpID parameter is a counterparty.id directly.
+func (s *StatusChangeStore) HistoryTx(ctx context.Context, tx pgx.Tx, cpID uuid.UUID, limit int) ([]*domain.MemberStatusChange, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
-	}
-	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve counterparty for status history: %w", err)
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT id, counterparty_id, from_status, to_status, reason_category, COALESCE(reason_note,''),
@@ -159,14 +156,12 @@ type ProposalInput struct {
 	ProposedBy         *uuid.UUID
 }
 
+// CreateProposalTx — Phase E A: in.CounterpartyID is a counterparty.id
+// directly.
 func (s *StatusChangeStore) CreateProposalTx(ctx context.Context, tx pgx.Tx, in ProposalInput) (*domain.MemberStatusProposal, error) {
-	cpID, err := ResolveCounterpartyID(ctx, tx, in.CounterpartyID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve counterparty for status proposal: %w", err)
-	}
 	var p domain.MemberStatusProposal
 	var path, mime *string
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		INSERT INTO member_status_proposals (
 		  tenant_id, counterparty_id, workflow_instance_id, proposed_status,
 		  reason_category, reason_note,
@@ -177,7 +172,7 @@ func (s *StatusChangeStore) CreateProposalTx(ctx context.Context, tx pgx.Tx, in 
 		          reason_category, COALESCE(reason_note,''),
 		          supporting_doc_path, supporting_doc_mime,
 		          review_date, proposed_by, proposed_at, resolved_at, COALESCE(resolution,'')
-	`, in.TenantID, cpID, in.WorkflowInstanceID, in.ProposedStatus,
+	`, in.TenantID, in.CounterpartyID, in.WorkflowInstanceID, in.ProposedStatus,
 		in.ReasonCategory, in.ReasonNote,
 		in.SupportingDocPath, in.SupportingDocMIME,
 		in.ReviewDate, in.ProposedBy,
@@ -235,7 +230,9 @@ func (s *StatusChangeStore) ResolveProposalTx(ctx context.Context, tx pgx.Tx, id
 	return err
 }
 
-func (s *StatusChangeStore) OpenProposalsForMemberTx(ctx context.Context, tx pgx.Tx, memberID uuid.UUID) ([]*domain.MemberStatusProposal, error) {
+// OpenProposalsForCounterpartyTx — Phase E A: cpID parameter is a
+// counterparty.id directly. Renamed from OpenProposalsForMemberTx.
+func (s *StatusChangeStore) OpenProposalsForCounterpartyTx(ctx context.Context, tx pgx.Tx, cpID uuid.UUID) ([]*domain.MemberStatusProposal, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT id, counterparty_id, workflow_instance_id, proposed_status,
 		       reason_category, COALESCE(reason_note,''),
@@ -243,7 +240,7 @@ func (s *StatusChangeStore) OpenProposalsForMemberTx(ctx context.Context, tx pgx
 		FROM member_status_proposals
 		WHERE counterparty_id = $1 AND resolved_at IS NULL
 		ORDER BY proposed_at DESC
-	`, memberID)
+	`, cpID)
 	if err != nil {
 		return nil, err
 	}
@@ -285,8 +282,12 @@ type DormancyCandidate struct {
 // older than the threshold (or null AND created longer ago than the
 // threshold).
 func (s *StatusChangeStore) DormancyCandidatesTx(ctx context.Context, tx pgx.Tx, thresholdDays int) ([]*DormancyCandidate, error) {
+	// Phase E A: project counterparty_id (not members.id) so the field
+	// name on DormancyCandidate matches its value, and the ApplyTx call
+	// downstream (which now takes a counterparty.id) receives the right
+	// thing.
 	rows, err := tx.Query(ctx, `
-		SELECT id, member_no, full_name,
+		SELECT counterparty_id, member_no, full_name,
 		       last_activity_at,
 		       (EXTRACT(EPOCH FROM (now() - COALESCE(last_activity_at, created_at))) / 86400)::int AS days_inactive
 		FROM members
@@ -312,8 +313,9 @@ func (s *StatusChangeStore) DormancyCandidatesTx(ctx context.Context, tx pgx.Tx,
 // DormancyPipelineTx returns active members within `warnDays` of the
 // threshold so the UI can show a "approaching dormancy" panel.
 func (s *StatusChangeStore) DormancyPipelineTx(ctx context.Context, tx pgx.Tx, thresholdDays, warnDays int) ([]*DormancyCandidate, error) {
+	// Phase E A: project counterparty_id (see DormancyCandidatesTx).
 	rows, err := tx.Query(ctx, `
-		SELECT id, member_no, full_name,
+		SELECT counterparty_id, member_no, full_name,
 		       last_activity_at,
 		       (EXTRACT(EPOCH FROM (now() - COALESCE(last_activity_at, created_at))) / 86400)::int AS days_inactive
 		FROM members

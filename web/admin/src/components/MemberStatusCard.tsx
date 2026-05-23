@@ -34,8 +34,8 @@ const REASON_OPTIONS: { v: MemberStatusReason; label: string }[] = [
   { v: 'other',                 label: 'Other' },
 ];
 
-export function MemberStatusCard({ memberId, currentStatus, onChanged }: {
-  memberId: string;
+export function MemberStatusCard({ counterpartyId, currentStatus, onChanged }: {
+  counterpartyId: string;
   currentStatus: MemberStatus;
   onChanged: () => void | Promise<void>;
 }) {
@@ -46,13 +46,13 @@ export function MemberStatusCard({ memberId, currentStatus, onChanged }: {
   const bumpReload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
   const fetchActions = useCallback(
-    () => getMemberStatusActions(memberId),
+    () => getMemberStatusActions(counterpartyId),
     // currentStatus / reloadNonce drive a refetch after a transition.
-    [memberId, currentStatus, reloadNonce], // eslint-disable-line react-hooks/exhaustive-deps
+    [counterpartyId, currentStatus, reloadNonce], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const fetchHistory = useCallback(
-    () => listMemberStatusHistory(memberId),
-    [memberId, currentStatus, reloadNonce], // eslint-disable-line react-hooks/exhaustive-deps
+    () => listMemberStatusHistory(counterpartyId),
+    [counterpartyId, currentStatus, reloadNonce], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   return (
@@ -70,7 +70,7 @@ export function MemberStatusCard({ memberId, currentStatus, onChanged }: {
           <div className="h-sec">Change to</div>
           <AsyncPanel
             fetcher={fetchActions}
-            deps={[memberId, currentStatus, reloadNonce]}
+            deps={[counterpartyId, currentStatus, reloadNonce]}
             isEmpty={(a) => a.transitions.length === 0}
             empty={(
               <div className="muted tiny">
@@ -136,11 +136,11 @@ export function MemberStatusCard({ memberId, currentStatus, onChanged }: {
         </div>
       </div>
 
-      <StatusHistoryCard fetcher={fetchHistory} deps={[memberId, currentStatus, reloadNonce]} />
+      <StatusHistoryCard fetcher={fetchHistory} deps={[counterpartyId, currentStatus, reloadNonce]} />
 
       {choosing && (
         <ChangeModal
-          memberId={memberId}
+          counterpartyId={counterpartyId}
           transition={choosing}
           onClose={() => setChoosing(null)}
           onApplied={async () => {
@@ -222,9 +222,9 @@ function historyTone(s: MemberStatus): string {
 }
 
 function ChangeModal({
-  memberId, transition, onClose, onApplied,
+  counterpartyId, transition, onClose, onApplied,
 }: {
-  memberId: string;
+  counterpartyId: string;
   transition: StatusTransition;
   onClose: () => void;
   onApplied: () => void | Promise<void>;
@@ -243,7 +243,7 @@ function ChangeModal({
     setErr(null);
     setBusy(true);
     try {
-      const meta = await uploadStatusSupportingDoc(memberId, f);
+      const meta = await uploadStatusSupportingDoc(counterpartyId, f);
       setSupportingDoc({ storage_path: meta.storage_path, mime: meta.mime });
     } catch (ex) {
       setErr(extractError(ex));
@@ -261,7 +261,7 @@ function ChangeModal({
     }
     setBusy(true);
     try {
-      const r = await changeMemberStatus(memberId, {
+      const r = await changeMemberStatus(counterpartyId, {
         target_status: transition.To,
         reason_category: reason,
         reason_note: note || undefined,

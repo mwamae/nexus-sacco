@@ -1577,12 +1577,12 @@ export type MemberStatusSummary = {
 };
 
 export async function getMemberStatusActions(counterpartyId: string): Promise<MemberStatusActions> {
-  const r = await api.get(`/v1/members/${counterpartyId}/status-actions`);
+  const r = await api.get(`/v1/counterparties/${counterpartyId}/status-actions`);
   return r.data.data;
 }
 
 export async function listMemberStatusHistory(counterpartyId: string): Promise<MemberStatusChange[]> {
-  const r = await api.get(`/v1/members/${counterpartyId}/status-history`);
+  const r = await api.get(`/v1/counterparties/${counterpartyId}/status-history`);
   return r.data.data ?? [];
 }
 
@@ -1594,14 +1594,14 @@ export async function changeMemberStatus(counterpartyId: string, input: {
   supporting_doc_path?: string;
   supporting_doc_mime?: string;
 }): Promise<StatusChangeResponse> {
-  const r = await api.post(`/v1/members/${counterpartyId}/status-change`, input);
+  const r = await api.post(`/v1/counterparties/${counterpartyId}/status-change`, input);
   return r.data.data;
 }
 
 export async function uploadStatusSupportingDoc(counterpartyId: string, file: Blob): Promise<{ storage_path: string; mime: string; size_bytes: number }> {
   const form = new FormData();
   form.append('file', file, (file as File).name ?? `support.${(file.type || 'application/pdf').split('/')[1] ?? 'bin'}`);
-  const r = await api.post(`/v1/members/${counterpartyId}/status-supporting-doc`, form, {
+  const r = await api.post(`/v1/counterparties/${counterpartyId}/status-supporting-doc`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return r.data.data;
@@ -1720,20 +1720,20 @@ export async function uploadMemberDocument(
 ): Promise<ApiDocument> {
   const form = new FormData();
   form.append('file', file, filename ?? `${kind}.${(file.type || 'image/png').split('/')[1] ?? 'bin'}`);
-  const r = await api.post(`/v1/members/${counterpartyId}/documents/${kind}`, form, {
+  const r = await api.post(`/v1/counterparties/${counterpartyId}/documents/${kind}`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return r.data.data;
 }
 
 export function memberDocumentURL(counterpartyId: string, kind: DocumentKind): string {
-  return `${apiBase}/v1/members/${counterpartyId}/documents/${kind}`;
+  return `${apiBase}/v1/counterparties/${counterpartyId}/documents/${kind}`;
 }
 
 // fetchMemberDocument loads the raw bytes (with auth) and returns a Blob
 // the caller can convert to an object URL for <img src>.
 export async function fetchMemberDocument(counterpartyId: string, kind: DocumentKind): Promise<Blob> {
-  const r = await api.get(`/v1/members/${counterpartyId}/documents/${kind}`, { responseType: 'blob' });
+  const r = await api.get(`/v1/counterparties/${counterpartyId}/documents/${kind}`, { responseType: 'blob' });
   return r.data as Blob;
 }
 
