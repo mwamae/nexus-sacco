@@ -92,6 +92,8 @@ func main() {
 	loanRestructureStore := store.NewLoanRestructureStore(pool.Pool)
 	loanReportsStore := store.NewLoanReportsStore(pool.Pool)
 	approvalsStore := store.NewApprovalsStore(pool.Pool)
+	receiptStore := store.NewReceiptStore(pool.Pool)
+	virtualTillStore := store.NewVirtualTillStore(pool.Pool)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
@@ -232,6 +234,18 @@ func main() {
 		LoanReports: loanReportsH,
 		Logger:      logger,
 	}
+	collectionDeskH := &handler.CollectionDeskHandler{
+		DB:             pool,
+		Receipts:       receiptStore,
+		VirtualTills:   virtualTillStore,
+		Approvals:      approvalsStore,
+		Loans:          loanStore,
+		LoanReports:    loanReportsStore,
+		Shares:         shareStore,
+		Tenants:        tenants,
+		Counterparties: counterparties,
+		Logger:         logger,
+	}
 	dividendH := &handler.DividendHandler{
 		DB:                  pool,
 		Tenants:             tenants,
@@ -316,6 +330,7 @@ func main() {
 		MemberStmt:   memberStmtH,
 		MemberLedger: memberLedgerH,
 		Approvals:    approvalsH,
+		Collection:   collectionDeskH,
 		TenantStore:  tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,

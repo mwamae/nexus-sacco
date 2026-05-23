@@ -27,6 +27,7 @@ type Deps struct {
 	MemberStmt   *MemberStatementHandler
 	MemberLedger *MemberLedgerHandler
 	Approvals   *PendingApprovalsHandler
+	Collection  *CollectionDeskHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -223,6 +224,14 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("interest:run")).Post("/provisioning/runs", d.Provisioning.Create)
 			r.With(middleware.RequirePermission("interest:post")).Post("/provisioning/runs/{run_id}/post", d.Provisioning.Post)
 			r.With(middleware.RequirePermission("interest:post")).Post("/provisioning/runs/{run_id}/supersede", d.Provisioning.Supersede)
+
+			// ─────────── Collection Desk (single cashier's counter) ───────────
+			r.With(middleware.RequirePermission("members:view")).Get("/counterparties/{id}/outstanding", d.Collection.Outstanding)
+			r.With(middleware.RequirePermission("savings:transact")).Get("/till-sessions/current", d.Collection.CurrentTillSession)
+			r.With(middleware.RequirePermission("savings:transact")).Post("/receipts", d.Collection.CreateReceipt)
+			r.With(middleware.RequirePermission("savings:transact")).Get("/receipts", d.Collection.ListReceipts)
+			r.With(middleware.RequirePermission("savings:transact")).Get("/receipts/{id}", d.Collection.GetReceipt)
+			r.With(middleware.RequirePermission("approvals:act")).Post("/receipts/{id}/lines/{line_id}/void", d.Collection.VoidLine)
 
 			// ─────────── Maker-checker (Phase 7b) ───────────
 			r.With(middleware.RequirePermission("approvals:view")).Get("/pending-approvals", d.Approvals.List)

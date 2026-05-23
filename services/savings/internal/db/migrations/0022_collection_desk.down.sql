@@ -1,0 +1,10 @@
+BEGIN;
+DROP TABLE IF EXISTS receipt_lines;
+DROP TABLE IF EXISTS receipts;
+DROP TABLE IF EXISTS receipt_serial_seq;
+DROP TABLE IF EXISTS virtual_tills;
+DROP TYPE IF EXISTS receipt_line_status;
+DROP TYPE IF EXISTS receipt_line_kind;
+DROP TYPE IF EXISTS receipt_channel;
+DROP TYPE IF EXISTS receipt_status;
+COMMIT;
