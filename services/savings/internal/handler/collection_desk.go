@@ -382,6 +382,10 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 				if mErr := h.Receipts.MarkLinePostedTx(r.Context(), tx, line.ID, txnID); mErr != nil {
 					return mErr
 				}
+				// Keep the in-memory line consistent with the DB so the
+				// create response reflects the actual posted state.
+				line.Status = domain.LinePosted
+				line.PostedTxnID = &txnID
 				continue
 			}
 			amt := line.Amount
