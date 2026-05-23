@@ -362,6 +362,37 @@ func (s *ReceiptStore) ListTx(ctx context.Context, tx pgx.Tx, f ReceiptListFilte
 
 // ─────────── Line updates (called from approvals execution + voids) ───────────
 
+// GetLineByApprovalIDTx is the reverse lookup the pending_approvals
+// dispatcher uses to figure out whether an approval row was spawned
+// by the Collection Desk (so it should propagate the post/decline
+// back onto the receipt line) or by a per-panel direct button (no
+// receipt linkage, so the dispatcher leaves the receipts side
+// untouched). Returns ErrNotFound when the approval has no backing
+// receipt line.
+func (s *ReceiptStore) GetLineByApprovalIDTx(ctx context.Context, tx pgx.Tx, approvalID uuid.UUID) (*domain.ReceiptLine, error) {
+	row := tx.QueryRow(ctx, `
+		SELECT id, receipt_id, line_no, kind::text, amount, target_account_id, fee_code, narration,
+		       approval_id, posted_txn_id, status::text, voided_at, voided_by, void_reason,
+		       created_at, posted_at
+		  FROM receipt_lines
+		 WHERE approval_id = $1
+	`, approvalID)
+	var l domain.ReceiptLine
+	var kindStr, statusStr string
+	if err := row.Scan(&l.ID, &l.ReceiptID, &l.LineNo, &kindStr, &l.Amount,
+		&l.TargetAccountID, &l.FeeCode, &l.Narration,
+		&l.ApprovalID, &l.PostedTxnID, &statusStr, &l.VoidedAt, &l.VoidedBy, &l.VoidReason,
+		&l.CreatedAt, &l.PostedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	l.Kind = domain.ReceiptLineKind(kindStr)
+	l.Status = domain.ReceiptLineStatus(statusStr)
+	return &l, nil
+}
+
 // MarkLinePostedTx is invoked after the per-line approval's underlying
 // posting handler returns success. It writes the posted_txn_id back
 // onto the line and flips its status to 'posted', then triggers a

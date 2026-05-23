@@ -232,6 +232,7 @@ func main() {
 		LoanRepay:   loanRepayH,
 		LoanCollect: loanCollectH,
 		LoanReports: loanReportsH,
+		Receipts:    receiptStore,
 		Logger:      logger,
 	}
 	collectionDeskH := &handler.CollectionDeskHandler{

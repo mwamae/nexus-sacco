@@ -61,6 +61,15 @@ type PendingApprovalsHandler struct {
 	LoanCollect *LoanCollectionsHandler
 	LoanReports *LoanReportsHandler
 
+	// Receipts is optional. When wired, every approve/decline checks
+	// whether the approval was spawned by a Collection Desk receipt
+	// line (via store.GetLineByApprovalIDTx) and mirrors the terminal
+	// status back onto the line. Without it the dispatcher still works
+	// — it just leaves receipts uncoordinated, which is fine for
+	// approvals coming from the legacy per-panel buttons (no receipt
+	// linkage to begin with).
+	Receipts *store.ReceiptStore
+
 	Logger *slog.Logger
 }
 
@@ -195,6 +204,14 @@ func (h *PendingApprovalsHandler) Approve(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return err
 		}
+		// Phase G hookup: if this approval was queued by the Collection
+		// Desk, propagate the post back onto the receipt line. Lines
+		// flip to 'posted' + the header rolls up to 'posted' once every
+		// line is terminal. No-op for approvals queued via the legacy
+		// per-panel buttons (no backing receipt_line row).
+		if err := h.propagateToReceiptLine(r.Context(), tx, id, txnID, true); err != nil {
+			return err
+		}
 		out = updated
 		return nil
 	})
@@ -206,6 +223,39 @@ func (h *PendingApprovalsHandler) Approve(w http.ResponseWriter, r *http.Request
 		"approval": out,
 		"result":   executed,
 	})
+}
+
+// propagateToReceiptLine mirrors an approval's terminal status back
+// onto the receipt line that spawned it. posted=true ⇒ MarkLinePostedTx;
+// posted=false ⇒ MarkLineDeclinedTx. Silently skips when the
+// dispatcher has no Receipts dependency wired (older test rigs) or
+// when the approval has no backing receipt line (per-panel-direct
+// approvals).
+func (h *PendingApprovalsHandler) propagateToReceiptLine(
+	ctx context.Context, tx pgx.Tx, approvalID uuid.UUID, txnID *uuid.UUID, posted bool,
+) error {
+	if h.Receipts == nil {
+		return nil
+	}
+	line, err := h.Receipts.GetLineByApprovalIDTx(ctx, tx, approvalID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if posted {
+		// txnID is the result of the per-kind Execute*Tx. For deposit /
+		// loan-repay it's the ledger txn id; for share purchase it's
+		// the share-transaction id. Either way, it's the canonical
+		// "what got posted" reference the receipt line stores.
+		var t uuid.UUID
+		if txnID != nil {
+			t = *txnID
+		}
+		return h.Receipts.MarkLinePostedTx(ctx, tx, line.ID, t)
+	}
+	return h.Receipts.MarkLineDeclinedTx(ctx, tx, line.ID)
 }
 
 func (h *PendingApprovalsHandler) Decline(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +288,14 @@ func (h *PendingApprovalsHandler) Decline(w http.ResponseWriter, r *http.Request
 		}
 		note := strNilIfEmpty(in.Note)
 		out, err = h.Approvals.MarkDeclinedTx(r.Context(), tx, id, checkerID, note)
-		return err
+		if err != nil {
+			return err
+		}
+		// Mirror the decline onto the receipt line (if any). Causes
+		// the receipt header to roll up to 'posted' once every other
+		// line is also terminal — matches the plan note that a
+		// declined line doesn't block the rest.
+		return h.propagateToReceiptLine(r.Context(), tx, id, nil, false)
 	})
 	if err != nil {
 		httpx.WriteErr(w, r, err)
@@ -276,7 +333,13 @@ func (h *PendingApprovalsHandler) Cancel(w http.ResponseWriter, r *http.Request)
 		}
 		note := strNilIfEmpty(in.Note)
 		out, err = h.Approvals.MarkCancelledTx(r.Context(), tx, id, userID, note)
-		return err
+		if err != nil {
+			return err
+		}
+		// A maker-cancel collapses to "declined" on the receipt-line
+		// side: the line is terminal but unpost-able; receipt header
+		// rolls up the same way it would for an officer decline.
+		return h.propagateToReceiptLine(r.Context(), tx, id, nil, false)
 	})
 	if err != nil {
 		httpx.WriteErr(w, r, err)
