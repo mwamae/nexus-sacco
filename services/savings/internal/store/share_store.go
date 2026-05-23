@@ -66,8 +66,12 @@ func scanAccount(row pgx.Row) (*domain.ShareAccount, error) {
 	return &a, nil
 }
 
+// accountCols projects counterparty_id where member_id used to be
+// (Phase D sub-PR 2a). The scan destination is still
+// ShareAccount.MemberID — the field is a "lying name" stub that now
+// holds a counterparty.id; sub-PR 2b renames the field.
 const accountCols = `
-	id, tenant_id, member_id, account_no, status,
+	id, tenant_id, counterparty_id, account_no, status,
 	shares_held, shares_pledged, par_value_at_open,
 	first_purchase_at, closed_at, created_at, updated_at
 `
@@ -93,10 +97,14 @@ func (s *ShareStore) EnsureAccountTx(ctx context.Context, tx pgx.Tx, memberID uu
 	if err != nil {
 		return nil, err
 	}
+	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for share account create: %w", err)
+	}
 	row = tx.QueryRow(ctx, `
-		INSERT INTO share_accounts (tenant_id, member_id, account_no, par_value_at_open)
+		INSERT INTO share_accounts (tenant_id, counterparty_id, account_no, par_value_at_open)
 		VALUES (current_tenant_id(), $1, $2, $3)
-		RETURNING `+accountCols, memberID, accountNo, parValue)
+		RETURNING `+accountCols, cpID, accountNo, parValue)
 	return scanAccount(row)
 }
 
@@ -190,7 +198,7 @@ func (s *ShareStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostInput) (*d
 
 	row := tx.QueryRow(ctx, `
 		INSERT INTO share_transactions (
-			tenant_id, account_id, member_id, txn_no, txn_type, shares_delta,
+			tenant_id, account_id, counterparty_id, txn_no, txn_type, shares_delta,
 			par_value_at_txn, amount, payment_channel, payment_ref, narration,
 			counterparty_account_id, counterparty_txn_id, balance_after_shares,
 			balance_after_amount, initiated_by, authorized_by, authorization_reason
@@ -200,7 +208,7 @@ func (s *ShareStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostInput) (*d
 			$11, $12, $13,
 			$14, $15, $16, $17
 		)
-		RETURNING id, tenant_id, account_id, member_id, txn_no, txn_type, shares_delta,
+		RETURNING id, tenant_id, account_id, counterparty_id, txn_no, txn_type, shares_delta,
 		          par_value_at_txn, amount, payment_channel, payment_ref, narration,
 		          counterparty_account_id, counterparty_txn_id, balance_after_shares,
 		          balance_after_amount, initiated_by, authorized_by, authorization_reason,
@@ -250,7 +258,7 @@ func (s *ShareStore) HistoryByAccountTx(ctx context.Context, tx pgx.Tx, accountI
 		limit = 100
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT id, tenant_id, account_id, member_id, txn_no, txn_type, shares_delta,
+		SELECT id, tenant_id, account_id, counterparty_id, txn_no, txn_type, shares_delta,
 		       par_value_at_txn, amount, payment_channel, payment_ref, narration,
 		       counterparty_account_id, counterparty_txn_id, balance_after_shares,
 		       balance_after_amount, initiated_by, authorized_by, authorization_reason,
@@ -314,7 +322,7 @@ func (s *ShareStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f ListFilter
 	}
 
 	var total int
-	if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM share_accounts a JOIN members m ON m.id = a.member_id "+where, args...).Scan(&total); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM share_accounts a JOIN members m ON m.counterparty_id = a.counterparty_id "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -322,7 +330,7 @@ func (s *ShareStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f ListFilter
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT %s, m.member_no, m.full_name, m.status::text
 		FROM share_accounts a
-		JOIN members m ON m.id = a.member_id
+		JOIN members m ON m.counterparty_id = a.counterparty_id
 		%s
 		ORDER BY a.shares_held DESC, m.full_name ASC
 		LIMIT $%d OFFSET $%d
@@ -447,7 +455,7 @@ func (s *ShareStore) TotalSharesIssuedTx(ctx context.Context, tx pgx.Tx) (int, e
 func (s *ShareStore) ActiveAccountsTx(ctx context.Context, tx pgx.Tx) ([]domain.ShareAccount, error) {
 	rows, err := tx.Query(ctx, `SELECT `+prefixCols(accountCols, "a")+`
 		FROM share_accounts a
-		JOIN members m ON m.id = a.member_id
+		JOIN members m ON m.counterparty_id = a.counterparty_id
 		WHERE a.status = 'active'
 		  AND a.shares_held > 0
 		  AND m.status NOT IN ('blacklisted', 'exited', 'deceased', 'rejected')
@@ -597,18 +605,25 @@ func (s *ShareStore) IssueCertificateTx(ctx context.Context, tx pgx.Tx, accountI
 	if err != nil {
 		return nil, err
 	}
+	// Resolve members.id → counterparty.id at the boundary (the
+	// callers of IssueCertificateTx still pass a member id from
+	// account context that pre-2a held a real members.id).
+	cpID, err := ResolveCounterpartyID(ctx, tx, memberID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve counterparty for certificate issue: %w", err)
+	}
 	total := decimal.NewFromInt(int64(shares)).Mul(parValue)
 	var c domain.ShareCertificate
 	err = tx.QueryRow(ctx, `
 		INSERT INTO share_certificates (
-			tenant_id, account_id, member_id, certificate_no, shares_covered,
+			tenant_id, account_id, counterparty_id, certificate_no, shares_covered,
 			par_value_at_issue, total_value, supersedes_id, issued_by
 		) VALUES (
 			current_tenant_id(), $1, $2, $3, $4, $5, $6, $7, $8
 		)
-		RETURNING id, tenant_id, account_id, member_id, certificate_no, shares_covered,
+		RETURNING id, tenant_id, account_id, counterparty_id, certificate_no, shares_covered,
 		          par_value_at_issue, total_value, issued_at, retired_at, supersedes_id, issued_by
-	`, accountID, memberID, certNo, shares, parValue, total, priorID, issuedBy).Scan(
+	`, accountID, cpID, certNo, shares, parValue, total, priorID, issuedBy).Scan(
 		&c.ID, &c.TenantID, &c.AccountID, &c.MemberID, &c.CertificateNo, &c.SharesCovered,
 		&c.ParValueAtIssue, &c.TotalValue, &c.IssuedAt, &c.RetiredAt, &c.SupersedesID, &c.IssuedBy,
 	)
@@ -621,7 +636,7 @@ func (s *ShareStore) IssueCertificateTx(ctx context.Context, tx pgx.Tx, accountI
 func (s *ShareStore) CurrentCertificateTx(ctx context.Context, tx pgx.Tx, accountID uuid.UUID) (*domain.ShareCertificate, error) {
 	var c domain.ShareCertificate
 	err := tx.QueryRow(ctx, `
-		SELECT id, tenant_id, account_id, member_id, certificate_no, shares_covered,
+		SELECT id, tenant_id, account_id, counterparty_id, certificate_no, shares_covered,
 		       par_value_at_issue, total_value, issued_at, retired_at, supersedes_id, issued_by
 		FROM share_certificates
 		WHERE account_id = $1 AND retired_at IS NULL

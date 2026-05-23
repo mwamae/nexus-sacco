@@ -35,8 +35,13 @@ func NewDepositStore(pool *pgxpool.Pool) *DepositStore {
 
 // ─────────── Account scan / cols ───────────
 
+// acctCols projects counterparty_id where member_id used to be (Phase
+// D sub-PR 2a). Scan dest is still DepositAccount.MemberID — the
+// field is a "lying name" stub that holds counterparty.id; sub-PR 2b
+// renames it. guardian_member_id stays as-is — it's a distinct column
+// not covered by the counterparty unification.
 const acctCols = `
-	id, tenant_id, member_id, product_id, account_no, status,
+	id, tenant_id, counterparty_id, product_id, account_no, status,
 	current_balance, available_balance,
 	opened_at, matures_at, closed_at,
 	last_activity_at, last_deposit_at, last_withdrawal_at,

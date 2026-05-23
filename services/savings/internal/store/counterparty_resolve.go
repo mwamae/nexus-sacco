@@ -29,6 +29,43 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// ResolveMemberIDFromCounterpartyID is the inverse of ResolveCounterpartyID.
+// Looks up the members.id whose bridge column equals the given
+// counterparty.id. Used post-Phase D sub-PR 2a at handler sites that
+// scan .MemberID from a counterparty_id column but still need a real
+// members.id to call MemberStore.GetTx / TouchActivityTx / etc.
+//
+// Returns ErrNotFound when the counterparty has no matching member —
+// typically because the counterparty is institutional (its bridge
+// lives on org_members instead). Callers that mix individual +
+// institutional flows should treat ErrNotFound as "this row belongs
+// to an institutional counterparty" and route through OrgStore
+// instead. Most savings callers were written assuming individual
+// borrowers/depositors and predate institutional support, so an
+// ErrNotFound here preserves their pre-Phase D behaviour (they would
+// have hit pgx.ErrNoRows on the original members lookup anyway).
+//
+// Sub-PR 2b's job is to delete this helper by introducing a
+// kind-aware CounterpartyStore.GetTx, at which point every consumer
+// can switch from "resolve to member, look up member" to "look up
+// counterparty directly" without the indirection.
+func ResolveMemberIDFromCounterpartyID(ctx context.Context, tx pgx.Tx, cpID uuid.UUID) (uuid.UUID, error) {
+	var memberID uuid.UUID
+	err := tx.QueryRow(ctx,
+		`SELECT id FROM members WHERE counterparty_id = $1`, cpID,
+	).Scan(&memberID)
+	if err == pgx.ErrNoRows {
+		return uuid.Nil, ErrNotFound
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("resolve member for counterparty %s: %w", cpID, err)
+	}
+	if memberID == uuid.Nil {
+		return uuid.Nil, ErrNotFound
+	}
+	return memberID, nil
+}
+
 // ResolveCounterpartyID looks up the counterparty_id that bridges
 // the given members.id. Returns ErrNotFound if the member doesn't
 // exist (or hasn't been backfilled with a counterparty_id, which
