@@ -40,14 +40,15 @@ import (
 )
 
 type DividendHandler struct {
-	DB        *db.Pool
-	Tenants   *store.TenantStore
-	Members   *store.MemberStore
-	Deposits  *store.DepositStore
-	Shares    *store.ShareStore
-	Dividends *store.DividendStore
-	Notifier  *notifier.Client
-	Logger    *slog.Logger
+	DB             *db.Pool
+	Tenants        *store.TenantStore
+	Members        *store.MemberStore
+	Counterparties *store.CounterpartyStore
+	Deposits       *store.DepositStore
+	Shares         *store.ShareStore
+	Dividends      *store.DividendStore
+	Notifier       *notifier.Client
+	Logger         *slog.Logger
 
 	WorkflowURL         string
 	SavingsSelfURL      string
@@ -618,7 +619,7 @@ func (h *DividendHandler) postDivLine(
 		}
 	}
 
-	member, err := h.Members.GetByCounterpartyTx(ctx, tx, line.CounterpartyID)
+	member, err := h.Counterparties.GetByIDTx(ctx, tx, line.CounterpartyID)
 	if err != nil {
 		return err
 	}

@@ -391,26 +391,32 @@ function AccountsTab({ entity, currency }: { entity: Entity; currency: string })
       </>
     );
   }
-  // Institutional accounts wait on the savings-side counterparty_id
-  // FK promotion (the destructive Phase C PR). Until then, show
-  // honest "coming soon" copy — no broken UI.
+  // Phase E B: institutional accounts go through the same panels —
+  // backend savings handlers were unified to read a kind-aware
+  // CounterpartyView, so the panels render shares + deposits + loan
+  // history for orgs the same way they do for individuals.
+  // Authorization/signatory model stays per-org (signatories tab on
+  // the org profile), but plain views + officer-initiated postings
+  // work.
+  if (!entity.o.counterparty_id) {
+    return (
+      <div className="card pending-card">
+        <div className="card-hd"><h3>Accounts</h3></div>
+        <div className="card-body">
+          <div className="empty">
+            This organisation has no counterparty bridge — re-run the Phase A
+            backfill or contact engineering.
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className="card pending-card">
-      <div className="card-hd">
-        <h3>Accounts</h3>
-        <span className="card-sub">Shares + deposit accounts for organisations.</span>
-        <div className="card-hd-actions"><span className="muted tiny">Coming soon</span></div>
-      </div>
-      <div className="card-body">
-        <p className="muted tiny" style={{ margin: 0 }}>
-          Share + deposit accounts for organisations will appear here once the
-          savings tables accept counterparty-based ownership.
-          In the meantime, use the legacy
-          {' '}<a href={`/orgs/${entity.o.id}?tab=banking`} style={{ color: 'var(--accent)' }}>Banking tab</a> to configure
-          the organisation's payout account.
-        </p>
-      </div>
-    </div>
+    <>
+      <MemberAccountsSummary counterpartyId={entity.o.counterparty_id} currency={currency} />
+      <MemberAccountsPanel counterpartyId={entity.o.counterparty_id} currency={currency} />
+      <MemberLedgerPanel counterpartyId={entity.o.counterparty_id} currency={currency} />
+    </>
   );
 }
 

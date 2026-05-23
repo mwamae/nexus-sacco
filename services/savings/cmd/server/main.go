@@ -73,6 +73,7 @@ func main() {
 
 	tenants := store.NewTenantStore(pool.Pool)
 	members := store.NewMemberStore(pool.Pool)
+	counterparties := store.NewCounterpartyStore(pool.Pool)
 	shareStore := store.NewShareStore(pool.Pool)
 	productStore := store.NewDepositProductStore(pool.Pool)
 	depositStore := store.NewDepositStore(pool.Pool)
@@ -100,6 +101,7 @@ func main() {
 		DB:        pool,
 		Tenants:   tenants,
 		Members:   members,
+		Counterparties: counterparties,
 		Shares:    shareStore,
 		Approvals: approvalsStore,
 		Notifier:  notifyClient,
@@ -115,6 +117,7 @@ func main() {
 		DB:        pool,
 		Tenants:   tenants,
 		Members:   members,
+		Counterparties: counterparties,
 		Products:  productStore,
 		Deposits:  depositStore,
 		Approvals: approvalsStore,
@@ -126,6 +129,7 @@ func main() {
 		DB:                  pool,
 		Tenants:             tenants,
 		Members:             members,
+		Counterparties: counterparties,
 		Products:            productStore,
 		Deposits:            depositStore,
 		Shares:              shareStore,
@@ -146,6 +150,7 @@ func main() {
 		DB:           pool,
 		Tenants:      tenants,
 		Members:      members,
+		Counterparties: counterparties,
 		LoanProducts: loanProductStore,
 		Applications: loanAppStore,
 		Guarantees:   loanGuarStore,
@@ -156,6 +161,7 @@ func main() {
 		DB:           pool,
 		Tenants:      tenants,
 		Members:      members,
+		Counterparties: counterparties,
 		LoanProducts: loanProductStore,
 		Applications: loanAppStore,
 		Guarantees:   loanGuarStore,
@@ -170,6 +176,7 @@ func main() {
 		DB:        pool,
 		Tenants:   tenants,
 		Members:   members,
+		Counterparties: counterparties,
 		Deposits:  depositStore,
 		Loans:     loanStore,
 		Approvals: approvalsStore,
@@ -181,6 +188,7 @@ func main() {
 		DB:          pool,
 		Tenants:     tenants,
 		Members:     members,
+		Counterparties: counterparties,
 		Loans:       loanStore,
 		Collections: loanCollectionsStore,
 		Restructure: loanRestructureStore,
@@ -228,6 +236,7 @@ func main() {
 		DB:                  pool,
 		Tenants:             tenants,
 		Members:             members,
+		Counterparties: counterparties,
 		Deposits:            depositStore,
 		Shares:              shareStore,
 		Dividends:           dividendStore,

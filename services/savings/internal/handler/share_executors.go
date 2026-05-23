@@ -130,7 +130,7 @@ func (h *ShareHandler) ExecuteSharePurchaseTx(
 	if err != nil {
 		return nil, err
 	}
-	_ = h.Members.TouchActivityByCounterpartyTx(ctx, tx, p.CounterpartyID)
+	_ = h.Counterparties.TouchActivityTx(ctx, tx, p.CounterpartyID)
 	return &SharePostResult{Transaction: *txn, Account: *updated, Certificate: cert}, nil
 }
 
@@ -238,8 +238,8 @@ func (h *ShareHandler) ExecuteShareTransferTx(
 	if err != nil {
 		return nil, err
 	}
-	_ = h.Members.TouchActivityByCounterpartyTx(ctx, tx, p.FromMemberID)
-	_ = h.Members.TouchActivityByCounterpartyTx(ctx, tx, p.ToMemberID)
+	_ = h.Counterparties.TouchActivityTx(ctx, tx, p.FromMemberID)
+	_ = h.Counterparties.TouchActivityTx(ctx, tx, p.ToMemberID)
 	return &ShareTransferResult{
 		From: SharePostResult{Transaction: *outTxn, Account: *fromAcct, Certificate: fromCert},
 		To:   SharePostResult{Transaction: *inTxn, Account: *toAcct, Certificate: toCert},

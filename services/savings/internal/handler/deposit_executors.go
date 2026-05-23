@@ -124,7 +124,7 @@ func (h *DepositHandler) ExecuteDepositTx(
 	if err != nil {
 		return nil, err
 	}
-	_ = h.Members.TouchActivityByCounterpartyTx(ctx, tx, acct.CounterpartyID)
+	_ = h.Counterparties.TouchActivityTx(ctx, tx, acct.CounterpartyID)
 	return &DepositResult{Transaction: *txn, Account: *updated}, nil
 }
 
@@ -173,7 +173,7 @@ func (h *DepositHandler) ExecuteWithdrawalTx(
 	if err != nil {
 		return nil, err
 	}
-	_ = h.Members.TouchActivityByCounterpartyTx(ctx, tx, acct.CounterpartyID)
+	_ = h.Counterparties.TouchActivityTx(ctx, tx, acct.CounterpartyID)
 	return &WithdrawalResult{Transaction: *txn, Account: *updated, RequiresApproval: requires}, nil
 }
 

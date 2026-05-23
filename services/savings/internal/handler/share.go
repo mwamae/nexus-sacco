@@ -32,7 +32,8 @@ import (
 type ShareHandler struct {
 	DB        *db.Pool
 	Tenants   *store.TenantStore
-	Members   *store.MemberStore
+	Members        *store.MemberStore
+	Counterparties *store.CounterpartyStore
 	Shares    *store.ShareStore
 	Approvals *store.ApprovalsStore
 	Notifier  *notifier.Client
@@ -68,12 +69,12 @@ func parseUUIDParam(r *http.Request, key string) (uuid.UUID, error) {
 // (optionally creates) share account inside a single transaction.
 // Phase D sub-PR 3: the `cpID` parameter is now a counterparty.id
 // (was a members.id with internal resolve).
-func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, cpID uuid.UUID, ensure bool) (*store.SharePolicy, *store.MemberLite, *domain.ShareAccount, error) {
+func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, cpID uuid.UUID, ensure bool) (*store.SharePolicy, *store.CounterpartyView, *domain.ShareAccount, error) {
 	policy, err := h.Tenants.SharePolicyTx(ctx, tx)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	member, err := h.Members.GetByCounterpartyTx(ctx, tx, cpID)
+	member, err := h.Counterparties.GetByIDTx(ctx, tx, cpID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, nil, nil, httpx.ErrNotFound("member not found")
@@ -106,7 +107,7 @@ func (h *ShareHandler) loadContext(ctx context.Context, tx pgx.Tx, cpID uuid.UUI
 // shares to another active member before the exit workflow finalises
 // — share capital is equity and cannot be redeemed for cash, so the
 // only legitimate way to clear an exiting balance is via transfer.
-func requireWriteEligible(member *store.MemberLite, op string) error {
+func requireWriteEligible(member *store.CounterpartyView, op string) error {
 	if memberEligible(member.Status) {
 		return nil
 	}
@@ -194,11 +195,11 @@ func (h *ShareHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request) {
 // ─────────── Account reads ───────────
 
 type accountDTO struct {
-	Account     domain.ShareAccount `json:"account"`
-	Member      store.MemberLite    `json:"member"`
-	Liens       []domain.ShareLien  `json:"active_liens"`
+	Account     domain.ShareAccount      `json:"account"`
+	Member      store.CounterpartyView   `json:"member"`
+	Liens       []domain.ShareLien       `json:"active_liens"`
 	Certificate *domain.ShareCertificate `json:"current_certificate,omitempty"`
-	Policy      policyDTO           `json:"policy"`
+	Policy      policyDTO                `json:"policy"`
 }
 
 func (h *ShareHandler) GetByMember(w http.ResponseWriter, r *http.Request) {
@@ -562,10 +563,10 @@ func (h *ShareHandler) emitSharePurchase(r *http.Request, tenantID, actorID uuid
 	if h.Notifier == nil || result == nil {
 		return
 	}
-	var member *store.MemberLite
+	var member *store.CounterpartyView
 	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
-		member, err = h.Members.GetByCounterpartyTx(r.Context(), tx, result.Account.CounterpartyID)
+		member, err = h.Counterparties.GetByIDTx(r.Context(), tx, result.Account.CounterpartyID)
 		return err
 	})
 	if member == nil {
@@ -633,10 +634,10 @@ func (h *ShareHandler) emitShareTransfer(r *http.Request, tenantID, actorID uuid
 		{"sender", result.From},
 		{"receiver", result.To},
 	} {
-		var member *store.MemberLite
+		var member *store.CounterpartyView
 		_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 			var err error
-			member, err = h.Members.GetByCounterpartyTx(r.Context(), tx, side.r.Account.CounterpartyID)
+			member, err = h.Counterparties.GetByIDTx(r.Context(), tx, side.r.Account.CounterpartyID)
 			return err
 		})
 		if member == nil {

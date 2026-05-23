@@ -32,18 +32,19 @@ import (
 )
 
 type LoanHandler struct {
-	DB           *db.Pool
-	Tenants      *store.TenantStore
-	Members      *store.MemberStore
-	LoanProducts *store.LoanProductStore
-	Applications *store.LoanApplicationStore
-	Guarantees   *store.LoanGuaranteeStore
-	Loans        *store.LoanStore
-	Deposits     *store.DepositStore
-	Approvals    *store.ApprovalsStore
-	Notifier     *notifier.Client
-	Posting      *posting.Client
-	Logger       *slog.Logger
+	DB             *db.Pool
+	Tenants        *store.TenantStore
+	Members        *store.MemberStore
+	Counterparties *store.CounterpartyStore
+	LoanProducts   *store.LoanProductStore
+	Applications   *store.LoanApplicationStore
+	Guarantees     *store.LoanGuaranteeStore
+	Loans          *store.LoanStore
+	Deposits       *store.DepositStore
+	Approvals      *store.ApprovalsStore
+	Notifier       *notifier.Client
+	Posting        *posting.Client
+	Logger         *slog.Logger
 }
 
 // ─────────── Send offer ───────────
@@ -298,10 +299,10 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 	h.postLoanDisbursementToGL(r, tid, result, in.Channel)
 	// Notify borrower that the loan was disbursed.
 	if h.Notifier != nil && result != nil {
-		var member *store.MemberLite
+		var member *store.CounterpartyView
 		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 			var lerr error
-			member, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, result.Loan.CounterpartyID)
+			member, lerr = h.Counterparties.GetByIDTx(r.Context(), tx, result.Loan.CounterpartyID)
 			return lerr
 		})
 		if member != nil {

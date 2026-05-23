@@ -42,6 +42,7 @@ type LoanCollectionsHandler struct {
 	DB             *db.Pool
 	Tenants        *store.TenantStore
 	Members        *store.MemberStore
+	Counterparties *store.CounterpartyStore
 	Loans          *store.LoanStore
 	Collections    *store.LoanCollectionsStore
 	Restructure    *store.LoanRestructureStore

@@ -28,15 +28,16 @@ import (
 )
 
 type DepositHandler struct {
-	DB        *db.Pool
-	Tenants   *store.TenantStore
-	Members   *store.MemberStore
-	Products  *store.DepositProductStore
-	Deposits  *store.DepositStore
-	Approvals *store.ApprovalsStore
-	Notifier  *notifier.Client
-	Posting   *posting.Client
-	Logger    *slog.Logger
+	DB             *db.Pool
+	Tenants        *store.TenantStore
+	Members        *store.MemberStore
+	Counterparties *store.CounterpartyStore
+	Products       *store.DepositProductStore
+	Deposits       *store.DepositStore
+	Approvals      *store.ApprovalsStore
+	Notifier       *notifier.Client
+	Posting        *posting.Client
+	Logger         *slog.Logger
 
 	// DuplicateLookback is how far back we look for a same-channel-ref
 	// duplicate before flagging a deposit. Default 10 minutes.
@@ -52,13 +53,13 @@ func (h *DepositHandler) lookback() time.Duration {
 
 // ─────────── Helpers ───────────
 
-func memberKind(_ *store.MemberLite) string {
+func memberKind(_ *store.CounterpartyView) string {
 	// Phase 3 individuals only. Once org/group support is wired through
 	// the member service, infer from members.kind here.
 	return "individual"
 }
 
-func (h *DepositHandler) loadProductAccount(ctx context.Context, tx pgx.Tx, accountID uuid.UUID) (*domain.DepositProduct, *domain.DepositAccount, *store.MemberLite, error) {
+func (h *DepositHandler) loadProductAccount(ctx context.Context, tx pgx.Tx, accountID uuid.UUID) (*domain.DepositProduct, *domain.DepositAccount, *store.CounterpartyView, error) {
 	acct, err := h.Deposits.GetAccountTx(ctx, tx, accountID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -70,7 +71,7 @@ func (h *DepositHandler) loadProductAccount(ctx context.Context, tx pgx.Tx, acco
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	member, err := h.Members.GetByCounterpartyTx(ctx, tx, acct.CounterpartyID)
+	member, err := h.Counterparties.GetByIDTx(ctx, tx, acct.CounterpartyID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -136,7 +137,7 @@ func (h *DepositHandler) Open(w http.ResponseWriter, r *http.Request) {
 		if !product.IsActive {
 			return domain.ErrProductInactive
 		}
-		member, err := h.Members.GetByCounterpartyTx(r.Context(), tx, in.CounterpartyID)
+		member, err := h.Counterparties.GetByIDTx(r.Context(), tx, in.CounterpartyID)
 		if err != nil {
 			return err
 		}
@@ -199,7 +200,7 @@ func (h *DepositHandler) Open(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		_ = h.Members.TouchActivityByCounterpartyTx(r.Context(), tx, in.CounterpartyID)
+		_ = h.Counterparties.TouchActivityTx(r.Context(), tx, in.CounterpartyID)
 		resp = openAcctResp{Account: *acct, Product: *product, OpeningTxn: openingTxn}
 		return nil
 	})
@@ -245,9 +246,9 @@ func strconvItoa(n int) string { return strconv.Itoa(n) }
 // ─────────── Reads ───────────
 
 type acctView struct {
-	Account domain.DepositAccount `json:"account"`
-	Product domain.DepositProduct `json:"product"`
-	Member  store.MemberLite      `json:"member"`
+	Account domain.DepositAccount   `json:"account"`
+	Product domain.DepositProduct   `json:"product"`
+	Member  store.CounterpartyView  `json:"member"`
 }
 
 func (h *DepositHandler) GetAccount(w http.ResponseWriter, r *http.Request) {
@@ -682,10 +683,10 @@ func (h *DepositHandler) emitDeposit(
 	if h.Notifier == nil || result == nil {
 		return
 	}
-	var member *store.MemberLite
+	var member *store.CounterpartyView
 	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
-		member, err = h.Members.GetByCounterpartyTx(r.Context(), tx, result.Account.CounterpartyID)
+		member, err = h.Counterparties.GetByIDTx(r.Context(), tx, result.Account.CounterpartyID)
 		return err
 	})
 	if member == nil {
@@ -725,10 +726,10 @@ func (h *DepositHandler) emitWithdrawal(
 	if h.Notifier == nil || result == nil {
 		return
 	}
-	var member *store.MemberLite
+	var member *store.CounterpartyView
 	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
-		member, err = h.Members.GetByCounterpartyTx(r.Context(), tx, result.Account.CounterpartyID)
+		member, err = h.Counterparties.GetByIDTx(r.Context(), tx, result.Account.CounterpartyID)
 		return err
 	})
 	if member == nil {

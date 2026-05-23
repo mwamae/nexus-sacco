@@ -32,15 +32,16 @@ import (
 )
 
 type LoanRepaymentHandler struct {
-	DB        *db.Pool
-	Tenants   *store.TenantStore
-	Members   *store.MemberStore
-	Deposits  *store.DepositStore
-	Loans     *store.LoanStore
-	Approvals *store.ApprovalsStore
-	Notifier  *notifier.Client
-	Posting   *posting.Client
-	Logger    *slog.Logger
+	DB             *db.Pool
+	Tenants        *store.TenantStore
+	Members        *store.MemberStore
+	Counterparties *store.CounterpartyStore
+	Deposits       *store.DepositStore
+	Loans          *store.LoanStore
+	Approvals      *store.ApprovalsStore
+	Notifier       *notifier.Client
+	Posting        *posting.Client
+	Logger         *slog.Logger
 }
 
 // ─────────── Repay ───────────
@@ -236,10 +237,10 @@ func (h *LoanRepaymentHandler) emitRepayment(
 	if h.Notifier == nil || result == nil {
 		return
 	}
-	var member *store.MemberLite
+	var member *store.CounterpartyView
 	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		var err error
-		member, err = h.Members.GetByCounterpartyTx(r.Context(), tx, result.Loan.CounterpartyID)
+		member, err = h.Counterparties.GetByIDTx(r.Context(), tx, result.Loan.CounterpartyID)
 		return err
 	})
 	if member == nil {

@@ -32,14 +32,15 @@ import (
 )
 
 type LoanApplicationHandler struct {
-	DB           *db.Pool
-	Tenants      *store.TenantStore
-	Members      *store.MemberStore
-	LoanProducts *store.LoanProductStore
-	Applications *store.LoanApplicationStore
-	Guarantees   *store.LoanGuaranteeStore
-	Notifier     *notifier.Client
-	Logger       *slog.Logger
+	DB             *db.Pool
+	Tenants        *store.TenantStore
+	Members        *store.MemberStore
+	Counterparties *store.CounterpartyStore
+	LoanProducts   *store.LoanProductStore
+	Applications   *store.LoanApplicationStore
+	Guarantees     *store.LoanGuaranteeStore
+	Notifier       *notifier.Client
+	Logger         *slog.Logger
 }
 
 // ─────────── Create ───────────
@@ -241,10 +242,10 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 	// Fire LOAN_APPLICATION_RECEIVED for the applicant, and
 	// GUARANTOR_REQUEST_SENT once per guarantor that was attached.
 	if h.Notifier != nil {
-		var applicant *store.MemberLite
+		var applicant *store.CounterpartyView
 		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 			var lerr error
-			applicant, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, resp.Application.CounterpartyID)
+			applicant, lerr = h.Counterparties.GetByIDTx(r.Context(), tx, resp.Application.CounterpartyID)
 			return lerr
 		})
 		if applicant != nil {
@@ -274,10 +275,10 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 		}
 		// One notification per guarantor invited.
 		for _, g := range resp.Guarantees {
-			var guarantor *store.MemberLite
+			var guarantor *store.CounterpartyView
 			_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 				var lerr error
-				guarantor, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, g.GuarantorMemberID)
+				guarantor, lerr = h.Counterparties.GetByIDTx(r.Context(), tx, g.GuarantorMemberID)
 				return lerr
 			})
 			if guarantor == nil {
@@ -700,10 +701,10 @@ func (h *LoanApplicationHandler) Decline(w http.ResponseWriter, r *http.Request)
 	}
 	// Notify the applicant that their loan was declined.
 	if h.Notifier != nil && out != nil {
-		var member *store.MemberLite
+		var member *store.CounterpartyView
 		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 			var lerr error
-			member, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, out.CounterpartyID)
+			member, lerr = h.Counterparties.GetByIDTx(r.Context(), tx, out.CounterpartyID)
 			return lerr
 		})
 		if member != nil {
@@ -798,14 +799,14 @@ func (h *LoanApplicationHandler) GuaranteeRespond(w http.ResponseWriter, r *http
 	// applicant + their officer's inbox views both pick it up.
 	if h.Notifier != nil && out != nil {
 		var app *domain.LoanApplication
-		var guarantor *store.MemberLite
+		var guarantor *store.CounterpartyView
 		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 			var lerr error
 			app, lerr = h.Applications.GetTx(r.Context(), tx, out.ApplicationID)
 			if lerr != nil {
 				return lerr
 			}
-			guarantor, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, out.GuarantorMemberID)
+			guarantor, lerr = h.Counterparties.GetByIDTx(r.Context(), tx, out.GuarantorMemberID)
 			return lerr
 		})
 		if app != nil && guarantor != nil {
@@ -813,10 +814,10 @@ func (h *LoanApplicationHandler) GuaranteeRespond(w http.ResponseWriter, r *http
 			if !in.Accept {
 				eventCode = "GUARANTOR_REQUEST_DECLINED"
 			}
-			var applicant *store.MemberLite
+			var applicant *store.CounterpartyView
 			_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 				var lerr error
-				applicant, lerr = h.Members.GetByCounterpartyTx(r.Context(), tx, app.CounterpartyID)
+				applicant, lerr = h.Counterparties.GetByIDTx(r.Context(), tx, app.CounterpartyID)
 				return lerr
 			})
 			if applicant != nil {

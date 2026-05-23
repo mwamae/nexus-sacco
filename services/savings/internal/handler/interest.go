@@ -45,15 +45,16 @@ import (
 )
 
 type InterestHandler struct {
-	DB       *db.Pool
-	Tenants  *store.TenantStore
-	Members  *store.MemberStore
-	Products *store.DepositProductStore
-	Deposits *store.DepositStore
-	Shares   *store.ShareStore
-	Interest *store.InterestStore
-	Notifier *notifier.Client
-	Logger   *slog.Logger
+	DB             *db.Pool
+	Tenants        *store.TenantStore
+	Members        *store.MemberStore
+	Counterparties *store.CounterpartyStore
+	Products       *store.DepositProductStore
+	Deposits       *store.DepositStore
+	Shares         *store.ShareStore
+	Interest       *store.InterestStore
+	Notifier       *notifier.Client
+	Logger         *slog.Logger
 
 	// Workflow integration
 	WorkflowURL         string
@@ -699,7 +700,7 @@ func (h *InterestHandler) postLine(
 	}
 
 	// Look up member identity for the tax_payable row.
-	member, err := h.Members.GetByCounterpartyTx(ctx, tx, line.CounterpartyID)
+	member, err := h.Counterparties.GetByIDTx(ctx, tx, line.CounterpartyID)
 	if err != nil {
 		return err
 	}
