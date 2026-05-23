@@ -63,6 +63,8 @@ import SASRAReturnPage from './pages/Accounting/SASRAReturn';
 import FinanceDashboardPage from './pages/Accounting/FinanceDashboard';
 import MemberStatementPage from './pages/Members/MemberStatement';
 import ProvisioningPage from './pages/Loans/Provisioning';
+import CollectionDesk from './pages/CollectionDesk';
+import CollectionReceipts from './pages/CollectionReceipts';
 
 function Gate() {
   const { status } = useAuth();
@@ -163,6 +165,8 @@ function Gate() {
   else if (path === '/accounting/sasra-return') page = <SASRAReturnPage />;
   else if (path === '/accounting/dashboard') page = <FinanceDashboardPage />;
   else if (path === '/provisioning' || path.startsWith('/provisioning/')) page = <ProvisioningPage />;
+  else if (path === '/collect') page = <CollectionDesk />;
+  else if (path === '/collect/receipts' || path.startsWith('/collect/receipts/')) page = <CollectionReceipts />;
   else page = <Dashboard />;
 
   return <AppShell>{page}</AppShell>;

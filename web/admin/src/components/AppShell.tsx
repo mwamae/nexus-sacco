@@ -53,6 +53,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
     {
       section: 'Servicing',
       items: [
+        { href: '/collect', label: 'Collection Desk', icon: 'bank', show: hasPermission('savings:transact') && !onPlatform },
+        { href: '/collect/receipts', label: 'Today’s receipts', icon: 'check', show: hasPermission('savings:transact') && !onPlatform },
         { href: '/applications', label: 'Member onboarding', icon: 'user', show: hasPermission('members:view') && !onPlatform },
         { href: '/members', label: 'Members', icon: 'user', show: hasPermission('members:view') && !onPlatform },
         { href: orgsHref, label: 'Organisations', icon: 'building', show: hasPermission('members:view') && !onPlatform },

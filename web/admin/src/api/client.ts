@@ -1750,6 +1750,161 @@ export function extractError(e: unknown, fallback = 'Something went wrong'): str
   return err?.response?.data?.error?.message || err?.message || fallback;
 }
 
+// ─── Collection Desk (Phase G) ───
+
+export type ReceiptChannel =
+  | 'cash' | 'mpesa' | 'airtel_money' | 'bank_transfer' | 'cheque' | 'standing_order';
+
+export type ReceiptLineKind =
+  | 'savings_deposit' | 'share_purchase' | 'loan_repayment' | 'fee' | 'welfare';
+
+export type ReceiptStatus = 'draft' | 'posted' | 'voided';
+export type ReceiptLineStatus = 'pending' | 'posted' | 'declined' | 'voided';
+
+export type ApiReceiptLine = {
+  id: string;
+  receipt_id: string;
+  line_no: number;
+  kind: ReceiptLineKind;
+  amount: string;
+  target_account_id?: string | null;
+  fee_code?: string | null;
+  narration?: string | null;
+  approval_id?: string | null;
+  posted_txn_id?: string | null;
+  status: ReceiptLineStatus;
+  voided_at?: string | null;
+  voided_by?: string | null;
+  void_reason?: string | null;
+  created_at: string;
+  posted_at?: string | null;
+};
+
+export type ApiReceipt = {
+  id: string;
+  tenant_id: string;
+  serial: string;
+  counterparty_id: string;
+  channel: ReceiptChannel;
+  channel_ref?: string | null;
+  channel_amount: string;
+  value_date: string;
+  narration?: string | null;
+  cashier_user_id: string;
+  till_session_id?: string | null;
+  virtual_till_id?: string | null;
+  status: ReceiptStatus;
+  pdf_document_id?: string | null;
+  voided_at?: string | null;
+  voided_by?: string | null;
+  void_reason?: string | null;
+  created_at: string;
+  posted_at?: string | null;
+  updated_at: string;
+  lines?: ApiReceiptLine[];
+};
+
+export type CurrentTillSession = {
+  has_open_session: boolean;
+  session_id?: string;
+  till_id?: string;
+  till_code?: string;
+  till_name?: string;
+  opened_at?: string;
+};
+
+export type LoanArrearSummary = {
+  loan_id: string;
+  loan_no: string;
+  product_code: string;
+  arrears_amount: string;
+  days_past_due: number;
+  classification: string;
+};
+
+export type FeeDue = {
+  fee_code: string;
+  description: string;
+  amount: string;
+  source_ref?: string;
+};
+
+export type ShareShortfallSummary = {
+  share_account_id: string;
+  shares_held: number;
+  min_shares_policy: number;
+  shortfall_shares: number;
+  par_value: string;
+  shortfall_kes: string;
+};
+
+export type CounterpartyOutstanding = {
+  loan_arrears: LoanArrearSummary[];
+  unpaid_fees: FeeDue[];
+  share_shortfall?: ShareShortfallSummary | null;
+  total_suggested: string;
+};
+
+export type CreateReceiptLineInput = {
+  kind: ReceiptLineKind;
+  amount: string; // decimal as string so we don't lose precision
+  target_account_id?: string;
+  fee_code?: string;
+  narration?: string;
+};
+
+export type CreateReceiptInput = {
+  counterparty_id: string;
+  channel: ReceiptChannel;
+  channel_ref?: string;
+  channel_amount: string;
+  value_date?: string; // YYYY-MM-DD; backend defaults to today
+  narration?: string;
+  lines: CreateReceiptLineInput[];
+};
+
+export async function getCurrentTillSession(): Promise<CurrentTillSession> {
+  const r = await api.get(`/v1/till-sessions/current`);
+  return r.data.data;
+}
+
+export async function getOutstanding(counterpartyId: string): Promise<CounterpartyOutstanding> {
+  const r = await api.get(`/v1/counterparties/${counterpartyId}/outstanding`);
+  return r.data.data;
+}
+
+export async function createReceipt(input: CreateReceiptInput): Promise<ApiReceipt> {
+  const r = await api.post(`/v1/receipts`, input);
+  return r.data.data;
+}
+
+export async function getReceipt(id: string): Promise<ApiReceipt> {
+  const r = await api.get(`/v1/receipts/${id}`);
+  return r.data.data;
+}
+
+export type ListReceiptsParams = {
+  till_session_id?: string;
+  virtual_till_id?: string;
+  cashier_user_id?: string;
+  value_date?: string;
+  status?: ReceiptStatus;
+};
+
+export async function listReceipts(p: ListReceiptsParams = {}): Promise<ApiReceipt[]> {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) {
+    if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+  }
+  const path = '/v1/receipts' + (q.toString() ? '?' + q.toString() : '');
+  const r = await api.get(path);
+  return Array.isArray(r.data.data) ? r.data.data : [];
+}
+
+export async function voidReceiptLine(receiptId: string, lineId: string, reason: string): Promise<void> {
+  await api.post(`/v1/receipts/${receiptId}/lines/${lineId}/void`, { reason });
+}
+
 // ─── Workflow engine ───
 
 export type WFStatus =
