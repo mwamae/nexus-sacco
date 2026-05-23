@@ -427,6 +427,35 @@ func (s *ReceiptStore) AttachApprovalTx(ctx context.Context, tx pgx.Tx, lineID, 
 	return err
 }
 
+// GetLineForVoidTx is the lightweight lookup the VoidLine handler
+// uses before it dispatches to the per-kind reverse executor. Same
+// shape as the dispatcher's reverse lookup; reused here to keep the
+// void path from cross-querying the wider receipt with all its
+// other lines.
+func (s *ReceiptStore) GetLineForVoidTx(ctx context.Context, tx pgx.Tx, lineID uuid.UUID) (*domain.ReceiptLine, error) {
+	row := tx.QueryRow(ctx, `
+		SELECT id, receipt_id, line_no, kind::text, amount, target_account_id, fee_code, narration,
+		       approval_id, posted_txn_id, status::text, voided_at, voided_by, void_reason,
+		       created_at, posted_at
+		  FROM receipt_lines
+		 WHERE id = $1
+	`, lineID)
+	var l domain.ReceiptLine
+	var kindStr, statusStr string
+	if err := row.Scan(&l.ID, &l.ReceiptID, &l.LineNo, &kindStr, &l.Amount,
+		&l.TargetAccountID, &l.FeeCode, &l.Narration,
+		&l.ApprovalID, &l.PostedTxnID, &statusStr, &l.VoidedAt, &l.VoidedBy, &l.VoidReason,
+		&l.CreatedAt, &l.PostedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	l.Kind = domain.ReceiptLineKind(kindStr)
+	l.Status = domain.ReceiptLineStatus(statusStr)
+	return &l, nil
+}
+
 // SetPDFDocumentIDTx stamps the pdf_documents.id onto the receipt
 // header so the frontend can render a download link. Called after
 // POST /v1/receipts/{id}/pdf finishes its synchronous render.

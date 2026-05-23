@@ -50,6 +50,15 @@ type CollectionDeskHandler struct {
 	Counterparties *store.CounterpartyStore
 	Notifier       *notifier.Client
 	Logger         *slog.Logger
+
+	// Reverse-side wiring (Phase G follow-up: line-level reversal).
+	// VoidLine dispatches by line.kind to the matching Execute*ReverseTx
+	// on whichever handler owns the underlying transaction type. Same
+	// pattern PendingApprovalsHandler uses for its approve-time
+	// dispatch — kept here so the dispatcher doesn't have to know
+	// about receipt lines.
+	Deposit   *DepositHandler
+	LoanRepay *LoanRepaymentHandler
 }
 
 // ─────────── GET /v1/counterparties/{id}/outstanding ───────────
@@ -596,11 +605,25 @@ func (h *CollectionDeskHandler) VoidLine(w http.ResponseWriter, r *http.Request)
 		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
 		return
 	}
+	var reverseTxnID *uuid.UUID
 	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
-		// v1 just marks the line voided; the underlying-txn reversal
-		// (deposit reverse / share reverse / loan reverse) is a
-		// follow-up PR (needs the appropriate Execute*ReverseTx wired
-		// through the approvals dispatcher).
+		// Pull the line first so we know what to dispatch to.
+		line, lerr := h.Receipts.GetLineForVoidTx(r.Context(), tx, lineID)
+		if lerr != nil {
+			return lerr
+		}
+		// Only dispatch a reversal when the line actually moved money.
+		// Pending/declined lines just flip status. fee + welfare lines
+		// today don't have a ledger executor either (the v1 path marked
+		// them posted with a nil txn id), so they take the same skip
+		// path — no reversal needed.
+		if line.Status == domain.LinePosted && line.PostedTxnID != nil && *line.PostedTxnID != uuid.Nil {
+			revID, rerr := h.dispatchReversal(r.Context(), tx, line, in.Reason, userID)
+			if rerr != nil {
+				return rerr
+			}
+			reverseTxnID = revID
+		}
 		return h.Receipts.VoidLineTx(r.Context(), tx, store.VoidLineInput{
 			LineID:   lineID,
 			VoidedBy: userID,
@@ -608,10 +631,77 @@ func (h *CollectionDeskHandler) VoidLine(w http.ResponseWriter, r *http.Request)
 		})
 	})
 	if err != nil {
-		httpx.WriteErr(w, r, err)
+		writeDeskErr(w, r, err)
 		return
 	}
-	httpx.OK(w, map[string]any{"status": "voided", "line_id": lineID})
+	resp := map[string]any{"status": "voided", "line_id": lineID}
+	if reverseTxnID != nil {
+		resp["reverse_txn_id"] = *reverseTxnID
+	}
+	httpx.OK(w, resp)
+}
+
+// dispatchReversal — per-kind switchboard that calls the appropriate
+// Execute*ReverseTx and returns the new reversal-txn id. Share
+// reversals are deferred: share_transactions doesn't carry
+// reverses_txn_id / reversed_by_txn_id columns yet, so the data layer
+// can't represent a clean back-link. The Go-side void still marks
+// the line, but no money is unmoved — caller gets a friendly error
+// surfaced as 412 so the UI can flag "share reversal not yet
+// supported" rather than silently accept a half-void.
+func (h *CollectionDeskHandler) dispatchReversal(
+	ctx context.Context, tx pgx.Tx,
+	line *domain.ReceiptLine, reason string, userID uuid.UUID,
+) (*uuid.UUID, error) {
+	if line.PostedTxnID == nil {
+		return nil, nil
+	}
+	txnID := *line.PostedTxnID
+	switch line.Kind {
+	case domain.LineSavingsDeposit:
+		if h.Deposit == nil {
+			return nil, fmt.Errorf("deposit handler not wired")
+		}
+		res, err := h.Deposit.ExecuteDepositReverseTx(ctx, tx, DepositReversePayload{
+			TxnID:  txnID,
+			Reason: reason,
+		}, userID)
+		if err != nil {
+			if errors.Is(err, store.ErrAlreadyReversed) {
+				return nil, httpx.ErrConflict("deposit already reversed")
+			}
+			return nil, err
+		}
+		id := res.Reversal.ID
+		return &id, nil
+	case domain.LineLoanRepayment:
+		if h.LoanRepay == nil {
+			return nil, fmt.Errorf("loan-repayment handler not wired")
+		}
+		res, err := h.LoanRepay.ExecuteReverseTx(ctx, tx, LoanReversePayload{
+			TxnID:  txnID,
+			Reason: reason,
+		}, userID)
+		if err != nil {
+			return nil, err
+		}
+		id := res.Reversal.ID
+		return &id, nil
+	case domain.LineSharePurchase:
+		// share_transactions lacks reverses_txn_id / reversed_by_txn_id
+		// columns — needs a schema migration + executor before voids
+		// can reverse the underlying share posting. Until then, refuse
+		// the void rather than silently mark it (which would corrupt
+		// the receipt-to-ledger invariant).
+		return nil, httpx.ErrConflict("share-purchase reversal not yet supported (data layer needs reverses_txn_id columns)")
+	case domain.LineFee, domain.LineWelfare:
+		// Fee + welfare lines have no underlying ledger executor in v1
+		// (handler/collection_desk.go marks them 'posted' with a nil
+		// txn id). Nothing to reverse — caller still flips the line
+		// status to voided.
+		return nil, nil
+	}
+	return nil, fmt.Errorf("unknown line kind for reversal: %s", line.Kind)
 }
 
 // ─────────── POST /v1/receipts/{id}/pdf ───────────

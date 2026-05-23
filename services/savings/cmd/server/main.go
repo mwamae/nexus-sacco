@@ -246,6 +246,8 @@ func main() {
 		Tenants:        tenants,
 		Counterparties: counterparties,
 		Notifier:       notifyClient,
+		Deposit:        depositH,
+		LoanRepay:      loanRepayH,
 		Logger:         logger,
 	}
 	dividendH := &handler.DividendHandler{

@@ -476,6 +476,76 @@ func (s *DepositStore) LinkCounterpartyTxnTx(ctx context.Context, tx pgx.Tx, txn
 	return err
 }
 
+// ReverseDepositTx posts a same-magnitude opposite-sign transaction
+// against the original deposit's account, linking the two via
+// reverses_txn_id / reversed_by_txn_id. Used by the Collection Desk's
+// per-line void (Phase G) when a cashier voids a savings_deposit line
+// post-approval.
+//
+// Constraints (surfaced as plain errors so the handler maps them):
+//   - Only `deposit` and `opening_balance` types can be reversed via
+//     this path. Withdrawals / fee debits already moved the balance
+//     down — reversing those would risk taking the available balance
+//     negative without lien gating.
+//   - An already-reversed transaction returns ErrAlreadyReversed
+//     (mapped to 409 by the handler).
+//
+// Returns the new reversal transaction.
+var ErrAlreadyReversed = errors.New("transaction already reversed")
+
+func (s *DepositStore) ReverseDepositTx(
+	ctx context.Context, tx pgx.Tx,
+	txnID uuid.UUID, reason string, userID uuid.UUID,
+) (*domain.DepositTransaction, error) {
+	orig, err := s.GetTxnTx(ctx, tx, txnID)
+	if err != nil {
+		return nil, err
+	}
+	if orig.TxnType != domain.TxnDeposit && orig.TxnType != domain.TxnOpeningBalance &&
+		orig.TxnType != domain.TxnDepTransferIn && orig.TxnType != domain.TxnInterestCredit {
+		return nil, fmt.Errorf("only inflow deposit transactions can be reversed by this path (got %s)", orig.TxnType)
+	}
+	if orig.ReversedByTxnID != nil {
+		return nil, ErrAlreadyReversed
+	}
+	// Load the account so the reversal can re-check the balance + flow
+	// through PostTxnTx's CAS-protected update.
+	acct, err := s.GetAccountTx(ctx, tx, orig.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	// The reversal posts a withdrawal-shaped row referencing the
+	// original. PostTxnTx applies the canonical sign for TxnWithdrawal
+	// (Amount.Abs() * -1), so we pass the original magnitude as-is.
+	// Channel + ref are inherited from the original so the EOD
+	// reconciliation against the same channel statement still pairs
+	// cleanly (the matched pair sums to 0 on the suspense GL).
+	revReason := reason
+	revAmount := orig.Amount.Abs()
+	rev, err := s.PostTxnTx(ctx, tx, PostDepInput{
+		Account:        acct,
+		TxnType:        domain.TxnWithdrawal,
+		Amount:         revAmount,
+		Channel:        orig.Channel,
+		ChannelRef:     orig.ChannelRef,
+		Narration:      ptrStr("Reversal of " + orig.TxnNo + ": " + reason),
+		ReversesTxnID:  &orig.ID,
+		ReversalReason: &revReason,
+		InitiatedBy:    userID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("post reversal: %w", err)
+	}
+	// Back-link the original to its reversal.
+	if _, err := tx.Exec(ctx,
+		`UPDATE deposit_transactions SET reversed_by_txn_id = $2 WHERE id = $1`,
+		orig.ID, rev.ID,
+	); err != nil {
+		return nil, fmt.Errorf("backlink reversal: %w", err)
+	}
+	return rev, nil
+}
+
 // GetTxnTx loads a single transaction by id.
 func (s *DepositStore) GetTxnTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*domain.DepositTransaction, error) {
 	row := tx.QueryRow(ctx, `

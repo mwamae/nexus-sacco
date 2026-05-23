@@ -54,6 +54,37 @@ type DepTransferPayload struct {
 
 // ─────────── Result shapes ───────────
 
+// DepositReversePayload mirrors LoanReversePayload — used by the
+// Collection Desk's per-line void to reverse a posted savings_deposit
+// line. The original deposit txn id is what's on receipt_lines.posted_txn_id.
+type DepositReversePayload struct {
+	TxnID  uuid.UUID `json:"txn_id"`
+	Reason string    `json:"reason"`
+}
+
+type DepositReverseResult struct {
+	Reversal domain.DepositTransaction `json:"reversal"`
+	Account  domain.DepositAccount     `json:"account"`
+}
+
+// ExecuteDepositReverseTx posts the inverse withdrawal + back-links
+// the original. Surfaces store.ErrAlreadyReversed when the original
+// was already reversed (the handler maps it to 409).
+func (h *DepositHandler) ExecuteDepositReverseTx(
+	ctx context.Context, tx pgx.Tx,
+	p DepositReversePayload, makerID uuid.UUID,
+) (*DepositReverseResult, error) {
+	rev, err := h.Deposits.ReverseDepositTx(ctx, tx, p.TxnID, p.Reason, makerID)
+	if err != nil {
+		return nil, err
+	}
+	acct, err := h.Deposits.GetAccountTx(ctx, tx, rev.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	return &DepositReverseResult{Reversal: *rev, Account: *acct}, nil
+}
+
 type DepositResult struct {
 	Transaction domain.DepositTransaction `json:"transaction"`
 	Account     domain.DepositAccount     `json:"account"`
