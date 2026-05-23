@@ -340,3 +340,123 @@ func TestCollectionDeskAcceptance_MixedReceiptHappyPath(t *testing.T) {
 		t.Errorf("share_transactions for this run: want ≥ 1, got %d", got.ShareCount)
 	}
 }
+
+// Regression: two cash receipts in the same tenant must both succeed.
+//
+// The original 0022 migration created receipts_channel_ref_unique
+// with NULLS NOT DISTINCT — so every cash receipt (channel_ref NULL)
+// collided with the previous one. Migration 0024 made the index
+// partial (WHERE channel_ref IS NOT NULL), and the store stopped
+// dereferencing nil ChannelRef on the (now non-applicable) unique-
+// violation path. Both regressions are pinned together here.
+func TestCollectionDeskAcceptance_TwoCashReceiptsSucceed(t *testing.T) {
+	env := newTestEnv(t)
+	if env == nil {
+		return
+	}
+	defer env.close()
+
+	ids := seedCollectionScenario(t, env)
+
+	// Cash requires an open till_session for env.UserID. Provision a
+	// fresh till + open session for this run; cleanup is deferred so
+	// the session goes away when env.close() runs.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var tillID uuid.UUID
+	if err := env.Pool.WithTenantTx(ctx, env.TenantID, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO tills (tenant_id, code, name)
+			VALUES ($1, $2, $3) RETURNING id
+		`, env.TenantID, "TILL-"+env.MarkerSuffix, "acceptance test till").Scan(&tillID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO till_sessions (tenant_id, till_id, teller_user_id, opening_float, opened_by)
+			VALUES ($1, $2, $3, 0, $3)
+		`, env.TenantID, tillID, env.UserID)
+		return err
+	}); err != nil {
+		t.Fatalf("provision till session: %v", err)
+	}
+	// Cleanup hook — env.close() doesn't know about tills yet, so
+	// fold the deletes in directly.
+	defer func() {
+		_ = env.Pool.WithTenantTx(context.Background(), env.TenantID, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(context.Background(), `DELETE FROM till_sessions WHERE till_id = $1`, tillID); err != nil {
+				return err
+			}
+			_, err := tx.Exec(context.Background(), `DELETE FROM tills WHERE id = $1`, tillID)
+			return err
+		})
+	}()
+
+	mkBody := func() map[string]any {
+		return map[string]any{
+			"counterparty_id": ids.CounterpartyID,
+			"channel":         "cash",
+			"channel_amount":  "1000",
+			"narration":       "cash dup-allowed test",
+			"lines": []map[string]any{
+				{"kind": "savings_deposit", "amount": "1000", "target_account_id": ids.DepositAcctID},
+			},
+		}
+	}
+	s1, b1 := httpJSON(t, "POST", env.Server.URL+"/v1/receipts", mkBody())
+	if s1 != http.StatusCreated {
+		t.Fatalf("first cash POST: want 201, got %d. body=%s", s1, b1)
+	}
+	s2, b2 := httpJSON(t, "POST", env.Server.URL+"/v1/receipts", mkBody())
+	if s2 != http.StatusCreated {
+		t.Fatalf("second cash POST: want 201 (cash should not collide), got %d. body=%s", s2, b2)
+	}
+}
+
+// Regression: posting a second receipt with the same (channel,
+// channel_ref) on the same tenant must surface a clean 409, NOT a
+// 500 with a raw pg unique-violation message.
+//
+// Earlier bug: isUniqueViolation tried to satisfy the
+// pgconn.PgError fields (ConstraintName) via an interface method
+// assertion that pgconn.PgError doesn't implement — so the error
+// fell through to the generic 500 path and the UI saw "an
+// unexpected error occurred" instead of "duplicate M-Pesa code".
+func TestCollectionDeskAcceptance_DuplicateChannelRefReturns409(t *testing.T) {
+	env := newTestEnv(t)
+	if env == nil {
+		return
+	}
+	defer env.close()
+
+	ids := seedCollectionScenario(t, env)
+
+	// Pick a CP that has a SEPARATE share-account-less line set —
+	// keep this test independent of the share-purchase / loan paths
+	// so it's a focused dup-test.
+	ref := "MPS-DUP-" + env.MarkerSuffix
+	body := map[string]any{
+		"counterparty_id": ids.CounterpartyID,
+		"channel":         "mpesa",
+		"channel_ref":     ref,
+		"channel_amount":  "1000",
+		"narration":       "dup-receipt test",
+		"lines": []map[string]any{
+			{"kind": "savings_deposit", "amount": "1000", "target_account_id": ids.DepositAcctID},
+		},
+	}
+	// First POST — should succeed.
+	s1, b1 := httpJSON(t, "POST", env.Server.URL+"/v1/receipts", body)
+	if s1 != http.StatusCreated {
+		t.Fatalf("first POST: want 201, got %d. body=%s", s1, b1)
+	}
+	// Second POST with same channel_ref — should be 409, not 500.
+	s2, b2 := httpJSON(t, "POST", env.Server.URL+"/v1/receipts", body)
+	if s2 != http.StatusConflict {
+		t.Fatalf("second POST (dup): want 409, got %d. body=%s", s2, b2)
+	}
+	// Body should mention 'duplicate' so the UI can render a clear
+	// hint instead of a generic 'unexpected error'.
+	if !strings.Contains(strings.ToLower(string(b2)), "duplicate") {
+		t.Errorf("dup error body should mention 'duplicate', got: %s", b2)
+	}
+}

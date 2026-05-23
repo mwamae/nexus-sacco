@@ -17,6 +17,8 @@ import {
   createReceipt,
   extractError,
   getCurrentTillSession,
+  getDepositAccountsByMember,
+  getMemberLoanHistory,
   getOutstanding,
   listCounterparties,
   listFees,
@@ -26,6 +28,8 @@ import {
   type CreateReceiptLineInput,
   type CurrentTillSession,
   type FeeCatalogEntry,
+  type Loan,
+  type MemberDepositItem,
   type ReceiptChannel,
   type ReceiptLineKind,
 } from '../api/client';
@@ -82,6 +86,11 @@ export default function CollectionDesk() {
   const [step, setStep] = useState<Step>('find');
   const [cp, setCp] = useState<Counterparty | null>(null);
   const [outstanding, setOutstanding] = useState<CounterpartyOutstanding | null>(null);
+  // CP-scoped lookups for the line builder dropdowns. Fetched once
+  // when the CP is picked; the builder consumes them as the source
+  // of truth for the deposit-account / loan selects.
+  const [cpDeposits, setCpDeposits] = useState<MemberDepositItem[]>([]);
+  const [cpLoans, setCpLoans] = useState<Loan[]>([]);
   const [lines, setLines] = useState<LineDraft[]>([]);
   const [channel, setChannel] = useState<ReceiptChannel>('cash');
   const [channelRef, setChannelRef] = useState('');
@@ -104,6 +113,8 @@ export default function CollectionDesk() {
     setStep('find');
     setCp(null);
     setOutstanding(null);
+    setCpDeposits([]);
+    setCpLoans([]);
     setLines([]);
     setChannel('cash');
     setChannelRef('');
@@ -116,13 +127,29 @@ export default function CollectionDesk() {
   async function pickCp(c: Counterparty) {
     setCp(c);
     setStep('build');
-    try {
-      setOutstanding(await getOutstanding(c.id));
-    } catch (e) {
-      // outstanding is a nice-to-have; the rest of the flow works.
-      setOutstanding(null);
-      console.warn('outstanding lookup failed', extractError(e));
-    }
+    // Fan out the three CP-scoped lookups in parallel. Each one
+    // degrades independently — outstanding is a nice-to-have for
+    // the suggestions panel, and the deposit/loan lists drive the
+    // builder dropdowns (the cashier can still pick share/fee
+    // lines if those happen to fail).
+    const [o, d, l] = await Promise.allSettled([
+      getOutstanding(c.id),
+      getDepositAccountsByMember(c.id),
+      getMemberLoanHistory(c.id),
+    ]);
+    setOutstanding(o.status === 'fulfilled' ? o.value : null);
+    if (o.status === 'rejected') console.warn('outstanding lookup failed', extractError(o.reason));
+    setCpDeposits(d.status === 'fulfilled' ? d.value : []);
+    if (d.status === 'rejected') console.warn('deposit accounts lookup failed', extractError(d.reason));
+    setCpLoans(
+      l.status === 'fulfilled'
+        ? l.value.loans
+            .map((row) => row.loan)
+            // Only loans that can still accept a repayment line.
+            .filter((ln) => ['active', 'in_arrears', 'restructured'].includes(ln.status))
+        : []
+    );
+    if (l.status === 'rejected') console.warn('loan history lookup failed', extractError(l.reason));
   }
 
   async function confirmPost() {
@@ -206,6 +233,8 @@ export default function CollectionDesk() {
                 lines={lines}
                 setLines={setLines}
                 fees={fees}
+                deposits={cpDeposits}
+                loans={cpLoans}
                 onContinue={() => {
                   setChannelAmount(subtotal.toFixed(2));
                   setStep('payment');
@@ -495,17 +524,19 @@ function OutstandingPanel({
 // ─────────── Step 2: build receipt ───────────
 
 function BuildStep({
-  lines, setLines, fees, onContinue,
+  lines, setLines, fees, deposits, loans, onContinue,
 }: {
   lines: LineDraft[];
   setLines: (l: LineDraft[]) => void;
   fees: FeeCatalogEntry[];
+  deposits: MemberDepositItem[];
+  loans: Loan[];
   onContinue: () => void;
 }) {
   function add(kind: ReceiptLineKind) {
-    // For a fee line, pre-pick the first catalog entry so the dropdown
-    // shows a valid selection by default (and the amount field is
-    // initialised when amount_editable=false).
+    // Pre-pick the first valid target so each row opens with a real
+    // selection — saves the cashier a click + makes the "no targets
+    // available" state obvious (the row appears with an empty select).
     if (kind === 'fee' && fees.length > 0) {
       const f = fees[0];
       setLines([...lines, {
@@ -513,6 +544,14 @@ function BuildStep({
         fee_code: f.code,
         amount: f.amount_editable ? '' : f.amount_default,
       }]);
+      return;
+    }
+    if (kind === 'savings_deposit' && deposits.length > 0) {
+      setLines([...lines, { rowKey: rowKey(), kind, target_account_id: deposits[0].account.id, amount: '' }]);
+      return;
+    }
+    if (kind === 'loan_repayment' && loans.length > 0) {
+      setLines([...lines, { rowKey: rowKey(), kind, target_account_id: loans[0].id, amount: '' }]);
       return;
     }
     setLines([...lines, { rowKey: rowKey(), kind, amount: '' }]);
@@ -563,14 +602,41 @@ function BuildStep({
                   <td className="tiny-mono">{i + 1}</td>
                   <td>{LINE_KIND_LABELS[l.kind]}</td>
                   <td>
-                    {(l.kind === 'savings_deposit' || l.kind === 'loan_repayment') && (
-                      <input
-                        className="input"
-                        style={{ height: 28, fontSize: 12 }}
-                        placeholder={l.kind === 'loan_repayment' ? 'loan id' : 'deposit account id'}
-                        value={l.target_account_id ?? ''}
-                        onChange={(e) => update(i, { target_account_id: e.target.value })}
-                      />
+                    {l.kind === 'savings_deposit' && (
+                      deposits.length > 0 ? (
+                        <select
+                          className="input"
+                          style={{ height: 28, fontSize: 12, maxWidth: 260 }}
+                          value={l.target_account_id ?? ''}
+                          onChange={(e) => update(i, { target_account_id: e.target.value })}
+                        >
+                          {deposits.map((d) => (
+                            <option key={d.account.id} value={d.account.id}>
+                              {d.product.code} · {d.account.account_no} (bal KES {d.account.current_balance})
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="muted tiny">No savings accounts for this member.</span>
+                      )
+                    )}
+                    {l.kind === 'loan_repayment' && (
+                      loans.length > 0 ? (
+                        <select
+                          className="input"
+                          style={{ height: 28, fontSize: 12, maxWidth: 260 }}
+                          value={l.target_account_id ?? ''}
+                          onChange={(e) => update(i, { target_account_id: e.target.value })}
+                        >
+                          {loans.map((ln) => (
+                            <option key={ln.id} value={ln.id}>
+                              {ln.loan_no} · {ln.status} · bal KES {ln.principal_balance}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="muted tiny">No active loans for this member.</span>
+                      )
                     )}
                     {l.kind === 'fee' && (
                       fees.length > 0 ? (

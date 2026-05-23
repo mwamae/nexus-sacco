@@ -176,6 +176,35 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        // ─── Collection Desk endpoints (savings) ──────────────────────
+        // Most specific first: GET /v1/till-sessions/current is the
+        // Desk's "do I have an open till?" probe — owned by savings,
+        // not accounting. The broader /v1/till-sessions catch-all
+        // below routes to accounting for open/close/detail.
+        '/api/v1/till-sessions/current': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/receipts': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/fees': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        // GET /v1/counterparties/{id}/outstanding is a Desk endpoint
+        // owned by savings — but the broader /v1/counterparties
+        // namespace routes to member. Regex-keyed entry (prefix '^')
+        // wins over the plain-prefix member entry below.
+        '^/api/v1/counterparties/[^/]+/outstanding': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/till-sessions': {
           target: accountingTarget,
           changeOrigin: false,

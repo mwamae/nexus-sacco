@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
@@ -175,7 +176,7 @@ func (s *ReceiptStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateReceipt
 		r.ValueDate, r.Narration, r.CashierUserID, r.TillSessionID, r.VirtualTillID,
 	).Scan(&r.ID, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
-		if isUniqueViolation(err, "receipts_channel_ref_unique") {
+		if isUniqueViolation(err, "receipts_channel_ref_unique") && in.ChannelRef != nil {
 			return nil, wrapDuplicateReceipt(ctx, tx, in.TenantID, in.Channel, *in.ChannelRef)
 		}
 		return nil, fmt.Errorf("insert receipt: %w", err)
@@ -201,12 +202,13 @@ func (s *ReceiptStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateReceipt
 }
 
 func isUniqueViolation(err error, constraint string) bool {
-	var pgErr interface {
-		SQLState() string
-		ConstraintName() string
-	}
+	// pgconn.PgError exposes ConstraintName as a struct field, not a
+	// method — so an interface assertion that requires both
+	// SQLState() and ConstraintName() as methods would always fail.
+	// Use the concrete type directly.
+	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return pgErr.SQLState() == "23505" && pgErr.ConstraintName() == constraint
+		return pgErr.SQLState() == "23505" && pgErr.ConstraintName == constraint
 	}
 	return false
 }
