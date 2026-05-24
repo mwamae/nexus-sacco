@@ -5101,6 +5101,37 @@ export async function closeFiscalYear(year: number, notes?: string): Promise<Fis
   return r.data.data;
 }
 
+// Unified Inbox (PR #6): submit a year-end close for Board
+// approval instead of executing it inline. Returns the workflow
+// instance id; second call returns status='existing' when a pending
+// proposal already exists for (tenant, year).
+export type SubmitFiscalYearCloseResponse = {
+  workflow_instance_id: string;
+  proposal_id: string;
+  status: 'created' | 'existing';
+};
+
+export async function submitFiscalYearForClose(year: number, notes?: string): Promise<SubmitFiscalYearCloseResponse> {
+  const r = await api.post(`/v1/fiscal-years/${year}/submit-for-close`, notes ? { notes } : {});
+  return r.data.data;
+}
+
+// Unified Inbox (PR #6): submit the bulk dormancy detector for
+// Board approval. The actual status changes apply only on approval
+// via the workflow callback.
+export type SubmitDormancyForApprovalResponse = {
+  workflow_instance_id: string;
+  run_id: string;
+  candidate_count: number;
+  threshold_days: number;
+  status: 'created';
+};
+
+export async function submitDormancyForApproval(): Promise<SubmitDormancyForApprovalResponse> {
+  const r = await api.post('/v1/members/dormancy/submit-for-approval');
+  return r.data.data;
+}
+
 // ─────────── Bank reconciliation ───────────
 
 export type BankAccount = {

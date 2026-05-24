@@ -6,7 +6,13 @@
 // that requires posting a manual reversal and is admin-only.
 
 import { useEffect, useState } from 'react';
-import { closeFiscalYear, listFiscalYearCloses, type FiscalYearClose } from '../../api/client';
+import {
+  closeFiscalYear,
+  getInboxStatus,
+  listFiscalYearCloses,
+  submitFiscalYearForClose,
+  type FiscalYearClose,
+} from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 
 export default function FiscalYearClosePage() {
@@ -18,6 +24,11 @@ export default function FiscalYearClosePage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  // Unified Inbox (PR #6): when on, the close is gated by Board
+  // approval — the button becomes "Submit for close approval" and
+  // the actual close fires from the workflow callback.
+  const [inboxEnabled, setInboxEnabled] = useState(false);
+  const [submittedWFID, setSubmittedWFID] = useState<string | null>(null);
 
   async function load() {
     setErr(null);
@@ -25,6 +36,9 @@ export default function FiscalYearClosePage() {
     catch (e) { setErr(asMsg(e)); }
   }
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    getInboxStatus().then((s) => setInboxEnabled(s.unified_inbox_enabled)).catch(() => {});
+  }, []);
 
   async function doClose() {
     if (!confirm(`Close fiscal year ${year}? This posts the year-end journal entry and locks every monthly period in ${year}. This action is one-shot — re-opening requires posting a manual reversal.`)) return;
@@ -34,6 +48,18 @@ export default function FiscalYearClosePage() {
       setInfo(`FY ${r.year} closed — net surplus ${r.net_surplus}, journal ${r.closing_entry_id.slice(0, 8)}…`);
       setNotes('');
       await load();
+    } catch (e) { setErr(asMsg(e)); }
+    finally { setBusy(false); }
+  }
+
+  async function doSubmitForClose() {
+    if (!confirm(`Submit fiscal year ${year} for Board approval? The close itself only fires after the Inbox approval lands.`)) return;
+    setErr(null); setInfo(null); setBusy(true);
+    try {
+      const r = await submitFiscalYearForClose(year, notes || undefined);
+      setSubmittedWFID(r.workflow_instance_id);
+      setInfo(`FY ${year} submitted for Board approval (${r.status === 'existing' ? 'existing proposal' : 'new proposal'}).`);
+      setNotes('');
     } catch (e) { setErr(asMsg(e)); }
     finally { setBusy(false); }
   }
@@ -54,7 +80,16 @@ export default function FiscalYearClosePage() {
       </div>
 
       {err && <div className="alert alert-error" style={{ marginTop: 12 }}>{err}</div>}
-      {info && <div className="alert" style={{ marginTop: 12, background: 'var(--pos-bg, #e6f5ea)', borderColor: 'var(--pos)' }}>{info}</div>}
+      {info && (
+        <div className="alert" style={{ marginTop: 12, background: 'var(--pos-bg, #e6f5ea)', borderColor: 'var(--pos)' }}>
+          {info}
+          {submittedWFID && (
+            <a className="btn btn-sm btn-accent" href={`/approvals/${submittedWFID}`} style={{ marginLeft: 8 }}>
+              Open in Inbox →
+            </a>
+          )}
+        </div>
+      )}
 
       <div className="card" style={{ marginTop: 12 }}>
         <div className="card-hd"><h3>Close a year</h3></div>
@@ -70,14 +105,25 @@ export default function FiscalYearClosePage() {
             <div className="muted tiny">Notes (optional)</div>
             <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. signed off by board on 2026-03-15" />
           </label>
-          <button
-            className="btn btn-primary"
-            disabled={busy || alreadyClosed}
-            onClick={() => void doClose()}
-            title={alreadyClosed ? 'This year is already closed' : undefined}
-          >
-            {busy ? 'Closing…' : alreadyClosed ? 'Already closed' : `Close FY ${year}`}
-          </button>
+          {inboxEnabled ? (
+            <button
+              className="btn btn-primary"
+              disabled={busy || alreadyClosed}
+              onClick={() => void doSubmitForClose()}
+              title={alreadyClosed ? 'This year is already closed' : 'Sends to Board approval; close fires on approval'}
+            >
+              {busy ? 'Submitting…' : alreadyClosed ? 'Already closed' : `Submit FY ${year} for close approval →`}
+            </button>
+          ) : (
+            <button
+              className="btn btn-primary"
+              disabled={busy || alreadyClosed}
+              onClick={() => void doClose()}
+              title={alreadyClosed ? 'This year is already closed' : undefined}
+            >
+              {busy ? 'Closing…' : alreadyClosed ? 'Already closed' : `Close FY ${year}`}
+            </button>
+          )}
         </div>
       </div>
 

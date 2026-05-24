@@ -40,6 +40,7 @@ type StatusHandler struct {
 	DB             *db.Pool
 	Members        *store.MemberStore
 	Status         *store.StatusChangeStore
+	DormancyRuns   *store.DormancyRunStore // PR #6 — bulk dormancy gate
 	Audit          *store.AuditStore
 	Storage        storage.Storage
 	MaxUpload      int64
@@ -49,6 +50,9 @@ type StatusHandler struct {
 	HTTP           *http.Client
 	DefaultDormancyDays int
 	WorkflowProcessKind string // e.g. "member_status_change"
+	// PR #6 — shared secret the workflow service includes on its
+	// callback POSTs. Empty fall-back: trust the User-Agent prefix.
+	WorkflowInternalToken string
 	Notifier       *notifier.Client
 }
 

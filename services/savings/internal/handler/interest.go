@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -69,7 +70,11 @@ func (h *InterestHandler) processKind() string {
 	if h.WorkflowProcessKind != "" {
 		return h.WorkflowProcessKind
 	}
-	return "interest_run_approval"
+	// "interest_run" matches the workflow definition seeded by
+	// services/workflow/.../0003_seed_process_kinds. Earlier code
+	// used "interest_run_approval"; tenants on that older default
+	// can keep it via the configurable WorkflowProcessKind field.
+	return "interest_run"
 }
 
 func (h *InterestHandler) http() *http.Client {
@@ -916,6 +921,11 @@ func (h *InterestHandler) createWorkflowInstance(r *http.Request, tenantID uuid.
 		},
 		"callback_url": callback,
 		"initiator_id": actorID,
+		// Unified Inbox (PR #6): one-line summary + deep-link back to
+		// the source page. Powers the Inbox card + the "open source"
+		// affordance in the detail pane.
+		"summary":    fmt.Sprintf("Interest run %s — %s · KES %s net", run.RunNo, run.FinancialYearLabel, run.TotalNetInterest.StringFixed(2)),
+		"source_url": fmt.Sprintf("/interest-runs/%s", run.ID),
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost,

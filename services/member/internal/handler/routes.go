@@ -104,6 +104,8 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:edit")).Patch("/counterparties/{id}", d.Counterparties.Patch)
 			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/preview", d.Status.DormancyPreview)
 			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/run", d.Status.DormancyRun)
+			// PR #6 — Unified Inbox CTA for bulk dormancy.
+			r.With(middleware.RequirePermission("members:edit")).Post("/members/dormancy/submit-for-approval", d.Status.SubmitDormancyForApproval)
 
 			// ─────────── Membership applications (unified pipeline) ───────────
 			r.With(middleware.RequirePermission("members:create")).Post("/applications", d.Applications.Create)
@@ -126,5 +128,10 @@ func Routes(d Deps) http.Handler {
 		// resolves proposals it knows about, and only the first time.
 		r.Post("/members/status/callback", d.Status.WorkflowCallback)
 	})
+	// PR #6 — Unified Inbox callback for the dormancy gate. Lives
+	// under /internal/v1 to match the rest of the consolidation
+	// (savings, accounting); the handler's own X-Internal-Token +
+	// User-Agent gate protects it.
+	r.Post("/internal/v1/members/dormancy/resolve", d.Status.ResolveDormancyFromWorkflow)
 	return r
 }

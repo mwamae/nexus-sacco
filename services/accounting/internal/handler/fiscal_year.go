@@ -17,6 +17,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -40,9 +41,18 @@ import (
 type FiscalYearHandler struct {
 	DB          *db.Pool
 	FY          *store.FiscalYearStore
+	Proposals   *store.FiscalYearProposalStore // PR #6 — Unified Inbox proposal rows
 	Periods     *store.PeriodStore
 	Engine      *posting.Engine
 	Logger      *slog.Logger
+
+	// PR #6 — workflow service integration. Empty means the
+	// SubmitForClose endpoint returns a 409 "workflow service not
+	// configured" and the legacy Close stays the only path.
+	WorkflowURL           string
+	AccountingSelfURL     string
+	WorkflowInternalToken string
+	HTTP                  *http.Client
 }
 
 func (h *FiscalYearHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -90,110 +100,10 @@ func (h *FiscalYearHandler) Close(w http.ResponseWriter, r *http.Request) {
 
 	var result *store.FiscalYearClose
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		alreadyClosed, err := h.FY.IsClosedTx(r.Context(), tx, year)
+		recorded, err := h.executeCloseTx(r.Context(), tx, year, fyStart, fyEnd, userID, in.Notes)
 		if err != nil {
 			return err
 		}
-		if alreadyClosed {
-			return store.ErrYearAlreadyClosed
-		}
-
-		// Open Dec period if not yet — the posting engine will refuse
-		// otherwise. The year-end close posts dated Dec 31.
-		if _, err := h.Periods.EnsureOpenForDateTx(r.Context(), tx, fyEnd); err != nil {
-			return fmt.Errorf("december period: %w", err)
-		}
-
-		// Read every income/expense account's closing balance.
-		closing, err := h.FY.PLBalancesAsOfTx(r.Context(), tx, fyEnd)
-		if err != nil {
-			return fmt.Errorf("read P&L balances: %w", err)
-		}
-		if len(closing) == 0 {
-			return httpx.ErrBadRequest("no income or expense activity in " + yearStr + " — nothing to close")
-		}
-
-		var totalIncome, totalExpense decimal.Decimal
-		var incomeAcctCount, expenseAcctCount int
-		lines := make([]posting.Line, 0, len(closing)+1)
-		for _, cl := range closing {
-			if cl.Class == "income" {
-				totalIncome = totalIncome.Add(cl.Balance)
-				incomeAcctCount++
-				// Income has a credit balance — debit it to zero.
-				lines = append(lines, posting.Line{
-					AccountCode: cl.AccountCode,
-					Debit:       cl.Balance,
-					Narration:   "Close " + cl.AccountName,
-				})
-			} else {
-				totalExpense = totalExpense.Add(cl.Balance)
-				expenseAcctCount++
-				// Expense has a debit balance — credit it to zero.
-				lines = append(lines, posting.Line{
-					AccountCode: cl.AccountCode,
-					Credit:      cl.Balance,
-					Narration:   "Close " + cl.AccountName,
-				})
-			}
-		}
-
-		netSurplus := totalIncome.Sub(totalExpense)
-		// Plug to Retained Earnings.
-		if netSurplus.IsPositive() {
-			lines = append(lines, posting.Line{
-				AccountCode: "3010",
-				Credit:      netSurplus,
-				Narration:   "FY " + yearStr + " net surplus → retained earnings",
-			})
-		} else if netSurplus.IsNegative() {
-			lines = append(lines, posting.Line{
-				AccountCode: "3010",
-				Debit:       netSurplus.Neg(),
-				Narration:   "FY " + yearStr + " net deficit ← retained earnings",
-			})
-		}
-		// netSurplus == 0 is fine — no retained earnings movement needed.
-
-		// Post the closing entry.
-		entry, err := h.Engine.PostTx(r.Context(), tx, posting.PostInput{
-			EntryDate:    fyEnd,
-			ValueDate:    fyEnd,
-			EntryType:    domain.TypeAdjustment,
-			SourceModule: "accounting.fiscal-year-close",
-			SourceRef:    yearStr,
-			Narration:    "Year-end closing entry for FY " + yearStr,
-			Lines:        lines,
-			PostedBy:     &userID,
-		})
-		if err != nil {
-			return fmt.Errorf("post closing entry: %w", err)
-		}
-
-		// Record the audit row.
-		recorded, err := h.FY.RecordCloseTx(r.Context(), tx, store.FiscalYearClose{
-			Year:            year,
-			FYStart:         fyStart,
-			FYEnd:           fyEnd,
-			ClosingEntryID:  entry.ID,
-			TotalIncome:     totalIncome,
-			TotalExpense:    totalExpense,
-			NetSurplus:      netSurplus,
-			IncomeAccounts:  incomeAcctCount,
-			ExpenseAccounts: expenseAcctCount,
-			ClosedBy:        userID,
-			Notes:           strPtrIfNotEmpty(in.Notes),
-		})
-		if err != nil {
-			return fmt.Errorf("record close: %w", err)
-		}
-
-		// Lock all 12 monthly periods of the year. Done AFTER posting so
-		// the closing entry itself wasn't blocked.
-		if err := h.FY.LockAllPeriodsInYearTx(r.Context(), tx, year, userID); err != nil {
-			return fmt.Errorf("lock periods: %w", err)
-		}
-
 		result = recorded
 		return nil
 	})
@@ -214,4 +124,85 @@ func strPtrIfNotEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// executeCloseTx is the body of the Close handler extracted so the
+// Unified Inbox resolve callback (PR #6) can fire the same logic
+// after a Board approval. Called inside a tenant-scoped tx.
+func (h *FiscalYearHandler) executeCloseTx(
+	ctx context.Context, tx pgx.Tx,
+	year int, fyStart, fyEnd time.Time,
+	userID uuid.UUID, notes string,
+) (*store.FiscalYearClose, error) {
+	yearStr := strconv.Itoa(year)
+	alreadyClosed, err := h.FY.IsClosedTx(ctx, tx, year)
+	if err != nil {
+		return nil, err
+	}
+	if alreadyClosed {
+		return nil, store.ErrYearAlreadyClosed
+	}
+	if _, err := h.Periods.EnsureOpenForDateTx(ctx, tx, fyEnd); err != nil {
+		return nil, fmt.Errorf("december period: %w", err)
+	}
+	closing, err := h.FY.PLBalancesAsOfTx(ctx, tx, fyEnd)
+	if err != nil {
+		return nil, fmt.Errorf("read P&L balances: %w", err)
+	}
+	if len(closing) == 0 {
+		return nil, httpx.ErrBadRequest("no income or expense activity in " + yearStr + " — nothing to close")
+	}
+	var totalIncome, totalExpense decimal.Decimal
+	var incomeAcctCount, expenseAcctCount int
+	lines := make([]posting.Line, 0, len(closing)+1)
+	for _, cl := range closing {
+		if cl.Class == "income" {
+			totalIncome = totalIncome.Add(cl.Balance)
+			incomeAcctCount++
+			lines = append(lines, posting.Line{AccountCode: cl.AccountCode, Debit: cl.Balance, Narration: "Close " + cl.AccountName})
+		} else {
+			totalExpense = totalExpense.Add(cl.Balance)
+			expenseAcctCount++
+			lines = append(lines, posting.Line{AccountCode: cl.AccountCode, Credit: cl.Balance, Narration: "Close " + cl.AccountName})
+		}
+	}
+	netSurplus := totalIncome.Sub(totalExpense)
+	if netSurplus.IsPositive() {
+		lines = append(lines, posting.Line{AccountCode: "3010", Credit: netSurplus, Narration: "FY " + yearStr + " net surplus → retained earnings"})
+	} else if netSurplus.IsNegative() {
+		lines = append(lines, posting.Line{AccountCode: "3010", Debit: netSurplus.Neg(), Narration: "FY " + yearStr + " net deficit ← retained earnings"})
+	}
+	entry, err := h.Engine.PostTx(ctx, tx, posting.PostInput{
+		EntryDate:    fyEnd,
+		ValueDate:    fyEnd,
+		EntryType:    domain.TypeAdjustment,
+		SourceModule: "accounting.fiscal-year-close",
+		SourceRef:    yearStr,
+		Narration:    "Year-end closing entry for FY " + yearStr,
+		Lines:        lines,
+		PostedBy:     &userID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("post closing entry: %w", err)
+	}
+	recorded, err := h.FY.RecordCloseTx(ctx, tx, store.FiscalYearClose{
+		Year:            year,
+		FYStart:         fyStart,
+		FYEnd:           fyEnd,
+		ClosingEntryID:  entry.ID,
+		TotalIncome:     totalIncome,
+		TotalExpense:    totalExpense,
+		NetSurplus:      netSurplus,
+		IncomeAccounts:  incomeAcctCount,
+		ExpenseAccounts: expenseAcctCount,
+		ClosedBy:        userID,
+		Notes:           strPtrIfNotEmpty(notes),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("record close: %w", err)
+	}
+	if err := h.FY.LockAllPeriodsInYearTx(ctx, tx, year, userID); err != nil {
+		return nil, fmt.Errorf("lock periods: %w", err)
+	}
+	return recorded, nil
 }

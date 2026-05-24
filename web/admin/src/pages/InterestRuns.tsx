@@ -11,6 +11,7 @@ import {
   computeInterestRun,
   createInterestRun,
   extractError,
+  getInboxStatus,
   getInterestRun,
   getWHTSchedule,
   listDepositProducts,
@@ -271,6 +272,9 @@ function RunDetail({ runId }: { runId: string }) {
   const [data, setData] = useState<InterestRunDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // PR #6 — when on, hide the "Approve directly" bypass and force
+  // submit-through-workflow. The submit button stays even when off.
+  const [inboxEnabled, setInboxEnabled] = useState(false);
 
   async function load() {
     setErr(null);
@@ -278,6 +282,9 @@ function RunDetail({ runId }: { runId: string }) {
     catch (e) { setErr(extractError(e)); }
   }
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [runId]);
+  useEffect(() => {
+    getInboxStatus().then((s) => setInboxEnabled(s.unified_inbox_enabled)).catch(() => {});
+  }, []);
 
   if (err) return <div className="page"><div className="alert alert-error">{err}</div></div>;
   if (!data) return <div className="page"><div className="empty">Loading…</div></div>;
@@ -349,13 +356,21 @@ function RunDetail({ runId }: { runId: string }) {
                 {busy === 'submit' ? 'Submitting…' : 'Submit for workflow approval'}
               </button>
             )}
-            {canApprove && stat === 'preview' && (
+            {/* Direct-approve bypass is hidden when the Unified Inbox is
+                on for this tenant — every decision must go through the
+                workflow (PR #6). */}
+            {!inboxEnabled && canApprove && stat === 'preview' && (
               <button className="btn btn-sm btn-accent" disabled={!!busy} onClick={() => run('approve', async () => {
                 if (!confirm('Approve this run directly (bypass workflow)?')) return;
                 await approveInterestRun(runId, 'Direct approval');
               })}>
                 {busy === 'approve' ? 'Approving…' : 'Approve directly'}
               </button>
+            )}
+            {inboxEnabled && r.workflow_instance_id && (
+              <a className="btn btn-sm btn-accent" href={`/approvals/${r.workflow_instance_id}`}>
+                Open in Inbox →
+              </a>
             )}
             {canPost && stat === 'approved' && (
               <button className="btn btn-sm btn-accent" disabled={!!busy} onClick={() => run('post', async () => {

@@ -57,6 +57,10 @@ func Routes(d Deps) http.Handler {
 	// Internal service-to-service posting. No JWT — gated by the
 	// shared X-Internal-Token header. Tenant id is passed in the body.
 	r.Post("/internal/v1/post", d.InternalPost.Post)
+	// PR #6 — workflow callback for the year-end close gate. The
+	// engine POSTs here on terminal status; the handler's own auth
+	// gate (X-Internal-Token + User-Agent fallback) protects it.
+	r.Post("/internal/v1/fiscal-year-close-proposals/resolve", d.FiscalYear.ResolveFromWorkflow)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
@@ -95,6 +99,9 @@ func Routes(d Deps) http.Handler {
 			// Fiscal year close
 			r.Get("/fiscal-years", d.FiscalYear.List)
 			r.Post("/fiscal-years/{year}/close", d.FiscalYear.Close)
+			// PR #6 — Unified Inbox submit CTA. Replaces the inline
+			// Close button when the tenant has unified_inbox_enabled.
+			r.Post("/fiscal-years/{year}/submit-for-close", d.FiscalYear.SubmitForClose)
 
 			// Bank reconciliation
 			r.Get("/bank-accounts", d.Bank.ListAccounts)

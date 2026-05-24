@@ -105,15 +105,19 @@ func main() {
 		Audit: auditStore, Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
 		Notifier: notifyClient,
 	}
+	dormancyRunStore := store.NewDormancyRunStore(pool.Pool)
 	statusH := &handler.StatusHandler{
-		DB: pool, Members: members, Status: statusStore, Audit: auditStore,
-		Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
-		WorkflowURL:         cfg.WorkflowURL,
-		MemberSelfURL:       cfg.MemberSelfURL,
-		WorkflowProcessKind: cfg.WorkflowProcessKind,
-		DefaultDormancyDays: cfg.DefaultDormancyDays,
-		HTTP:                &http.Client{Timeout: 10 * time.Second},
-		Notifier:            notifyClient,
+		DB: pool, Members: members, Status: statusStore,
+		DormancyRuns: dormancyRunStore,
+		Audit:        auditStore,
+		Storage:      stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
+		WorkflowURL:           cfg.WorkflowURL,
+		MemberSelfURL:         cfg.MemberSelfURL,
+		WorkflowProcessKind:   cfg.WorkflowProcessKind,
+		WorkflowInternalToken: cfg.WorkflowInternalToken,
+		DefaultDormancyDays:   cfg.DefaultDormancyDays,
+		HTTP:                  &http.Client{Timeout: 10 * time.Second},
+		Notifier:              notifyClient,
 	}
 	accountingClient := accounting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
 	appH := &handler.ApplicationHandler{

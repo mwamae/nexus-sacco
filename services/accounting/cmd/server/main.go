@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 	"os"
 	"os/signal"
 	"strings"
@@ -66,6 +67,7 @@ func main() {
 	journalStore := store.NewJournalStore(pool.Pool)
 	reportStore := store.NewReportStore(pool.Pool)
 	fyStore := store.NewFiscalYearStore(pool.Pool)
+	fyProposalStore := store.NewFiscalYearProposalStore(pool.Pool)
 	bankStore := store.NewBankStore(pool.Pool)
 	cashStore := store.NewCashStore(pool.Pool)
 	fixedAssetStore := store.NewFixedAssetStore(pool.Pool)
@@ -88,7 +90,12 @@ func main() {
 		},
 		Reports: &handler.ReportHandler{DB: pool, Reports: reportStore, Logger: logger},
 		FiscalYear: &handler.FiscalYearHandler{
-			DB: pool, FY: fyStore, Periods: periodStore, Engine: engine, Logger: logger,
+			DB: pool, FY: fyStore, Proposals: fyProposalStore,
+			Periods: periodStore, Engine: engine, Logger: logger,
+			WorkflowURL:           cfg.WorkflowURL,
+			AccountingSelfURL:     cfg.AccountingSelfURL,
+			WorkflowInternalToken: cfg.WorkflowInternalToken,
+			HTTP:                  &http.Client{Timeout: 10 * time.Second},
 		},
 		Bank: &handler.BankHandler{
 			DB: pool, Bank: bankStore, CoA: coaStore, Engine: engine, Logger: logger,

@@ -11,6 +11,7 @@ import {
   createDividendRun,
   extractError,
   getDividendRun,
+  getInboxStatus,
   listDividendRuns,
   lockDividendRun,
   postDividendRun,
@@ -242,12 +243,17 @@ function RunDetail({ runId }: { runId: string }) {
   const [data, setData] = useState<DividendRunDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // PR #6 — when on, hide the "Approve directly" bypass.
+  const [inboxEnabled, setInboxEnabled] = useState(false);
 
   async function load() {
     setErr(null);
     try { setData(await getDividendRun(runId)); }
     catch (e) { setErr(extractError(e)); }
   }
+  useEffect(() => {
+    getInboxStatus().then((s) => setInboxEnabled(s.unified_inbox_enabled)).catch(() => {});
+  }, []);
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [runId]);
 
   if (err) return <div className="page"><div className="alert alert-error">{err}</div></div>;
@@ -319,13 +325,19 @@ function RunDetail({ runId }: { runId: string }) {
                 {busy === 'submit' ? 'Submitting…' : 'Submit for workflow approval'}
               </button>
             )}
-            {canApprove && stat === 'preview' && (
+            {/* Direct-approve bypass hidden when Unified Inbox on. */}
+            {!inboxEnabled && canApprove && stat === 'preview' && (
               <button className="btn btn-sm btn-accent" disabled={!!busy} onClick={() => run('approve', async () => {
                 if (!confirm('Approve this dividend run directly (bypass workflow)?')) return;
                 await approveDividendRun(runId, 'Direct approval');
               })}>
                 {busy === 'approve' ? 'Approving…' : 'Approve directly'}
               </button>
+            )}
+            {inboxEnabled && r.workflow_instance_id && (
+              <a className="btn btn-sm btn-accent" href={`/approvals/${r.workflow_instance_id}`}>
+                Open in Inbox →
+              </a>
             )}
             {canApprove && stat === 'approved' && (
               <button className="btn btn-sm btn-accent" disabled={!!busy} onClick={() => run('post', async () => {

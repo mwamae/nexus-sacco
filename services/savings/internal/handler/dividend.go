@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -60,7 +61,11 @@ func (h *DividendHandler) processKind() string {
 	if h.WorkflowProcessKind != "" {
 		return h.WorkflowProcessKind
 	}
-	return "dividend_run_approval"
+	// Matches the workflow definition seeded by PR #2's
+	// 0003_seed_process_kinds. Earlier code defaulted to
+	// "dividend_run_approval"; tenants on that override can keep it
+	// via the configurable WorkflowProcessKind field.
+	return "dividend_run"
 }
 
 func (h *DividendHandler) http() *http.Client {
@@ -758,6 +763,10 @@ func (h *DividendHandler) createWorkflowInstance(r *http.Request, _ uuid.UUID, r
 		},
 		"callback_url": callback,
 		"initiator_id": actorID,
+		// Unified Inbox (PR #6): one-line summary + deep-link back to
+		// the source page.
+		"summary":    fmt.Sprintf("Dividend run %s — %s · KES %s net", run.RunNo, run.FinancialYearLabel, run.TotalNetDividend.StringFixed(2)),
+		"source_url": fmt.Sprintf("/dividend-runs/%s", run.ID),
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost,

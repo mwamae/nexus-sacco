@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import {
-  getMemberStatusSummary, listUsers, runDormancy,
+  getInboxStatus, getMemberStatusSummary, listUsers, runDormancy, submitDormancyForApproval,
   type ApiUserWithRoles, type MemberStatus, type MemberStatusSummary,
   extractError,
 } from '../api/client';
@@ -16,8 +16,14 @@ export default function TenantDashboard() {
   const [usersErr, setUsersErr] = useState<string | null>(null);
   const [statusSummary, setStatusSummary] = useState<MemberStatusSummary | null>(null);
   const [dormancyBusy, setDormancyBusy] = useState(false);
+  // PR #6 — gates the dormancy widget's run-vs-submit branch.
+  const [inboxEnabled, setInboxEnabled] = useState(false);
   const canViewMembers = hasPermission('members:view');
   const canEditMembers = hasPermission('members:edit');
+
+  useEffect(() => {
+    getInboxStatus().then((s) => setInboxEnabled(s.unified_inbox_enabled)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!hasPermission('users:view')) return;
@@ -44,6 +50,24 @@ export default function TenantDashboard() {
   }, [canViewMembers]);
 
   async function onRunDormancy() {
+    // Unified Inbox (PR #6): when on, the detector is gated by
+    // Board approval. We submit instead of running directly and
+    // surface the Inbox deep-link in the confirmation.
+    if (inboxEnabled) {
+      if (!confirm('Submit the dormancy detector for Board approval? Status changes apply only after the Inbox approval lands.')) return;
+      setDormancyBusy(true);
+      try {
+        const r = await submitDormancyForApproval();
+        if (confirm(`Submitted ${r.candidate_count} candidate${r.candidate_count === 1 ? '' : 's'} for approval (threshold ${r.threshold_days} days).\n\nOpen the workflow instance in the Inbox now?`)) {
+          window.location.href = `/approvals/${r.workflow_instance_id}`;
+        }
+      } catch (e) {
+        alert(extractError(e));
+      } finally {
+        setDormancyBusy(false);
+      }
+      return;
+    }
     if (!confirm('Run the dormancy detector now? Active members above the inactivity threshold will be moved to dormant.')) return;
     setDormancyBusy(true);
     try {
@@ -94,6 +118,7 @@ export default function TenantDashboard() {
           canRun={canEditMembers}
           busy={dormancyBusy}
           onRun={onRunDormancy}
+          runLabel={inboxEnabled ? 'Submit dormancy for approval →' : 'Run dormancy detector'}
         />
       )}
 
@@ -241,11 +266,14 @@ const STATUS_ORDER: MemberStatus[] = [
   'blacklisted', 'exited', 'deceased', 'rejected',
 ];
 
-export function MemberStatusPanel({ summary, canRun, busy, onRun }: {
+export function MemberStatusPanel({ summary, canRun, busy, onRun, runLabel }: {
   summary: MemberStatusSummary;
   canRun: boolean;
   busy: boolean;
   onRun: () => void | Promise<void>;
+  // PR #6 — caller picks the run-vs-submit label depending on
+  // whether the Unified Inbox is on for the tenant.
+  runLabel?: string;
 }) {
   // total_on_register comes from member_status_counts(tenant_id), the
   // single source of truth shared with the Members page KPI strip.
@@ -262,7 +290,7 @@ export function MemberStatusPanel({ summary, canRun, busy, onRun }: {
             <a className="btn btn-sm" href="/members">Open register →</a>
             {canRun && (
               <button className="btn btn-sm" disabled={busy} onClick={() => void onRun()}>
-                {busy ? 'Running dormancy…' : 'Run dormancy detector'}
+                {busy ? 'Running dormancy…' : (runLabel ?? 'Run dormancy detector')}
               </button>
             )}
           </div>

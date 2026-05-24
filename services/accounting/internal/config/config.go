@@ -27,6 +27,16 @@ type Config struct {
 	// scaffolding for it without requiring callers yet.
 	InternalToken string
 
+	// PR #6 — workflow integration for the year-end close gate.
+	// WorkflowURL is the workflow service base (used to POST a new
+	// instance); AccountingSelfURL is what we register as the
+	// callback_url on the wf_instance so the engine can call back
+	// here; WorkflowInternalToken is the shared secret the engine
+	// includes in its callback header.
+	WorkflowURL           string
+	AccountingSelfURL     string
+	WorkflowInternalToken string
+
 	ReadHeaderTimeout time.Duration
 }
 
@@ -39,8 +49,11 @@ func Load() (*Config, error) {
 		AppDomain:         getEnv("APP_DOMAIN", "nexussacco.local"),
 		JWTSecret:         []byte(must("JWT_SECRET")),
 		JWTIssuer:         getEnv("JWT_ISSUER", "nexus-identity"),
-		InternalToken:     getEnv("ACCOUNTING_INTERNAL_TOKEN", ""),
-		ReadHeaderTimeout: 5 * time.Second,
+		InternalToken:         getEnv("ACCOUNTING_INTERNAL_TOKEN", ""),
+		WorkflowURL:           getEnv("WORKFLOW_SERVICE_URL", "http://localhost:8083"),
+		AccountingSelfURL:     getEnv("ACCOUNTING_SELF_URL", "http://localhost:8086"),
+		WorkflowInternalToken: getEnv("WORKFLOW_INTERNAL_TOKEN", ""),
+		ReadHeaderTimeout:     5 * time.Second,
 	}
 	if len(cfg.JWTSecret) < 32 {
 		return nil, errors.New("JWT_SECRET must be at least 32 bytes")

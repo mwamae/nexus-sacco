@@ -32,10 +32,13 @@ type Config struct {
 	ReadHeaderTimeout time.Duration
 
 	// Workflow integration — used for sensitive status changes.
-	WorkflowURL         string
-	MemberSelfURL       string
-	WorkflowProcessKind string
-	DefaultDormancyDays int
+	WorkflowURL           string
+	MemberSelfURL         string
+	WorkflowProcessKind   string
+	// PR #6 — shared secret the workflow service includes in its
+	// callback header for the bulk dormancy resolve endpoint.
+	WorkflowInternalToken string
+	DefaultDormancyDays   int
 
 	// Notification integration (Stage 8) — central notification service.
 	NotificationURL           string
@@ -76,6 +79,7 @@ func Load() (*Config, error) {
 	cfg.WorkflowURL = getEnv("WORKFLOW_SERVICE_URL", "http://localhost:8083")
 	cfg.MemberSelfURL = getEnv("MEMBER_SELF_URL", "http://localhost:8082")
 	cfg.WorkflowProcessKind = getEnv("MEMBER_STATUS_WORKFLOW_KIND", "member_status_change")
+	cfg.WorkflowInternalToken = getEnv("WORKFLOW_INTERNAL_TOKEN", "")
 	if v := os.Getenv("MEMBER_DEFAULT_DORMANCY_DAYS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.DefaultDormancyDays = n
