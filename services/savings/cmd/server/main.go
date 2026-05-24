@@ -150,15 +150,19 @@ func main() {
 		Logger:   logger,
 	}
 	loanAppH := &handler.LoanApplicationHandler{
-		DB:           pool,
-		Tenants:      tenants,
-		Members:      members,
-		Counterparties: counterparties,
-		LoanProducts: loanProductStore,
-		Applications: loanAppStore,
-		Guarantees:   loanGuarStore,
-		Notifier:     notifyClient,
-		Logger:       logger,
+		DB:                    pool,
+		Tenants:               tenants,
+		Members:               members,
+		Counterparties:        counterparties,
+		LoanProducts:          loanProductStore,
+		Applications:          loanAppStore,
+		Guarantees:            loanGuarStore,
+		Notifier:              notifyClient,
+		Logger:                logger,
+		WorkflowURL:           cfg.WorkflowURL,
+		WorkflowInternalToken: cfg.WorkflowInternalToken,
+		SavingsSelfURL:        cfg.SavingsURL,
+		HTTP:                  &http.Client{Timeout: 10 * time.Second},
 	}
 	loanH := &handler.LoanHandler{
 		DB:           pool,

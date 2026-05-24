@@ -88,6 +88,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	depositStore := store.NewDepositStore(pool.Pool)
 	loanStore := store.NewLoanStore(pool.Pool)
 	loanReportsStore := store.NewLoanReportsStore(pool.Pool)
+	loanAppStore := store.NewLoanApplicationStore(pool.Pool)
 	shareStore := store.NewShareStore(pool.Pool)
 	approvalsStore := store.NewApprovalsStore(pool.Pool)
 	receiptStore := store.NewReceiptStore(pool.Pool)
@@ -113,6 +114,14 @@ func newTestEnv(t *testing.T) *testEnv {
 		DB: pool, Tenants: tenants, Counterparties: counterparties,
 		Deposits: depositStore, Loans: loanStore,
 		Approvals: approvalsStore, Posting: postingClient,
+	}
+	// Loan-application handler for PR #4 tests. WorkflowURL is left
+	// empty so submit-for-decision would error here; tests that need
+	// the submit path stand up their own stub. Resolve only needs the
+	// store + the User-Agent fallback.
+	loanAppH := &LoanApplicationHandler{
+		DB: pool, Tenants: tenants, Counterparties: counterparties,
+		Applications: loanAppStore,
 	}
 	approvalsH := &PendingApprovalsHandler{
 		DB: pool, Approvals: approvalsStore,
@@ -154,10 +163,11 @@ func newTestEnv(t *testing.T) *testEnv {
 		r.Post("/pending-approvals/{approval_id}/approve", approvalsH.Approve)
 	})
 	// Internal service-to-service surface (the Unified Inbox
-	// workflow-callback target). Mounted alongside /v1 so PR #3
+	// workflow-callback target). Mounted alongside /v1 so PR #3 + #4
 	// tests can drive it directly.
 	r.Route("/internal/v1", func(r chi.Router) {
 		r.Post("/pending-approvals/{approval_id}/resolve", approvalsH.ResolveFromWorkflow)
+		r.Post("/loan-applications/{app_id}/resolve", loanAppH.ResolveFromWorkflow)
 	})
 
 	srv := httptest.NewServer(r)

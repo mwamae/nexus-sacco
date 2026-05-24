@@ -52,6 +52,7 @@ func Routes(d Deps) http.Handler {
 	// be firewalled at the ingress.
 	r.Route("/internal/v1", func(r chi.Router) {
 		r.Post("/pending-approvals/{approval_id}/resolve", d.Approvals.ResolveFromWorkflow)
+		r.Post("/loan-applications/{app_id}/resolve", d.LoanApp.ResolveFromWorkflow)
 	})
 
 	r.Route("/v1", func(r chi.Router) {
@@ -164,6 +165,12 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("loans:assess")).Post("/loan-applications/{app_id}/score", d.LoanApp.ReScore)
 			r.With(middleware.RequirePermission("loans:approve")).Post("/loan-applications/{app_id}/approve", d.LoanApp.Approve)
 			r.With(middleware.RequirePermission("loans:approve")).Post("/loan-applications/{app_id}/decline", d.LoanApp.Decline)
+			// Unified Inbox CTA (PR #4) — replaces the inline approve/
+			// decline buttons when the tenant has unified_inbox_enabled.
+			// loans:assess covers both credit officers and reviewers
+			// (who are the ones initiating the workflow); the actual
+			// decision is gated per-level inside the workflow service.
+			r.With(middleware.RequirePermission("loans:assess")).Post("/loan-applications/{app_id}/submit-for-decision", d.LoanApp.SubmitForDecision)
 
 			// Guarantor consent
 			r.With(middleware.RequirePermission("loans:guarantee")).Post("/loan-guarantees/{guarantee_id}/respond", d.LoanApp.GuaranteeRespond)

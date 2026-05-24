@@ -41,6 +41,16 @@ type LoanApplicationHandler struct {
 	Guarantees     *store.LoanGuaranteeStore
 	Notifier       *notifier.Client
 	Logger         *slog.Logger
+
+	// Unified Inbox integration (PR #4). When set, the
+	// submit-for-decision endpoint forwards into this workflow
+	// service; the resolve endpoint authenticates against this
+	// token. Empty in dev — same fallback pattern as the savings
+	// pending-approvals resolve callback (PR #3).
+	WorkflowURL           string
+	WorkflowInternalToken string
+	SavingsSelfURL        string
+	HTTP                  *http.Client
 }
 
 // ─────────── Create ───────────

@@ -3305,6 +3305,19 @@ export async function declineLoanApplication(id: string, category: string, reaso
   return r.data.data;
 }
 
+// Unified Inbox (PR #4): submit a loan application for the credit
+// decision workflow instead of acting inline. Idempotent — second
+// call returns the existing instance.
+export type SubmitForDecisionResponse = {
+  workflow_instance_id: string;
+  status: 'created' | 'existing';
+};
+
+export async function submitLoanApplicationForDecision(id: string): Promise<SubmitForDecisionResponse> {
+  const r = await api.post(`/v1/loan-applications/${id}/submit-for-decision`);
+  return r.data.data;
+}
+
 export async function respondToGuarantee(guaranteeId: string, accept: boolean, declineReason?: string): Promise<LoanGuarantee> {
   const r = await api.post(`/v1/loan-guarantees/${guaranteeId}/respond`, { accept, decline_reason: declineReason });
   return r.data.data;

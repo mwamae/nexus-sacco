@@ -14,6 +14,7 @@ import {
   disburseLoan,
   extractError,
   getDepositAccountsByMember,
+  getInboxStatus,
   getLoan,
   getLoanApplication,
   getLoanArrearsSummary,
@@ -34,6 +35,7 @@ import {
   sendLoanOffer,
   settleLoan,
   settlementDiscountLoan,
+  submitLoanApplicationForDecision,
   type LoanRestructuring,
   type ApiMember,
   type ArrearsSummary,
@@ -495,6 +497,10 @@ function AppDetail({ appId }: { appId: string }) {
   const [d, setD] = useState<LoanAppDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Unified Inbox (PR #4): null while loading; true|false once known.
+  // When true, inline Approve/Decline buttons hide and a "Send for
+  // credit decision" CTA replaces them.
+  const [inboxEnabled, setInboxEnabled] = useState<boolean | null>(null);
   const canApprove = hasPermission('loans:approve');
   const canOffer = hasPermission('loans:offer');
   const canAssess = hasPermission('loans:assess');
@@ -505,6 +511,33 @@ function AppDetail({ appId }: { appId: string }) {
     catch (e) { setErr(extractError(e)); }
   }
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [appId]);
+  useEffect(() => {
+    getInboxStatus()
+      .then((s) => setInboxEnabled(s.unified_inbox_enabled))
+      .catch(() => setInboxEnabled(false)); // graceful fallback — flag off
+  }, []);
+
+  // Auto-create a workflow_instance the first time the page loads
+  // for an in-flight application after the tenant has flipped the
+  // flag on. Without this, in-flight rows would stay invisible to
+  // the Inbox until someone clicked "Send for credit decision"
+  // manually.
+  useEffect(() => {
+    if (!d || !inboxEnabled) return;
+    const a = d.application;
+    if (a.workflow_instance_id) return;
+    const eligible: LoanAppStatus[] = ['pending_approval', 'pending_scoring', 'pending_validation', 'returned_for_info'];
+    if (!eligible.includes(a.status)) return;
+    // Fire-and-forget; on success we re-fetch the detail so the
+    // status block renders.
+    submitLoanApplicationForDecision(appId)
+      .then(() => load())
+      .catch((e) => console.warn('auto-create workflow instance failed', extractError(e)));
+    // We deliberately only depend on inboxEnabled + the app id —
+    // not on `d` itself — so the auto-create runs exactly once per
+    // page mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inboxEnabled, appId, d?.application.workflow_instance_id]);
 
   if (err) return <div className="page"><div className="alert alert-error">{err}</div></div>;
   if (!d) return <div className="page"><div className="empty">Loading…</div></div>;
@@ -672,9 +705,22 @@ function AppDetail({ appId }: { appId: string }) {
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-hd"><h3>Approval / disbursement actions</h3></div>
         <div className="card-body">
+          {inboxEnabled && a.workflow_instance_id && (
+            <div className="alert alert-info" style={{ marginBottom: 10 }}>
+              <strong>Credit decision in progress.</strong> This application is being decided in the unified Approvals Inbox.
+              <a className="btn btn-sm" href={`/approvals/${a.workflow_instance_id}`} style={{ marginLeft: 8 }}>Open in Inbox →</a>
+            </div>
+          )}
+          {inboxEnabled && !a.workflow_instance_id && canAssess && ['pending_approval', 'pending_scoring', 'pending_validation', 'returned_for_info'].includes(a.status) && (
+            <button className="btn btn-sm btn-accent" disabled={!!busy} onClick={() => run('submit-decision', async () => {
+              const r = await submitLoanApplicationForDecision(appId);
+              if (r.workflow_instance_id) window.location.href = `/approvals/${r.workflow_instance_id}`;
+            })}>Send for credit decision →</button>
+          )}
           <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
             {canAssess && <button className="btn btn-sm" disabled={!!busy} onClick={() => run('rescore', () => rescoreLoanApplication(appId))}>Re-score</button>}
-            {canApprove && a.status === 'pending_approval' && (
+            {/* Inline Approve/Decline only when the Unified Inbox is OFF for this tenant. */}
+            {!inboxEnabled && canApprove && a.status === 'pending_approval' && (
               <>
                 <button className="btn btn-sm btn-accent" disabled={!!busy} onClick={() => run('approve', () => approveLoanApplication(appId, {}))}>Approve as applied</button>
                 <button className="btn btn-sm" style={{ color: 'var(--neg)' }} disabled={!!busy} onClick={() => run('decline', async () => {
