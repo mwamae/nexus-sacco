@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -228,7 +229,13 @@ func (h *StatusHandler) Change(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sensitive := domain.IsSensitive(m.Status, target) && !(req.SkipWorkflow && isAdmin)
+	// Unified Inbox (PR #5): when the tenant has opted in, EVERY
+	// transition routes through the workflow engine — not just the
+	// per-transition Sensitive ones. domain.IsSensitive still wins
+	// for tenants without the flag; the platform-admin SkipWorkflow
+	// override remains for dev / break-glass recovery.
+	forceWorkflow := h.tenantHasUnifiedInbox(r.Context(), tenantID)
+	sensitive := (forceWorkflow || domain.IsSensitive(m.Status, target)) && !(req.SkipWorkflow && isAdmin)
 
 	if !sensitive {
 		// Direct apply.
@@ -664,15 +671,24 @@ func (h *StatusHandler) createWorkflowInstance(r *http.Request, tenantID uuid.UU
 	if h.WorkflowURL == "" {
 		return uuid.Nil, httpx.ErrBadRequest("workflow service not configured (WORKFLOW_SERVICE_URL)")
 	}
-	if h.WorkflowProcessKind == "" {
-		h.WorkflowProcessKind = "member_status_change"
+	// Unified Inbox (PR #5): pick the seeded process_kind that matches
+	// the target status so each variant routes to the right level
+	// structure (e.g. blacklist + close hit the Board, reactivate is
+	// Reviewer-only). h.WorkflowProcessKind acts as a fallback for
+	// tenants that haven't been migrated to the per-kind definitions.
+	processKind := processKindForTarget(target)
+	if processKind == "" {
+		processKind = h.WorkflowProcessKind
+	}
+	if processKind == "" {
+		processKind = "member_status_change"
 	}
 	callback := strings.TrimRight(h.MemberSelfURL, "/") + "/v1/members/status/callback"
 	if h.MemberSelfURL == "" {
 		callback = "" // engine will skip delivery and operator must resolve manually
 	}
 	payload := map[string]any{
-		"process_kind": h.WorkflowProcessKind,
+		"process_kind": processKind,
 		"subject_kind": "member",
 		"subject_id":   m.ID.String(),
 		"context": map[string]any{
@@ -686,6 +702,11 @@ func (h *StatusHandler) createWorkflowInstance(r *http.Request, tenantID uuid.UU
 		},
 		"callback_url": callback,
 		"initiator_id": actorID,
+		// Unified Inbox additions — drive the per-row UX on
+		// /approvals (one-line summary + deep-link back to the
+		// member detail page).
+		"summary":    fmt.Sprintf("Member %s %s → %s", m.MemberNo, m.Status, target),
+		"source_url": fmt.Sprintf("/members/%s", m.ID),
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
@@ -857,4 +878,47 @@ func isMissingShareAccountsTable(err error) bool {
 		return pgErr.Code == "42P01"
 	}
 	return false
+}
+
+// ─────────── Unified Inbox helpers (PR #5) ───────────
+
+// processKindForTarget picks the seeded workflow definition kind
+// that matches a target status. Each variant has its own level
+// structure (Reviewer-only for reactivate, Board for blacklist/
+// close, etc.) so picking the right one matters for who can act.
+// Returns "" for transitions the Unified Inbox doesn't have a
+// distinct kind for; caller falls back to the legacy umbrella
+// "member_status_change".
+func processKindForTarget(target domain.MemberStatus) string {
+	switch target {
+	case domain.StatusBlacklisted:
+		return "member_blacklist"
+	case domain.StatusExited, domain.StatusDeceased:
+		return "member_close"
+	case domain.StatusActive:
+		// active is only a valid target from suspended/dormant —
+		// see domain.AllowedTransitionsFrom — so reaching this
+		// branch always means a reactivation.
+		return "member_reactivate"
+	case domain.StatusSuspended:
+		return "member_status_change"
+	}
+	return ""
+}
+
+// tenantHasUnifiedInbox queries the per-tenant flag. False on lookup
+// failure so the page stays usable when the column hasn't been added
+// (services that haven't run identity migration 0020 yet). Cheap
+// single-row read; called at most once per Change request.
+func (h *StatusHandler) tenantHasUnifiedInbox(ctx context.Context, tenantID uuid.UUID) bool {
+	var enabled bool
+	err := h.DB.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT COALESCE(unified_inbox_enabled, false) FROM tenants WHERE id = $1`,
+			tenantID).Scan(&enabled)
+	})
+	if err != nil {
+		return false
+	}
+	return enabled
 }

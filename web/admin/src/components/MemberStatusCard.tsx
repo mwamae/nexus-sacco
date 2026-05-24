@@ -235,6 +235,11 @@ function ChangeModal({
   const [supportingDoc, setSupportingDoc] = useState<{ storage_path: string; mime: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Unified Inbox (PR #5): when the backend returns mode=proposed,
+  // we surface a deep-link to the created workflow instance in
+  // place of the legacy alert(). Cleared as soon as the user
+  // closes the modal or submits another change.
+  const [proposedWFID, setProposedWFID] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -270,10 +275,14 @@ function ChangeModal({
         supporting_doc_mime: supportingDoc?.mime,
       });
       if (r.mode === 'proposed') {
-        alert(
-          'Change submitted for approval.\n' +
-          'Open the Approvals inbox to track / act on the workflow instance.'
-        );
+        // Show inline banner with deep-link instead of a modal alert
+        // — the alert was easy to dismiss without anyone noticing the
+        // change went to approvals, leading to "where did my change
+        // go?" support questions.
+        setProposedWFID(r.workflow_instance_id ?? null);
+        await onApplied(); // refresh the underlying page state…
+        return;            // …but don't auto-close the modal — leave
+                           //    the banner up until the user dismisses.
       }
       await onApplied();
     } catch (e) {
@@ -304,7 +313,19 @@ function ChangeModal({
           </div>
         </div>
         <div className="card-body">
-          {transition.Sensitive && (
+          {proposedWFID && (
+            <div className="alert alert-info">
+              <strong>Submitted for approval.</strong> The change is now in the unified Approvals Inbox awaiting decision.
+              <a
+                href={`/approvals/${proposedWFID}`}
+                className="btn btn-sm btn-accent"
+                style={{ marginLeft: 8 }}
+              >
+                Open in Inbox →
+              </a>
+            </div>
+          )}
+          {transition.Sensitive && !proposedWFID && (
             <div className="alert alert-warn">
               <strong>Sensitive transition.</strong> This routes through the approval workflow engine — the member's status stays unchanged until every required level approves.
             </div>
