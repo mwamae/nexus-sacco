@@ -48,6 +48,7 @@ import (
 type ApplicationHandler struct {
 	DB             *db.Pool
 	Applications   *store.ApplicationStore
+	FeePayments    *store.ApplicationFeePaymentStore
 	Members        *store.MemberStore
 	Orgs           *store.OrgMemberStore   // required for institutional materialisation
 	Counterparties *store.CounterpartyStore // Phase A dual-target mirror
@@ -461,12 +462,45 @@ func (h *ApplicationHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Post the registration fee to the GL (best-effort, idempotent).
+	//
+	// Late-fee-capture interaction: when the officer recorded one or
+	// more fee_payments after submission, each carried its own GL
+	// post. Skip the at-materialise post when the SUM of those
+	// already-posted rows covers fee_amount_paid; otherwise post the
+	// unposted residual only.
 	if updated.FeeRequired && updated.FeeAmountPaid.GreaterThan(decimal.Zero) {
-		if jeID := h.postFeeToGL(r, tenantID, updated, actorID, false); jeID != uuid.Nil {
+		residual := updated.FeeAmountPaid
+		if h.FeePayments != nil {
 			_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
-				return h.Applications.SetFeeJournalEntryTx(r.Context(), tx, updated.ID, jeID)
+				posted, perr := h.FeePayments.SumPostedTx(r.Context(), tx, updated.ID)
+				if perr == nil {
+					residual = updated.FeeAmountPaid.Sub(posted)
+				}
+				return nil
 			})
-			updated.FeeJournalEntryID = &jeID
+		}
+		if residual.LessThanOrEqual(decimal.Zero) {
+			if h.Logger != nil {
+				h.Logger.Info("materialise: skipping fee GL post — already covered by late-capture payments",
+					"application", updated.ID, "fee_amount_paid", updated.FeeAmountPaid.StringFixed(2))
+			}
+		} else {
+			// Post only the unposted residual. We temporarily swap
+			// FeeAmountPaid → residual on a shallow copy so the
+			// existing postFeeToGL builds a JE for the right amount
+			// without growing a new helper signature.
+			shim := *updated
+			shim.FeeAmountPaid = residual
+			if jeID := h.postFeeToGL(r, tenantID, &shim, actorID, false); jeID != uuid.Nil {
+				_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+					return h.Applications.SetFeeJournalEntryTx(r.Context(), tx, updated.ID, jeID)
+				})
+				updated.FeeJournalEntryID = &jeID
+				if h.Logger != nil {
+					h.Logger.Info("materialise: posted residual fee to GL",
+						"application", updated.ID, "residual", residual.StringFixed(2))
+				}
+			}
 		}
 	}
 

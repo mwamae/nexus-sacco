@@ -879,6 +879,63 @@ export async function postRegistrationFeeRefund(id: string): Promise<MembershipA
   return r.data.data;
 }
 
+// ─────────── Application fee payments (late capture) ───────────
+//
+// Fee payments may be recorded after submission. Each successful
+// record() inserts an application_fee_payments row + posts a GL
+// journal entry; the parent application's denormalised fee_* fields
+// are recomputed from those rows. The response carries both the
+// fresh payment + the recomputed application so the UI doesn't need
+// to re-fetch.
+
+export type ApplicationFeePayment = {
+  id: string;
+  tenant_id: string;
+  application_id: string;
+  amount: string;
+  channel: 'cash' | 'mpesa' | 'airtel_money' | 'bank_transfer' | 'cheque' | 'standing_order';
+  channel_reference?: string | null;
+  value_date: string;
+  proof_doc_path?: string | null;
+  note?: string | null;
+  journal_entry_id?: string | null;
+  posted_at?: string | null;
+  voided_at?: string | null;
+  void_reason?: string | null;
+  voided_by?: string | null;
+  created_at: string;
+  created_by: string;
+};
+
+export async function listApplicationFeePayments(applicationId: string): Promise<ApplicationFeePayment[]> {
+  const r = await api.get(`/v1/applications/${applicationId}/fee-payments`);
+  return r.data.data.payments ?? [];
+}
+
+export async function recordApplicationFeePayment(
+  applicationId: string,
+  body: {
+    amount: string;
+    channel: ApplicationFeePayment['channel'];
+    channel_reference?: string | null;
+    value_date: string;
+    proof_doc_path?: string | null;
+    note?: string | null;
+  },
+): Promise<{ payment: ApplicationFeePayment; application: MembershipApplication }> {
+  const r = await api.post(`/v1/applications/${applicationId}/fee-payments`, body);
+  return r.data.data;
+}
+
+export async function voidApplicationFeePayment(
+  applicationId: string,
+  paymentId: string,
+  reason: string,
+): Promise<{ payment: ApplicationFeePayment; application: MembershipApplication }> {
+  const r = await api.post(`/v1/applications/${applicationId}/fee-payments/${paymentId}/void`, { reason });
+  return r.data.data;
+}
+
 export async function respondToChecklist(applicationID: string, input: {
   code: string;
   response: 'confirmed' | 'flagged' | 'n/a';

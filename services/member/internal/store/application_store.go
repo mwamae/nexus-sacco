@@ -566,7 +566,7 @@ func (s *ApplicationStore) MaterialiseIndividualMemberTx(
 		RETURNING id
 	`,
 		memberNo, app.ApplicantName,
-		idDocKind, idDocNumber, payload.KRAPIN, gender, payload.DateOfBirth,
+		idDocKind, idDocNumber, payload.KRAPIN, gender, payload.DateOfBirth.Time,
 		valOrNil(app.PrimaryPhone), valOrNil(app.PrimaryEmail),
 		payload.County, payload.SubCounty, payload.PhysicalAddress,
 		payload.Occupation, payload.Employer,
@@ -913,7 +913,7 @@ func (s *ApplicationStore) activateInstitutionalTx(
 		RETURNING id
 	`,
 		orgNo, app.ApplicantName, payload.TradingName, orgKind,
-		valOrEmptyStr(payload.RegistrationNumber), payload.DateOfRegistration, payload.DateOfRegistration,
+		valOrEmptyStr(payload.RegistrationNumber), payload.DateOfRegistration.Time, payload.DateOfRegistration.Time,
 		valOrEmptyStr(payload.Industry), valOrEmptyStr(payload.NatureOfBusiness),
 		valOrEmptyStr(payload.PhysicalAddress), valOrEmptyStr(payload.PostalAddress),
 		valOrEmptyStr(payload.County), valOrEmptyStr(payload.SubCounty), valOrEmptyStr(payload.Ward),

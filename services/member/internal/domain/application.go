@@ -5,11 +5,54 @@ package domain
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
+
+// DateOnly is a JSON-friendly date wrapper used on form-bound payloads
+// where the browser's <input type="date"> ships "YYYY-MM-DD". Go's
+// default time.Time JSON decoder only accepts RFC3339 (with a "T")
+// and otherwise errors with cannot parse "" as "T" — that crash was
+// the institution onboarding bug the wrapper exists to fix.
+//
+// Unmarshalling is forgiving: YYYY-MM-DD first (the common case),
+// RFC3339 second (back-compat with any caller already shipping a
+// full timestamp). Marshalling always emits YYYY-MM-DD so the wire
+// shape is stable regardless of which form the client sent.
+//
+// Use the Time field (a *time.Time) when handing the value off to
+// pgx or anywhere else expecting the standard library shape.
+type DateOnly struct {
+	Time *time.Time
+}
+
+func (d *DateOnly) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(strings.TrimSpace(string(b)), `"`)
+	if s == "" || s == "null" {
+		d.Time = nil
+		return nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		d.Time = &t
+		return nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		d.Time = &t
+		return nil
+	}
+	return fmt.Errorf("date must be YYYY-MM-DD, got %q", s)
+}
+
+func (d DateOnly) MarshalJSON() ([]byte, error) {
+	if d.Time == nil {
+		return []byte("null"), nil
+	}
+	return []byte(`"` + d.Time.Format("2006-01-02") + `"`), nil
+}
 
 type ApplicationKind string
 
@@ -90,7 +133,7 @@ var ErrIllegalAppTransition = errors.New("application: illegal status transition
 // at the application stage; consumers branch on `Kind`.
 type ApplicantPayload struct {
 	// Individual-specific
-	DateOfBirth        *time.Time `json:"date_of_birth,omitempty"`
+	DateOfBirth        DateOnly `json:"date_of_birth,omitempty"`
 	Gender             string     `json:"gender,omitempty"`
 	Nationality        string     `json:"nationality,omitempty"`
 	IDDocKind          string     `json:"id_doc_kind,omitempty"` // national_id | passport
@@ -108,7 +151,7 @@ type ApplicantPayload struct {
 	RegisteredName     string `json:"registered_name,omitempty"`
 	TradingName        string `json:"trading_name,omitempty"`
 	RegistrationNumber string `json:"registration_number,omitempty"`
-	DateOfRegistration *time.Time `json:"date_of_registration,omitempty"`
+	DateOfRegistration DateOnly `json:"date_of_registration,omitempty"`
 	Industry           string `json:"industry,omitempty"`
 	NatureOfBusiness   string `json:"nature_of_business,omitempty"`
 	BoardResolutionRef string `json:"board_resolution_ref,omitempty"`

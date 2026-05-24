@@ -16,7 +16,9 @@ import {
   declineApplication,
   getApplication,
   getInboxStatus,
+  listApplicationFeePayments,
   postRegistrationFeeRefund,
+  recordApplicationFeePayment,
   respondToChecklist,
   resubmitApplication,
   returnForCorrection,
@@ -24,8 +26,10 @@ import {
   startReview,
   submitApplicationForOnboardingDecision,
   submitForApproval,
+  voidApplicationFeePayment,
   withdrawApplication,
   type ApplicationDetail,
+  type ApplicationFeePayment,
   type ApplicationStatus,
   type ChecklistItem,
 } from '../../api/client';
@@ -59,7 +63,7 @@ const RESPONSE_COLOR: Record<string, string> = {
 };
 
 export default function ApplicationDetailPage() {
-  const { tenant } = useAuth();
+  const { tenant, hasPermission } = useAuth();
   const id = window.location.pathname.split('/').pop() ?? '';
   const [data, setData] = useState<ApplicationDetail | null>(null);
   const [busy, setBusy] = useState(false);
@@ -75,6 +79,18 @@ export default function ApplicationDetailPage() {
   const [declineReason, setDeclineReason] = useState('');
   const [approveConditions, setApproveConditions] = useState('');
   const [withdrawReason, setWithdrawReason] = useState('');
+
+  // Late-fee-capture state. Fee payments may be captured after
+  // submission. Each payment creates an application_fee_payments row
+  // + a GL journal entry. Aggregate fee fields on the application
+  // are computed from those rows.
+  const [payments, setPayments] = useState<ApplicationFeePayment[]>([]);
+  const [feeFormOpen, setFeeFormOpen] = useState(false);
+  const [feeAmount, setFeeAmount] = useState('');
+  const [feeChannel, setFeeChannel] = useState<ApplicationFeePayment['channel']>('cash');
+  const [feeRef, setFeeRef] = useState('');
+  const [feeValueDate, setFeeValueDate] = useState(new Date().toISOString().slice(0, 10));
+  const [feeNote, setFeeNote] = useState('');
   // Header now reads "Applications → APP-2026-000004 · Smoke Test Member Two"
   // once the application loads, instead of the registry fallback "Application".
   usePageCrumb(data?.application
@@ -91,7 +107,11 @@ export default function ApplicationDetailPage() {
     try { setData(await getApplication(id)); }
     catch (e) { setErr(asMsg(e)); }
   }
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
+  async function loadPayments() {
+    try { setPayments(await listApplicationFeePayments(id)); }
+    catch { /* payments are auxiliary; don't block the page on a fetch fail */ }
+  }
+  useEffect(() => { void load(); void loadPayments(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
   useEffect(() => {
     getInboxStatus().then((s) => setInboxEnabled(s.unified_inbox_enabled)).catch(() => setInboxEnabled(false));
   }, []);
@@ -204,25 +224,182 @@ export default function ApplicationDetailPage() {
             </div>
           </div>
 
-          {a.fee_required && (
-            <div className="card">
-              <div className="card-hd">
-                <h3>Registration fee</h3>
-                <span className="card-sub" style={{
-                  color: a.fee_status === 'paid' ? 'var(--pos)' : a.fee_status === 'shortfall' ? '#c97a00' : 'var(--neg)',
-                  fontWeight: 600,
-                }}>{a.fee_status}</span>
+          {/* Registration fee card.
+              Fee payments may be captured after submission. Each
+              payment creates an application_fee_payments row + a GL
+              journal entry. The fee_* fields shown here are
+              aggregates of those rows, recomputed inside the same tx
+              as every insert / void. */}
+          {a.fee_required && (() => {
+            const due = parseFloat(a.fee_amount_due) || 0;
+            const paid = parseFloat(a.fee_amount_paid) || 0;
+            const outstanding = Math.max(0, due - paid);
+            const canRecord =
+              hasPermission('members:edit') &&
+              a.fee_status !== 'paid' &&
+              a.fee_status !== 'not_required' &&
+              !['withdrawn', 'declined'].includes(a.status);
+            const canVoid = hasPermission('members:approve');
+            const livePayments = payments.filter((p) => !p.voided_at);
+            const showHistory = payments.length > 0;
+            return (
+              <div className="card">
+                <div className="card-hd">
+                  <h3>Registration fee</h3>
+                  <span className="card-sub" style={{
+                    color: a.fee_status === 'paid' ? 'var(--pos)' : a.fee_status === 'shortfall' ? '#c97a00' : 'var(--neg)',
+                    fontWeight: 600,
+                  }}>
+                    {a.fee_status} · Due KES {fmt(due)} · Paid KES {fmt(paid)}
+                    {outstanding > 0 ? ` · Outstanding KES ${fmt(outstanding)}` : ''}
+                  </span>
+                  {canRecord && !feeFormOpen && (
+                    <div className="card-hd-actions">
+                      <button className="btn btn-sm btn-accent" onClick={() => {
+                        setFeeAmount(outstanding > 0 ? String(outstanding) : '');
+                        setFeeChannel('cash');
+                        setFeeRef('');
+                        setFeeValueDate(new Date().toISOString().slice(0, 10));
+                        setFeeNote('');
+                        setFeeFormOpen(true);
+                      }}>
+                        Record payment
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Inline record-payment form (mirrors the Resubmit /
+                    Withdraw inline pattern; no popup modal). */}
+                {feeFormOpen && (
+                  <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, borderBottom: '1px solid var(--border)' }}>
+                    <label>
+                      <div className="muted tiny">Amount (KES)</div>
+                      <input type="number" step="0.01" min={0} value={feeAmount} onChange={(e) => setFeeAmount(e.target.value)} />
+                    </label>
+                    <label>
+                      <div className="muted tiny">Channel</div>
+                      <select value={feeChannel} onChange={(e) => setFeeChannel(e.target.value as ApplicationFeePayment['channel'])}>
+                        <option value="cash">Cash</option>
+                        <option value="mpesa">M-Pesa</option>
+                        <option value="airtel_money">Airtel Money</option>
+                        <option value="bank_transfer">Bank transfer</option>
+                        <option value="cheque">Cheque</option>
+                        <option value="standing_order">Standing order</option>
+                      </select>
+                    </label>
+                    <label>
+                      <div className="muted tiny">
+                        Reference {feeChannel !== 'cash' && <span style={{ color: 'var(--neg)' }}>· required</span>}
+                      </div>
+                      <input value={feeRef} onChange={(e) => setFeeRef(e.target.value)} placeholder={feeChannel === 'cash' ? 'optional' : 'M-Pesa code / cheque no / slip ref'} />
+                    </label>
+                    <label>
+                      <div className="muted tiny">Value date</div>
+                      <input type="date" value={feeValueDate} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setFeeValueDate(e.target.value)} />
+                    </label>
+                    <label style={{ gridColumn: 'span 2' }}>
+                      <div className="muted tiny">Note (optional · add OVERPAY to override the 150% guard)</div>
+                      <input value={feeNote} onChange={(e) => setFeeNote(e.target.value)} />
+                    </label>
+                    <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button className="btn" disabled={busy} onClick={() => setFeeFormOpen(false)}>Cancel</button>
+                      <button
+                        className="btn btn-primary"
+                        disabled={
+                          busy ||
+                          !feeAmount.trim() ||
+                          parseFloat(feeAmount) <= 0 ||
+                          (feeChannel !== 'cash' && !feeRef.trim()) ||
+                          !feeValueDate
+                        }
+                        onClick={() => void action(async () => {
+                          await recordApplicationFeePayment(id, {
+                            amount: feeAmount.trim(),
+                            channel: feeChannel,
+                            channel_reference: feeRef.trim() || null,
+                            value_date: feeValueDate,
+                            note: feeNote.trim() || null,
+                          });
+                          setFeeFormOpen(false);
+                          await loadPayments();
+                        }, 'Fee payment recorded')}
+                      >
+                        Record payment
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Payment history. Voided rows surfaced inline so
+                    the audit trail is visible without a separate
+                    view. */}
+                {showHistory && (
+                  <div className="card-body flush">
+                    <table className="tbl">
+                      <thead>
+                        <tr>
+                          <th>When</th>
+                          <th>Channel</th>
+                          <th>Reference</th>
+                          <th style={{ textAlign: 'right' }}>Amount</th>
+                          <th>Status</th>
+                          <th style={{ width: 1 }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {payments.map((p) => (
+                          <tr key={p.id} style={p.voided_at ? { opacity: 0.55 } : undefined}>
+                            <td className="tiny-mono">{(p.posted_at ?? p.created_at).slice(0, 10)}</td>
+                            <td className="tiny">{p.channel}</td>
+                            <td className="tiny-mono">{p.channel_reference ?? '—'}</td>
+                            <td className="mono num" style={{ textAlign: 'right' }}>{fmt(parseFloat(p.amount))}</td>
+                            <td>
+                              {p.voided_at
+                                ? <span style={{ color: 'var(--neg)' }}>voided</span>
+                                : p.journal_entry_id
+                                  ? <span style={{ color: 'var(--pos)' }}>posted</span>
+                                  : <span className="muted">pending</span>}
+                              {p.void_reason && <div className="muted tiny">{p.void_reason}</div>}
+                            </td>
+                            <td>
+                              {canVoid && !p.voided_at && (
+                                <button
+                                  className="btn btn-sm"
+                                  disabled={busy}
+                                  onClick={() => void (async () => {
+                                    const reason = prompt('Reason for voiding this payment:', '');
+                                    if (!reason || !reason.trim()) return;
+                                    await action(async () => {
+                                      await voidApplicationFeePayment(id, p.id, reason.trim());
+                                      await loadPayments();
+                                    }, 'Payment voided');
+                                  })()}
+                                >
+                                  Void
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {livePayments.length === 0 && payments.length > 0 && (
+                      <div className="muted tiny" style={{ padding: 8 }}>
+                        All payments voided — fee is back to {a.fee_status}.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {a.fee_shortfall_note && !showHistory && (
+                  <div className="card-body">
+                    <Field label="Shortfall note" value={a.fee_shortfall_note} />
+                  </div>
+                )}
               </div>
-              <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
-                <Field label="Due" value={a.fee_amount_due} mono />
-                <Field label="Paid" value={a.fee_amount_paid} mono />
-                <Field label="Channel" value={a.fee_payment_channel ?? '—'} />
-                <Field label="Reference" value={a.fee_payment_reference ?? '—'} mono />
-                <Field label="Date" value={a.fee_payment_date?.slice(0, 10) ?? '—'} mono />
-                {a.fee_shortfall_note && <Field label="Shortfall note" value={a.fee_shortfall_note} />}
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Reviewer checklist */}
           <div className="card">
@@ -461,4 +638,12 @@ function asMsg(e: unknown): string {
     if (r?.data?.error?.message) return r.data.error.message;
   }
   return e instanceof Error ? e.message : 'request failed';
+}
+
+// fmt — locale-aware 2dp formatter for the registration-fee card +
+// payment-history table. Decimals come off the wire as strings; the
+// caller parses to number before passing in.
+function fmt(n: number): string {
+  if (!isFinite(n)) return '—';
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }

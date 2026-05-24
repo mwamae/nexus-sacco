@@ -87,6 +87,7 @@ func main() {
 	contacts := store.NewOrgContactStore(pool.Pool)
 	statusStore := store.NewStatusChangeStore(pool.Pool)
 	applicationStore := store.NewApplicationStore(pool.Pool)
+	feePaymentStore := store.NewApplicationFeePaymentStore(pool.Pool)
 	counterpartyStore := store.NewCounterpartyStore(pool.Pool)
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
@@ -121,7 +122,7 @@ func main() {
 	}
 	accountingClient := accounting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
 	appH := &handler.ApplicationHandler{
-		DB: pool, Applications: applicationStore, Members: members,
+		DB: pool, Applications: applicationStore, FeePayments: feePaymentStore, Members: members,
 		Orgs:           orgs,                // institutional materialisation
 		Counterparties: counterpartyStore,
 		Accounting: accountingClient, Notifier: notifyClient,

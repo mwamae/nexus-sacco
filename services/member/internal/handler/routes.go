@@ -128,6 +128,17 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/withdraw", d.Applications.Withdraw)
 			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/checklist", d.Applications.RespondChecklist)
 			r.With(middleware.RequirePermission("members:approve")).Post("/applications/{id}/post-refund", d.Applications.PostRefund)
+
+			// Late-fee capture (post-submission). Each successful POST
+			// inserts an application_fee_payments row + posts a GL
+			// journal entry; the parent application's denormalised
+			// fee_* fields are recomputed from those rows.
+			r.With(middleware.RequirePermission("members:view")).
+				Get("/applications/{id}/fee-payments", d.Applications.ListFeePayments)
+			r.With(middleware.RequirePermission("members:edit")).
+				Post("/applications/{id}/fee-payments", d.Applications.RecordFeePayment)
+			r.With(middleware.RequirePermission("members:approve")).
+				Post("/applications/{id}/fee-payments/{paymentId}/void", d.Applications.VoidFeePayment)
 		})
 
 		// Workflow callback — public-ish (no auth) but constrained: only
