@@ -34,6 +34,7 @@ const productCols = `
 	withdrawal_window_start_month, withdrawal_window_end_month,
 	maintenance_fee, maintenance_fee_frequency,
 	early_withdrawal_penalty_pct, below_min_balance_fee, dormancy_fee_monthly,
+	segment, required_monthly_amount, required_day_of_month,
 	created_at, updated_at, created_by
 `
 
@@ -51,6 +52,7 @@ func scanProduct(row pgx.Row) (*domain.DepositProduct, error) {
 		&p.WithdrawalWindowStartMonth, &p.WithdrawalWindowEndMonth,
 		&p.MaintenanceFee, &p.MaintenanceFeeFrequency,
 		&p.EarlyWithdrawalPenaltyPct, &p.BelowMinBalanceFee, &p.DormancyFeeMonthly,
+		&p.Segment, &p.RequiredMonthlyAmount, &p.RequiredDayOfMonth,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy,
 	)
 	if err != nil {
@@ -74,6 +76,7 @@ func (s *DepositProductStore) CreateTx(ctx context.Context, tx pgx.Tx, p *domain
 			withdrawal_window_start_month, withdrawal_window_end_month,
 			maintenance_fee, maintenance_fee_frequency,
 			early_withdrawal_penalty_pct, below_min_balance_fee, dormancy_fee_monthly,
+			segment, required_monthly_amount, required_day_of_month,
 			created_by
 		) VALUES (
 			current_tenant_id(), $1, $2, $3, $4, $5,
@@ -87,7 +90,8 @@ func (s *DepositProductStore) CreateTx(ctx context.Context, tx pgx.Tx, p *domain
 			$22, $23,
 			$24, $25,
 			$26, $27, $28,
-			$29
+			$29, $30, $31,
+			$32
 		)
 		RETURNING `+productCols,
 		p.Code, p.Name, p.ProductType, p.Description, p.IsActive,
@@ -101,6 +105,7 @@ func (s *DepositProductStore) CreateTx(ctx context.Context, tx pgx.Tx, p *domain
 		p.WithdrawalWindowStartMonth, p.WithdrawalWindowEndMonth,
 		p.MaintenanceFee, p.MaintenanceFeeFrequency,
 		p.EarlyWithdrawalPenaltyPct, p.BelowMinBalanceFee, p.DormancyFeeMonthly,
+		p.Segment, p.RequiredMonthlyAmount, p.RequiredDayOfMonth,
 		p.CreatedBy,
 	)
 	return scanProduct(row)
@@ -119,7 +124,8 @@ func (s *DepositProductStore) UpdateTx(ctx context.Context, tx pgx.Tx, p *domain
 			eligibility = $19, requires_approval_to_open = $20,
 			withdrawal_window_start_month = $21, withdrawal_window_end_month = $22,
 			maintenance_fee = $23, maintenance_fee_frequency = $24,
-			early_withdrawal_penalty_pct = $25, below_min_balance_fee = $26, dormancy_fee_monthly = $27
+			early_withdrawal_penalty_pct = $25, below_min_balance_fee = $26, dormancy_fee_monthly = $27,
+			required_monthly_amount = $28, required_day_of_month = $29
 		WHERE id = $1
 		RETURNING `+productCols,
 		p.ID, p.Name, p.Description, p.IsActive,
@@ -133,6 +139,7 @@ func (s *DepositProductStore) UpdateTx(ctx context.Context, tx pgx.Tx, p *domain
 		p.WithdrawalWindowStartMonth, p.WithdrawalWindowEndMonth,
 		p.MaintenanceFee, p.MaintenanceFeeFrequency,
 		p.EarlyWithdrawalPenaltyPct, p.BelowMinBalanceFee, p.DormancyFeeMonthly,
+		p.RequiredMonthlyAmount, p.RequiredDayOfMonth,
 	)
 	prod, err := scanProduct(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -159,13 +166,36 @@ func (s *DepositProductStore) GetByCodeTx(ctx context.Context, tx pgx.Tx, code s
 	return p, err
 }
 
-func (s *DepositProductStore) ListTx(ctx context.Context, tx pgx.Tx, includeInactive bool) ([]domain.DepositProduct, error) {
+// ProductListFilter narrows the product list. Zero value lists every
+// active product. Segment is optional; nil = no filter, *bosa / *fosa
+// = only that side. The handler exposes this as ?segment=bosa|fosa on
+// /v1/deposit-products.
+type ProductListFilter struct {
+	IncludeInactive bool
+	Segment         *domain.DepositSegment
+}
+
+func (s *DepositProductStore) ListTx(ctx context.Context, tx pgx.Tx, f ProductListFilter) ([]domain.DepositProduct, error) {
 	q := `SELECT ` + productCols + ` FROM deposit_products`
-	if !includeInactive {
-		q += ` WHERE is_active = true`
+	var (
+		args  []any
+		where []string
+	)
+	if !f.IncludeInactive {
+		where = append(where, `is_active = true`)
 	}
-	q += ` ORDER BY product_type, name`
-	rows, err := tx.Query(ctx, q)
+	if f.Segment != nil {
+		args = append(args, *f.Segment)
+		where = append(where, fmt.Sprintf(`segment = $%d`, len(args)))
+	}
+	if len(where) > 0 {
+		q += ` WHERE ` + where[0]
+		for _, w := range where[1:] {
+			q += ` AND ` + w
+		}
+	}
+	q += ` ORDER BY segment, product_type, name`
+	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

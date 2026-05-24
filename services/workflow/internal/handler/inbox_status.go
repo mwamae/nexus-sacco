@@ -5,7 +5,14 @@
 //
 // Read-only; no body. Returns:
 //
-//   { "unified_inbox_enabled": true|false }
+//   { "unified_inbox_enabled": true|false, "bosa_fosa_enabled": true|false }
+//
+// The bosa_fosa_enabled flag was bolted on rather than given its own
+// endpoint to avoid an extra round-trip on app boot — the frontend
+// already fetches inbox status on cold start, and adding more
+// per-flag endpoints would multiply that cost. Reads from the
+// matching boolean columns on `tenants` (identity migrations 0020
+// and 0021).
 
 package handler
 
@@ -25,19 +32,22 @@ type InboxStatusHandler struct {
 
 type inboxStatusResponse struct {
 	UnifiedInboxEnabled bool `json:"unified_inbox_enabled"`
+	BOSAFOSAEnabled     bool `json:"bosa_fosa_enabled"`
 }
 
 func (h *InboxStatusHandler) Get(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := middleware.TenantIDFrom(r)
-	var enabled bool
+	var resp inboxStatusResponse
 	err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		return tx.QueryRow(r.Context(),
-			`SELECT COALESCE(unified_inbox_enabled, false) FROM tenants WHERE id = $1`,
-			tenantID).Scan(&enabled)
+			`SELECT COALESCE(unified_inbox_enabled, false),
+			        COALESCE(bosa_fosa_enabled, false)
+			   FROM tenants WHERE id = $1`,
+			tenantID).Scan(&resp.UnifiedInboxEnabled, &resp.BOSAFOSAEnabled)
 	})
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
 	}
-	httpx.OK(w, inboxStatusResponse{UnifiedInboxEnabled: enabled})
+	httpx.OK(w, resp)
 }

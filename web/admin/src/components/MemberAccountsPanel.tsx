@@ -157,7 +157,7 @@ export function MemberAccountsPanel({ counterpartyId, currency }: { counterparty
     const [sv, d, p] = await Promise.all([
       getShareAccountByMember(counterpartyId).catch(() => null),
       getDepositAccountsByMember(counterpartyId),
-      listDepositProducts(false),
+      listDepositProducts(),
     ]);
     return { shares: sv, deposits: d, products: p };
   }, [counterpartyId, reloadNonce]);

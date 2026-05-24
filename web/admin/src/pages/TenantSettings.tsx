@@ -563,7 +563,7 @@ function MembershipTab({ membership, currency, canEdit, onSaved }: {
   useEffect(() => {
     void (async () => {
       try {
-        const ps = await listDepositProducts(false);
+        const ps = await listDepositProducts();
         setProducts(ps.map((p) => ({ id: p.id, name: p.name, code: p.code })));
       } catch { /* products are optional for the form */ }
     })();

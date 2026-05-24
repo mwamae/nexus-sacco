@@ -29,6 +29,7 @@ type Deps struct {
 	Approvals   *PendingApprovalsHandler
 	Collection  *CollectionDeskHandler
 	VirtualTill *VirtualTillHandler
+	BOSAExit    *BOSAExitHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -129,6 +130,15 @@ func Routes(d Deps) http.Handler {
 				r.With(middleware.RequirePermission("deposits:reverse")).Post("/reverse", d.Deposit.Reverse)
 				r.With(middleware.RequirePermission("savings:approve")).Post("/adjust", d.Deposit.Adjust)
 			})
+
+			// ─────────── BOSA exit ───────────
+			// BOSA accounts can't drain via /withdraw (which 403s
+			// with BOSA_WITHDRAW_FORBIDDEN). Officers route the
+			// member's refund through this endpoint; the request
+			// queues a Board-level approval (kind member_bosa_exit)
+			// and the executor lands in a later PR.
+			r.With(middleware.RequirePermission("savings:approve")).
+				Post("/bosa/exit/{account_id}", d.BOSAExit.RequestExit)
 
 			// ─────────── Interest engine ───────────
 			r.With(middleware.RequirePermission("interest:view")).Get("/interest-runs", d.Interest.ListRuns)

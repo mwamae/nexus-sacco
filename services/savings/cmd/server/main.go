@@ -344,6 +344,7 @@ func main() {
 		Approvals:    approvalsH,
 		Collection:   collectionDeskH,
 		VirtualTill:  &handler.VirtualTillHandler{DB: pool, Tills: virtualTillStore},
+		BOSAExit:     &handler.BOSAExitHandler{DB: pool, Deposit: depositH, Approvals: approvalsStore},
 		TenantStore:  tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,

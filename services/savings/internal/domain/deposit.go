@@ -24,19 +24,47 @@ import (
 type DepositProductType string
 
 const (
-	ProductOrdinary  DepositProductType = "ordinary"
-	ProductFixed     DepositProductType = "fixed"
-	ProductJunior    DepositProductType = "junior"
-	ProductHoliday   DepositProductType = "holiday"
-	ProductGoal      DepositProductType = "goal"
-	ProductEmergency DepositProductType = "emergency"
-	ProductGroup     DepositProductType = "group"
+	ProductOrdinary      DepositProductType = "ordinary"
+	ProductFixed         DepositProductType = "fixed"
+	ProductJunior        DepositProductType = "junior"
+	ProductHoliday       DepositProductType = "holiday"
+	ProductGoal          DepositProductType = "goal"
+	ProductEmergency     DepositProductType = "emergency"
+	ProductGroup         DepositProductType = "group"
+	ProductMemberDeposit DepositProductType = "member_deposit"
 )
 
 func (t DepositProductType) Valid() bool {
 	switch t {
 	case ProductOrdinary, ProductFixed, ProductJunior, ProductHoliday,
-		ProductGoal, ProductEmergency, ProductGroup:
+		ProductGoal, ProductEmergency, ProductGroup, ProductMemberDeposit:
+		return true
+	}
+	return false
+}
+
+// DepositSegment splits products into the two regulatory buckets that
+// SACCO supervision (SASRA) cares about:
+//
+//	BOSA — non-withdrawable member deposit bond. Secures loans, only
+//	       refundable on exit. Drives the loan-multiplier ceiling.
+//	FOSA — withdrawable savings. Anything an officer can pay out from
+//	       the teller window: ordinary, fixed (term), holiday, goal,
+//	       emergency, junior, group.
+//
+// The split is per-product, not per-account: a product is one or the
+// other for its whole life. Existing 7 product types map to FOSA;
+// only `member_deposit` is BOSA.
+type DepositSegment string
+
+const (
+	SegmentBOSA DepositSegment = "bosa"
+	SegmentFOSA DepositSegment = "fosa"
+)
+
+func (s DepositSegment) Valid() bool {
+	switch s {
+	case SegmentBOSA, SegmentFOSA:
 		return true
 	}
 	return false
@@ -169,9 +197,32 @@ type DepositProduct struct {
 	EarlyWithdrawalPenaltyPct   decimal.Decimal    `json:"early_withdrawal_penalty_pct"`
 	BelowMinBalanceFee          decimal.Decimal    `json:"below_min_balance_fee"`
 	DormancyFeeMonthly          decimal.Decimal    `json:"dormancy_fee_monthly"`
+	// BOSA / FOSA segmentation. Segment is required (NOT NULL in the
+	// schema); RequiredMonthlyAmount + RequiredDayOfMonth are the
+	// recurring-contribution schedule, only meaningful for BOSA.
+	Segment                     DepositSegment     `json:"segment"`
+	RequiredMonthlyAmount       decimal.Decimal    `json:"required_monthly_amount"`
+	RequiredDayOfMonth          *int               `json:"required_day_of_month,omitempty"`
 	CreatedAt                   time.Time          `json:"created_at"`
 	UpdatedAt                   time.Time          `json:"updated_at"`
 	CreatedBy                   *uuid.UUID         `json:"created_by,omitempty"`
+}
+
+// ValidateBOSAConstraints enforces the regulatory invariants for BOSA
+// products: no partial withdrawals, no notice period. FOSA products
+// pass through unchanged. Called from the product create/update
+// handler so a misconfigured BOSA never reaches the database.
+func (p *DepositProduct) ValidateBOSAConstraints() error {
+	if p.Segment != SegmentBOSA {
+		return nil
+	}
+	if p.PartialWithdrawalAllowed {
+		return errors.New("BOSA products cannot allow partial withdrawals")
+	}
+	if p.NoticePeriodDays != 0 {
+		return errors.New("BOSA products cannot have a notice period")
+	}
+	return nil
 }
 
 type DepositAccount struct {
@@ -252,6 +303,11 @@ var (
 	ErrDuplicateTransaction       = errors.New("a transaction with the same channel reference and amount was posted recently — possible duplicate")
 	ErrCannotReverseReversal      = errors.New("a reversal transaction cannot itself be reversed")
 	ErrAlreadyReversed            = errors.New("this transaction has already been reversed")
+	// BOSA accounts cannot be drained via the normal Withdraw handler.
+	// Officers route through the /v1/bosa/exit endpoint, which queues
+	// a Board-level approval (kind = member_bosa_exit). The wire-level
+	// error code is BOSA_WITHDRAW_FORBIDDEN.
+	ErrBOSAWithdrawForbidden     = errors.New("BOSA accounts can only be refunded via the member-exit workflow")
 )
 
 // ─────────── Rule evaluation ───────────

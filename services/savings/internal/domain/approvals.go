@@ -35,6 +35,13 @@ const (
 	ApprovalKindLoanReschedule         ApprovalKind = "loan_reschedule"
 	ApprovalKindLoanMoratorium         ApprovalKind = "loan_moratorium"
 	ApprovalKindLoanSettlementDiscount ApprovalKind = "loan_settlement_discount"
+	// BOSA exit (member refund). Withdrawals are forbidden on BOSA
+	// accounts via the normal /withdraw handler; officers route the
+	// refund through /v1/bosa/exit, which queues an approval of this
+	// kind. The executor is intentionally not wired in PR 1 —
+	// approval just sits pending until a later PR ships the exit
+	// ledger posting.
+	ApprovalKindBOSAExit ApprovalKind = "member_bosa_exit"
 )
 
 func (k ApprovalKind) Valid() bool {
@@ -43,7 +50,7 @@ func (k ApprovalKind) Valid() bool {
 		ApprovalKindSharePurchase, ApprovalKindShareTransfer, ApprovalKindShareBonus, ApprovalKindShareLien,
 		ApprovalKindLoanDisbursement, ApprovalKindLoanRepayment, ApprovalKindLoanSettle, ApprovalKindLoanReverse,
 		ApprovalKindLoanWriteoff, ApprovalKindLoanReschedule, ApprovalKindLoanMoratorium,
-		ApprovalKindLoanSettlementDiscount:
+		ApprovalKindLoanSettlementDiscount, ApprovalKindBOSAExit:
 		return true
 	}
 	return false

@@ -176,7 +176,7 @@ function NewRunModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   const [products, setProducts] = useState<DepositProduct[]>([]);
   const [pErr, setPErr] = useState<string | null>(null);
   useEffect(() => {
-    listDepositProducts(false).then((all) => setProducts(all.filter((p) => p.interest_eligible))).catch((e) => setPErr(extractError(e)));
+    listDepositProducts().then((all) => setProducts(all.filter((p) => p.interest_eligible))).catch((e) => setPErr(extractError(e)));
   }, []);
 
   const today = new Date().toISOString().slice(0, 10);

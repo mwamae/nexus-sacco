@@ -2411,7 +2411,14 @@ function axiosErrStatus(e: unknown): number | undefined {
 
 export type DepositProductType =
   | 'ordinary' | 'fixed' | 'junior' | 'holiday'
-  | 'goal' | 'emergency' | 'group';
+  | 'goal' | 'emergency' | 'group' | 'member_deposit';
+
+// BOSA = non-withdrawable member-deposit bond (secures loans,
+// redeemable on exit). FOSA = withdrawable savings of any product
+// type. The two regulatory buckets SASRA cares about; surfaced
+// across DepositProducts, Member 360, Collection Desk and the
+// SASRA return once the BOSA_FOSA tenant flag is on.
+export type DepositSegment = 'bosa' | 'fosa';
 
 export type DepositEligibility =
   | 'individuals' | 'groups' | 'minors' | 'all';
@@ -2466,6 +2473,14 @@ export type DepositProduct = {
   below_min_balance_fee: string;
   dormancy_fee_monthly: string;
   interest_eligible: boolean;
+  // BOSA / FOSA. Required by the backend (NOT NULL); old clients
+  // that omit it on create get the inferred default — member_deposit
+  // → bosa, anything else → fosa. Immutable post-create.
+  segment: DepositSegment;
+  // Recurring contribution schedule. Only meaningful for BOSA;
+  // FOSA products leave both at the defaults (0 / undefined).
+  required_monthly_amount: string;
+  required_day_of_month?: number;
   created_at: string;
   updated_at: string;
 };
@@ -2568,8 +2583,14 @@ export type DepositStatement = {
 
 // ─────────── Product CRUD ───────────
 
-export async function listDepositProducts(includeInactive = false): Promise<DepositProduct[]> {
-  const r = await api.get('/v1/deposit-products' + (includeInactive ? '?include_inactive=1' : ''));
+// BOSA / FOSA filter is optional — omit to list everything. The
+// backend rejects unknown segment values with a typed error, so a
+// typo doesn't silently return the world.
+export async function listDepositProducts(opts: { includeInactive?: boolean; segment?: DepositSegment } = {}): Promise<DepositProduct[]> {
+  const qs = new URLSearchParams();
+  if (opts.includeInactive) qs.set('include_inactive', '1');
+  if (opts.segment) qs.set('segment', opts.segment);
+  const r = await api.get('/v1/deposit-products' + (qs.toString() ? '?' + qs.toString() : ''));
   return r.data.data ?? [];
 }
 
@@ -4052,8 +4073,14 @@ export type PendingApproval = {
 // frontend whether to render the /cash-approvals deprecation banner
 // for the current tenant.
 
+// Despite the legacy name, the endpoint now returns every
+// tenant-level boolean toggle the frontend reads on cold start —
+// the spec calls these "feature flags". Adding a per-flag endpoint
+// per toggle would multiply round-trips, so new flags hang off this
+// same response.
 export type InboxStatus = {
   unified_inbox_enabled: boolean;
+  bosa_fosa_enabled: boolean;
 };
 
 export async function getInboxStatus(): Promise<InboxStatus> {

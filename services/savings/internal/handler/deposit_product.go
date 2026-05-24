@@ -29,6 +29,9 @@ type productReq struct {
 	Code                        string                       `json:"code"`
 	Name                        string                       `json:"name"`
 	ProductType                 domain.DepositProductType    `json:"product_type"`
+	Segment                     domain.DepositSegment        `json:"segment"`
+	RequiredMonthlyAmount       decimal.Decimal              `json:"required_monthly_amount"`
+	RequiredDayOfMonth          *int                         `json:"required_day_of_month"`
 	Description                 string                       `json:"description"`
 	IsActive                    *bool                        `json:"is_active"`
 	MinOpeningBalance           decimal.Decimal              `json:"min_opening_balance"`
@@ -68,6 +71,12 @@ func (in *productReq) fill(p *domain.DepositProduct) error {
 			return errors.New("invalid product_type")
 		}
 		p.ProductType = in.ProductType
+	}
+	if in.Segment != "" {
+		if !in.Segment.Valid() {
+			return errors.New("invalid segment")
+		}
+		p.Segment = in.Segment
 	}
 	if in.Eligibility != "" {
 		if !in.Eligibility.Valid() {
@@ -114,6 +123,8 @@ func (in *productReq) fill(p *domain.DepositProduct) error {
 	p.EarlyWithdrawalPenaltyPct = in.EarlyWithdrawalPenaltyPct
 	p.BelowMinBalanceFee = in.BelowMinBalanceFee
 	p.DormancyFeeMonthly = in.DormancyFeeMonthly
+	p.RequiredMonthlyAmount = in.RequiredMonthlyAmount
+	p.RequiredDayOfMonth = in.RequiredDayOfMonth
 	return nil
 }
 
@@ -136,6 +147,17 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if in.MaintenanceFeeFrequency == "" {
 		in.MaintenanceFeeFrequency = domain.FeeNone
 	}
+	// Segment defaulting: clients that don't send `segment` get the
+	// safe inference — member_deposit → BOSA, everything else → FOSA.
+	// Matches the migration's backfill, so callers from the older API
+	// surface keep working.
+	if in.Segment == "" {
+		if in.ProductType == domain.ProductMemberDeposit {
+			in.Segment = domain.SegmentBOSA
+		} else {
+			in.Segment = domain.SegmentFOSA
+		}
+	}
 	userID, _ := middleware.UserIDFrom(r)
 	tid, _ := middleware.TenantIDFrom(r)
 	// Defaults match the schema's column defaults so omitting a flag
@@ -146,6 +168,10 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 		CreatedBy:                &userID,
 	}
 	if err := in.fill(p); err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest(err.Error()))
+		return
+	}
+	if err := p.ValidateBOSAConstraints(); err != nil {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest(err.Error()))
 		return
 	}
@@ -189,7 +215,15 @@ func (h *ProductHandler) Update(w http.ResponseWriter, r *http.Request) {
 		in.Code = ""
 		// ProductType is immutable post-create.
 		in.ProductType = ""
+		// Segment is immutable post-create — switching a FOSA product
+		// to BOSA mid-life would orphan member balances on the wrong
+		// regulatory bucket. Tenants who want to switch must create a
+		// new product and migrate accounts explicitly.
+		in.Segment = ""
 		if err := in.fill(existing); err != nil {
+			return httpx.ErrBadRequest(err.Error())
+		}
+		if err := existing.ValidateBOSAConstraints(); err != nil {
 			return httpx.ErrBadRequest(err.Error())
 		}
 		out, err = h.Products.UpdateTx(r.Context(), tx, existing)
@@ -208,11 +242,24 @@ func (h *ProductHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProductHandler) List(w http.ResponseWriter, r *http.Request) {
 	tid, _ := middleware.TenantIDFrom(r)
-	includeInactive := r.URL.Query().Get("include_inactive") == "1"
+	f := store.ProductListFilter{
+		IncludeInactive: r.URL.Query().Get("include_inactive") == "1",
+	}
+	// Optional ?segment=bosa|fosa for the new segment-filter chips.
+	// Unknown values return a typed error so a typo doesn't silently
+	// return everything.
+	if seg := r.URL.Query().Get("segment"); seg != "" {
+		s := domain.DepositSegment(seg)
+		if !s.Valid() {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("segment must be 'bosa' or 'fosa'"))
+			return
+		}
+		f.Segment = &s
+	}
 	var out []domain.DepositProduct
 	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		var err error
-		out, err = h.Products.ListTx(r.Context(), tx, includeInactive)
+		out, err = h.Products.ListTx(r.Context(), tx, f)
 		return err
 	})
 	if err != nil {

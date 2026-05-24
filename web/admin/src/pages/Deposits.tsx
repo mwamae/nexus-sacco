@@ -34,7 +34,7 @@ export default function Deposits() {
     try {
       const [s, ps, l] = await Promise.all([
         getDepositsSummary(),
-        listDepositProducts(true),
+        listDepositProducts({ includeInactive: true }),
         listDepositAccounts({
           q: q || undefined,
           status: statusF || undefined,

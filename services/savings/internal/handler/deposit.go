@@ -503,6 +503,18 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 	var result *WithdrawalResult
 	var pending *domain.PendingApproval
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		// BOSA accounts must not drain via the normal withdraw path.
+		// The loaded product carries the segment chip from PR 1; we
+		// short-circuit before any approval-queueing or ledger work
+		// so a misclicked withdraw on a BOSA account is rejected the
+		// same way regardless of whether the toggles are on.
+		product, _, _, lerr := h.loadProductAccount(r.Context(), tx, accountID)
+		if lerr != nil {
+			return lerr
+		}
+		if product.Segment == domain.SegmentBOSA {
+			return domain.ErrBOSAWithdrawForbidden
+		}
 		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
@@ -1138,6 +1150,12 @@ func writeDepositErr(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		httpx.WriteErr(w, r, httpx.ErrNotFound(""))
+	case errors.Is(err, domain.ErrBOSAWithdrawForbidden):
+		// Spec-mandated literal code so callers (UI + tests) can
+		// branch on it without having to inspect the message. 403
+		// because the resource exists but the action is structurally
+		// disallowed for this product segment.
+		httpx.WriteErr(w, r, httpx.E(http.StatusForbidden, "BOSA_WITHDRAW_FORBIDDEN", err.Error()))
 	case errors.Is(err, domain.ErrInsufficientBalance),
 		errors.Is(err, domain.ErrBelowMinOpeningBalance),
 		errors.Is(err, domain.ErrBelowMinDeposit),
