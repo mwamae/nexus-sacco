@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'react';
 import {
   createApplication,
+  getInboxStatus,
   getTenantSettings,
   type ApplicantPayload,
   type ApplicationKind,
@@ -37,6 +38,19 @@ export default function NewApplicationPage() {
   const [feeReference, setFeeReference] = useState('');
   const [feeDate, setFeeDate] = useState(new Date().toISOString().slice(0, 10));
   const [feeShortfallNote, setFeeShortfallNote] = useState('');
+
+  // PR 5b — opening contributions captured at submission time. The
+  // card is gated on the BOSA/FOSA flag; with the flag off the form
+  // stays exactly as it was. Defaults bubble up from tenant
+  // settings (min_share_amount / membership opening BOSA) once
+  // those settings exist; for now we leave them blank so the form
+  // signals "officer should enter what the member actually paid".
+  const [segmentEnabled, setSegmentEnabled] = useState(false);
+  const [openingShareAmount, setOpeningShareAmount] = useState('');
+  const [openingBosaAmount, setOpeningBosaAmount] = useState('');
+  useEffect(() => {
+    getInboxStatus().then((s) => setSegmentEnabled(s.bosa_fosa_enabled)).catch(() => setSegmentEnabled(false));
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -78,6 +92,16 @@ export default function NewApplicationPage() {
           payment_date: feeDate,
           shortfall_note: feeShortfallNote || undefined,
         };
+      }
+      // PR 5b — only send opening_* when the cashier actually
+      // entered a number. Empty / 0 strings are equivalent to
+      // omitting them; the materialise handler reads them as "no
+      // contribution" either way.
+      if (segmentEnabled && openingShareAmount.trim() && parseFloat(openingShareAmount) > 0) {
+        input.opening_share_amount = openingShareAmount.trim();
+      }
+      if (segmentEnabled && openingBosaAmount.trim() && parseFloat(openingBosaAmount) > 0) {
+        input.opening_bosa_amount = openingBosaAmount.trim();
       }
       const a = await createApplication(input);
       window.location.href = `/applications/${a.id}`;
@@ -294,6 +318,45 @@ export default function NewApplicationPage() {
                 <input value={feeShortfallNote} onChange={(e) => setFeeShortfallNote(e.target.value)} />
               </label>
             )}
+          </div>
+        </div>
+      )}
+
+      {segmentEnabled && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="card-hd">
+            <h3>Opening contributions</h3>
+            <span className="card-sub">Posted to the member's share + BOSA accounts on approval. Leave blank for none.</span>
+          </div>
+          <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
+            <label>
+              <div className="muted tiny">Opening share purchase ({tenant?.currency_code ?? 'KES'})</div>
+              <input
+                type="number"
+                step="0.01"
+                min={0}
+                value={openingShareAmount}
+                onChange={(e) => setOpeningShareAmount(e.target.value)}
+                placeholder="0"
+              />
+              <div className="muted tiny" style={{ marginTop: 2 }}>
+                Rounded down to whole shares at the tenant's share par-value.
+              </div>
+            </label>
+            <label>
+              <div className="muted tiny">Opening BOSA deposit ({tenant?.currency_code ?? 'KES'})</div>
+              <input
+                type="number"
+                step="0.01"
+                min={0}
+                value={openingBosaAmount}
+                onChange={(e) => setOpeningBosaAmount(e.target.value)}
+                placeholder="0"
+              />
+              <div className="muted tiny" style={{ marginTop: 2 }}>
+                Posted to a freshly-opened BOSA account from the tenant's default Member Deposits product.
+              </div>
+            </label>
           </div>
         </div>
       )}

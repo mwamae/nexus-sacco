@@ -183,6 +183,12 @@ type MembershipApplication struct {
 	FeeJournalEntryID          *uuid.UUID `json:"fee_journal_entry_id,omitempty"`
 	FeeRefundJournalEntryID    *uuid.UUID `json:"fee_refund_journal_entry_id,omitempty"`
 
+	// PR 5b — Opening contributions captured at submission time and
+	// fanned out to savings on materialise. Zero values mean "not
+	// captured"; the materialise handler skips the savings call.
+	OpeningShareAmount decimal.Decimal `json:"opening_share_amount"`
+	OpeningBosaAmount  decimal.Decimal `json:"opening_bosa_amount"`
+
 	CreatedAt            time.Time         `json:"created_at"`
 	UpdatedAt            time.Time         `json:"updated_at"`
 

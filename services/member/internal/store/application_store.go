@@ -50,6 +50,7 @@ const appCols = `
 	approver_user_id, approved_at, decline_reason, approval_conditions, workflow_instance_id,
 	withdrawn_at, withdrawn_by, withdraw_reason,
 	materialized_counterparty_id, materialized_at, fee_journal_entry_id, fee_refund_journal_entry_id,
+	opening_share_amount, opening_bosa_amount,
 	created_at, updated_at,
 	EXTRACT(EPOCH FROM (now() - submitted_at))::int / 86400 AS days_in_queue
 `
@@ -70,6 +71,7 @@ func scanApplication(row pgx.Row) (*domain.MembershipApplication, error) {
 		&a.ApproverUserID, &a.ApprovedAt, &a.DeclineReason, &a.ApprovalConditions, &a.WorkflowInstanceID,
 		&a.WithdrawnAt, &a.WithdrawnBy, &a.WithdrawReason,
 		&a.MaterializedCounterpartyID, &a.MaterializedAt, &a.FeeJournalEntryID, &a.FeeRefundJournalEntryID,
+		&a.OpeningShareAmount, &a.OpeningBosaAmount,
 		&a.CreatedAt, &a.UpdatedAt,
 		&a.DaysInQueue,
 	); err != nil {
@@ -123,6 +125,12 @@ type CreateApplicationInput struct {
 	FeeShortfallNote    *string
 	FeeStatus           string
 	SubmittedBy         uuid.UUID
+	// PR 5b — Opening contributions. Zero (the default) means "not
+	// captured on the application"; the materialise handler skips
+	// the corresponding savings call. Either column being non-zero
+	// triggers the cross-service create + fund call.
+	OpeningShareAmount decimal.Decimal
+	OpeningBosaAmount  decimal.Decimal
 }
 
 func (s *ApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateApplicationInput) (*domain.MembershipApplication, error) {
@@ -149,7 +157,8 @@ func (s *ApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateApp
 		  fee_required, fee_amount_due, fee_amount_paid,
 		  fee_payment_channel, fee_payment_reference, fee_payment_date,
 		  fee_proof_doc_path, fee_shortfall_note, fee_status,
-		  submitted_by
+		  submitted_by,
+		  opening_share_amount, opening_bosa_amount
 		) VALUES (
 		  $1, $2, $3, $4::membership_application_kind, 'submitted',
 		  $5, $6, $7, $8, $9,
@@ -157,7 +166,8 @@ func (s *ApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateApp
 		  $11, $12, $13,
 		  $14, $15, $16,
 		  $17, $18, $19,
-		  $20
+		  $20,
+		  $21, $22
 		)
 	`, id, in.TenantID, appNo, string(in.Kind),
 		in.ApplicantName, in.EntityType, in.PrimaryPhone, in.PrimaryEmail, in.BranchID,
@@ -166,6 +176,7 @@ func (s *ApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateApp
 		in.FeePaymentChannel, in.FeePaymentReference, in.FeePaymentDate,
 		in.FeeProofDocPath, in.FeeShortfallNote, in.FeeStatus,
 		in.SubmittedBy,
+		in.OpeningShareAmount, in.OpeningBosaAmount,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert application: %w", err)
@@ -439,6 +450,14 @@ type ActivationResult struct {
 	ShareAccountNo   string
 	DepositAccountID *uuid.UUID
 	DepositAccountNo *string
+	// PR 5b — opening contributions, set only when the application
+	// carried non-zero opening_share_amount / opening_bosa_amount.
+	// Zero shares or no BOSA → these stay at the empty defaults.
+	BosaAccountID         *uuid.UUID
+	BosaAccountNo         *string
+	OpeningShareTxnID     *uuid.UUID
+	OpeningBosaTxnID      *uuid.UUID
+	OpeningSharesIssued   int
 	// Institutional path
 	OrgID uuid.UUID // uuid.Nil for individual apps
 	OrgNo string
@@ -661,6 +680,187 @@ func (s *ApplicationStore) activateIndividualTx(
 		return nil, err
 	}
 	return s.OpenDefaultIndividualAccountsTx(ctx, tx, app, memberID, memberNo, defaultDepositProductID, sharePolicyParValue, actorID)
+}
+
+// resolveMemberIDForOpening looks up members.id from a counterparty
+// id. Local to PR 5b's opening-contributions path; the share /
+// deposit transaction tables both NOT NULL member_id. Sibling to
+// ResolveCounterpartyID in counterparty_resolve.go, but inverse —
+// the one in that file was removed in Phase D and the suggested
+// replacement (MemberStore.GetByCounterpartyTx) returns the full
+// member struct, which is more than this caller needs.
+func resolveMemberIDForOpening(ctx context.Context, tx pgx.Tx, cpID uuid.UUID) (uuid.UUID, error) {
+	var memberID uuid.UUID
+	err := tx.QueryRow(ctx,
+		`SELECT id FROM members WHERE counterparty_id = $1`, cpID,
+	).Scan(&memberID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("resolve member for counterparty %s: %w", cpID, err)
+	}
+	return memberID, nil
+}
+
+// PostOpeningContributionsTx fans out the opening_share_amount and
+// opening_bosa_amount captured on the application into actual
+// posted transactions, in the same activation tx so a halfway
+// failure rolls everything back. Mutates `result` in-place with the
+// new ids + account numbers. Safe to call with both amounts zero:
+// it's a no-op when the application carried no contributions.
+//
+// Lookup conventions:
+//   - The BOSA product is `SELECT id FROM deposit_products WHERE
+//     segment='bosa' AND is_active=true ORDER BY created_at LIMIT 1`.
+//     PR 1 seeds one per tenant, so for any tenant flipped onto the
+//     BOSA/FOSA flag this resolves; if it doesn't exist we error
+//     loudly rather than silently skipping (the application captured
+//     the amount on the assumption that there is somewhere to put it).
+//   - Share opening rounds DOWN to whole shares: shares_delta =
+//     floor(opening_share_amount / par_value). The remainder (if any)
+//     is intentionally lost — the spec wants whole-share semantics
+//     and the form should validate at the boundary; the store is
+//     the last line of defence, not the first.
+//
+// Direct INSERTs into share_transactions / deposit_accounts /
+// deposit_transactions are the same pattern OpenDefaultIndividual
+// AccountsTx already uses; no cross-service call is needed.
+func (s *ApplicationStore) PostOpeningContributionsTx(
+	ctx context.Context, tx pgx.Tx,
+	app *domain.MembershipApplication,
+	result *ActivationResult,
+	sharePolicyParValue decimal.Decimal,
+	actorID uuid.UUID,
+) error {
+	if result == nil || result.CounterpartyID == uuid.Nil {
+		// Institutional activations don't carry a counterparty here;
+		// PR 5b only covers the individual path.
+		return nil
+	}
+
+	// ─── Opening shares ───
+	if app.OpeningShareAmount.GreaterThan(decimal.Zero) && result.ShareAccountID != uuid.Nil {
+		if sharePolicyParValue.IsZero() {
+			return fmt.Errorf("post opening shares: tenant share_par_value is zero")
+		}
+		// shares_delta = floor(amount / par). The amount we actually
+		// post = shares_delta × par; leftover cents (if any) are
+		// dropped because the share-ledger schema only supports
+		// whole-share quantities.
+		sharesDelta := app.OpeningShareAmount.Div(sharePolicyParValue).Floor().IntPart()
+		if sharesDelta > 0 {
+			postedAmount := decimal.NewFromInt(sharesDelta).Mul(sharePolicyParValue)
+			memberID, err := resolveMemberIDForOpening(ctx, tx, result.CounterpartyID)
+			if err != nil {
+				return fmt.Errorf("resolve member for share opening: %w", err)
+			}
+			txnNo, err := nextSavingsSeq(ctx, tx, "txn", "SHT")
+			if err != nil {
+				return fmt.Errorf("allocate share txn_no: %w", err)
+			}
+			var txnID uuid.UUID
+			err = tx.QueryRow(ctx, `
+				INSERT INTO share_transactions (
+				  tenant_id, account_id, member_id, txn_no, txn_type, shares_delta,
+				  par_value_at_txn, amount, payment_channel, narration,
+				  balance_after_shares, balance_after_amount, initiated_by
+				) VALUES (
+				  current_tenant_id(), $1, $2, $3, 'purchase'::share_txn_type, $4,
+				  $5, $6, 'cash'::share_payment_channel, $7,
+				  $4, $6, $8
+				)
+				RETURNING id
+			`, result.ShareAccountID, memberID, txnNo, sharesDelta,
+				sharePolicyParValue, postedAmount,
+				"Opening share purchase · "+app.ApplicationNo, actorID,
+			).Scan(&txnID)
+			if err != nil {
+				return fmt.Errorf("insert opening share txn: %w", err)
+			}
+			// Roll the cached running balances on share_accounts.
+			if _, err := tx.Exec(ctx, `
+				UPDATE share_accounts
+				   SET shares_held  = shares_held + $2,
+				       total_value  = total_value + $3
+				 WHERE id = $1
+			`, result.ShareAccountID, sharesDelta, postedAmount); err != nil {
+				return fmt.Errorf("bump share_accounts running balance: %w", err)
+			}
+			result.OpeningShareTxnID = &txnID
+			result.OpeningSharesIssued = int(sharesDelta)
+		}
+	}
+
+	// ─── Opening BOSA deposit ───
+	if app.OpeningBosaAmount.GreaterThan(decimal.Zero) {
+		// Resolve the tenant's seeded BOSA product. PR 1's seeded MD
+		// row is the canonical target; tenants who configured their
+		// own land on whichever has the earliest created_at.
+		var bosaProductID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT id FROM deposit_products
+			 WHERE segment = 'bosa' AND is_active = true
+			 ORDER BY created_at LIMIT 1
+		`).Scan(&bosaProductID)
+		if err != nil {
+			return fmt.Errorf("locate BOSA product: %w", err)
+		}
+		// Open the BOSA deposit account.
+		bosaAcctNo, err := nextSavingsSeq(ctx, tx, "deposit_account", "DPA")
+		if err != nil {
+			return fmt.Errorf("allocate BOSA deposit account_no: %w", err)
+		}
+		var bosaAcctID uuid.UUID
+		err = tx.QueryRow(ctx, `
+			INSERT INTO deposit_accounts (
+			  tenant_id, counterparty_id, product_id, account_no, status,
+			  current_balance, available_balance, opened_at, created_by
+			) VALUES (
+			  current_tenant_id(), $1, $2, $3, 'active'::deposit_account_status,
+			  0, 0, now(), $4
+			)
+			RETURNING id
+		`, result.CounterpartyID, bosaProductID, bosaAcctNo, actorID).Scan(&bosaAcctID)
+		if err != nil {
+			return fmt.Errorf("insert BOSA deposit account: %w", err)
+		}
+		// Post the opening_balance txn.
+		memberID, err := resolveMemberIDForOpening(ctx, tx, result.CounterpartyID)
+		if err != nil {
+			return fmt.Errorf("resolve member for BOSA opening: %w", err)
+		}
+		txnNo, err := nextSavingsSeq(ctx, tx, "deposit_txn", "DPT")
+		if err != nil {
+			return fmt.Errorf("allocate deposit txn_no: %w", err)
+		}
+		var depTxnID uuid.UUID
+		err = tx.QueryRow(ctx, `
+			INSERT INTO deposit_transactions (
+			  tenant_id, account_id, counterparty_id, member_id, txn_no, txn_type,
+			  amount, balance_after, narration, initiated_by
+			) VALUES (
+			  current_tenant_id(), $1, $2, $3, $4, 'opening_balance'::deposit_txn_type,
+			  $5, $5, $6, $7
+			)
+			RETURNING id
+		`, bosaAcctID, result.CounterpartyID, memberID, txnNo,
+			app.OpeningBosaAmount, "Opening BOSA contribution · "+app.ApplicationNo, actorID,
+		).Scan(&depTxnID)
+		if err != nil {
+			return fmt.Errorf("insert opening BOSA txn: %w", err)
+		}
+		// Bump the cached balance.
+		if _, err := tx.Exec(ctx, `
+			UPDATE deposit_accounts
+			   SET current_balance = $2, available_balance = $2,
+			       last_deposit_at = now(), last_activity_at = now()
+			 WHERE id = $1
+		`, bosaAcctID, app.OpeningBosaAmount); err != nil {
+			return fmt.Errorf("bump deposit_accounts running balance: %w", err)
+		}
+		result.BosaAccountID = &bosaAcctID
+		result.BosaAccountNo = &bosaAcctNo
+		result.OpeningBosaTxnID = &depTxnID
+	}
+	return nil
 }
 
 // activateInstitutionalTx — the institutional branch of the

@@ -710,6 +710,11 @@ export type MembershipApplication = {
   fee_journal_entry_id?: string | null;
   fee_refund_journal_entry_id?: string | null;
 
+  // PR 5b — opening contributions captured at submission time.
+  // Defaults to "0" when not captured.
+  opening_share_amount: string;
+  opening_bosa_amount: string;
+
   created_at: string;
   updated_at: string;
   days_in_queue: number;
@@ -722,6 +727,16 @@ export type ActivationResult = {
   ShareAccountNo: string;
   DepositAccountID?: string | null;
   DepositAccountNo?: string | null;
+  // PR 5b — opening contributions, populated only when the
+  // application carried non-zero opening_* amounts. The activation
+  // response surfaces them so the post-materialise toast / welcome
+  // notification can show all three accounts the member walked away
+  // with.
+  BosaAccountID?: string | null;
+  BosaAccountNo?: string | null;
+  OpeningShareTxnID?: string | null;
+  OpeningBosaTxnID?: string | null;
+  OpeningSharesIssued?: number;
 };
 
 export type ChecklistItem = {
@@ -791,6 +806,11 @@ export async function createApplication(input: {
     proof_doc_path?: string;
     shortfall_note?: string;
   };
+  // PR 5b — opening contributions captured at application time.
+  // Empty / "0" / omitted means "no contribution captured"; the
+  // materialise handler skips the corresponding savings post.
+  opening_share_amount?: string;
+  opening_bosa_amount?: string;
 }): Promise<MembershipApplication> {
   const r = await api.post('/v1/applications', input);
   return r.data.data;

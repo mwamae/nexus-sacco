@@ -77,6 +77,13 @@ type createApplicationReq struct {
 
 	// Registration-fee capture
 	Fee *applicationFeeDTO `json:"registration_fee,omitempty"`
+
+	// PR 5b — Opening contributions. Both are optional decimal
+	// strings (omitted / "" / "0" → no opening contribution
+	// captured). The materialise handler reads these and asks
+	// savings to create the share account + BOSA deposit account.
+	OpeningShareAmount string `json:"opening_share_amount,omitempty"`
+	OpeningBosaAmount  string `json:"opening_bosa_amount,omitempty"`
 }
 
 type applicationFeeDTO struct {
@@ -147,6 +154,24 @@ func (h *ApplicationHandler) Create(w http.ResponseWriter, r *http.Request) {
 			FeeAmountDue:  feeAmountDue,
 			FeeStatus:     "not_required",
 			SubmittedBy:   actorID,
+		}
+		// PR 5b — opening contributions are independent of the
+		// registration-fee block. We trust positive decimals only;
+		// negative or unparseable strings are rejected, missing /
+		// empty values land as zero (no contribution captured).
+		if s := strings.TrimSpace(req.OpeningShareAmount); s != "" {
+			v, perr := decimal.NewFromString(s)
+			if perr != nil || v.IsNegative() {
+				return httpx.ErrBadRequest("opening_share_amount must be a non-negative decimal")
+			}
+			input.OpeningShareAmount = v
+		}
+		if s := strings.TrimSpace(req.OpeningBosaAmount); s != "" {
+			v, perr := decimal.NewFromString(s)
+			if perr != nil || v.IsNegative() {
+				return httpx.ErrBadRequest("opening_bosa_amount must be a non-negative decimal")
+			}
+			input.OpeningBosaAmount = v
 		}
 
 		if feeRequired && req.Fee != nil {
@@ -916,6 +941,16 @@ func (h *ApplicationHandler) approveAndActivateTx(
 			return nil, nil, err
 		}
 		activation = act
+		// PR 5b — post the opening share purchase + BOSA deposit
+		// (when captured on the application). Same tx as the
+		// default-accounts open, so a halfway failure rolls back
+		// the whole materialisation. No-op when both amounts are
+		// zero.
+		if err := h.Applications.PostOpeningContributionsTx(
+			ctx, tx, updated, activation, parValue, actorID,
+		); err != nil {
+			return nil, nil, fmt.Errorf("post opening contributions: %w", err)
+		}
 	}
 
 	if newCPID != uuid.Nil {
