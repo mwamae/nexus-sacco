@@ -54,6 +54,14 @@ type ApplicationHandler struct {
 	Accounting     *accounting.Client
 	Notifier       *notifier.Client
 	Logger         *slog.Logger
+
+	// PR #8 — Unified Inbox workflow integration. Empty WorkflowURL
+	// disables the gate; the legacy inline Approve/Decline buttons
+	// stay the only path.
+	WorkflowURL           string
+	MemberSelfURL         string
+	WorkflowInternalToken string
+	HTTP                  *http.Client
 }
 
 // ─────────── Create ───────────
@@ -406,119 +414,12 @@ func (h *ApplicationHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	var updated *domain.MembershipApplication
 	var activation *store.ActivationResult
 	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
-		cur, err := h.Applications.GetTx(r.Context(), tx, id)
-		if err != nil {
-			return err
-		}
-
-		// Read membership + share-policy settings the activation needs.
-		var defaultDepositProductID *uuid.UUID
-		if err := tx.QueryRow(r.Context(),
-			`SELECT default_deposit_product_id FROM tenant_membership WHERE tenant_id = $1`,
-			tenantID,
-		).Scan(&defaultDepositProductID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-		var parValue decimal.Decimal
-		if err := tx.QueryRow(r.Context(),
-			`SELECT share_par_value FROM tenant_operations WHERE tenant_id = $1`,
-			tenantID,
-		).Scan(&parValue); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			// tenant_operations may not be initialised in test envs —
-			// fall back to 100 (the default in the schema) so activation
-			// doesn't bounce in test runs.
-			parValue = decimal.NewFromInt(100)
-		}
-
-		// 1. Status flip.
-		u, err := h.Applications.TransitionTx(r.Context(), tx, store.TransitionInput{
-			ID:           cur.ID,
-			From:         cur.Status,
-			To:           domain.AppStatusApprovedActive,
-			ActorUserID:  actorID,
-			Conditions:   req.Conditions,
-		})
+		u, act, err := h.approveAndActivateTx(r.Context(), tx, tenantID, id, actorID, req.Conditions)
 		if err != nil {
 			return err
 		}
 		updated = u
-
-		// 2. In-tx materialisation. Order matters per kind:
-		//
-		//   institutional → ActivateApplicationTx (inserts org_members
-		//     with no auto-opened savings accounts) → create CP →
-		//     stamp materialized_counterparty_id. Safe single-call
-		//     because there are no child rows whose BEFORE INSERT
-		//     trigger depends on org_members.counterparty_id.
-		//
-		//   individual → 3 phases interleaved with the CP creation:
-		//     (a) MaterialiseIndividualMemberTx — insert member row only
-		//     (b) createCounterpartyFromApplicationTx — create CP +
-		//         SetCounterpartyOnMemberTx (stamps members.counterparty_id)
-		//     (c) OpenDefaultIndividualAccountsTx — insert share +
-		//         optional deposit accounts. By the time the BEFORE
-		//         INSERT trigger fires here, members.counterparty_id
-		//         is already populated, so the per-row bridge gets
-		//         filled in correctly. Skipping the split here is
-		//         what causes the "share_account.counterparty_id = NULL"
-		//         data corruption that sub-PR 1's read switchover
-		//         can't see past. Failure at any phase rolls back
-		//         the whole approval via tx rollback.
-		var newCPID uuid.UUID
-		if updated.Kind == domain.ApplicationKindInstitutional {
-			act, err := h.Applications.ActivateApplicationTx(
-				r.Context(), tx, updated, h.Members, h.Orgs,
-				defaultDepositProductID, parValue, actorID,
-			)
-			if err != nil {
-				return err
-			}
-			activation = act
-			if h.Counterparties != nil {
-				freshOrg, gerr := h.Orgs.ByIDTx(r.Context(), tx, act.OrgID)
-				if gerr != nil {
-					return fmt.Errorf("reload org for counterparty co-create: %w", gerr)
-				}
-				cpID, cerr := createCounterpartyForOrgTx(r.Context(), tx, h.Counterparties, tenantID, freshOrg, actorID)
-				if cerr != nil {
-					return fmt.Errorf("create counterparty (org): %w", cerr)
-				}
-				newCPID = cpID
-			}
-		} else {
-			memberID, memberNo, err := h.Applications.MaterialiseIndividualMemberTx(
-				r.Context(), tx, updated, h.Members, actorID,
-			)
-			if err != nil {
-				return err
-			}
-			if h.Counterparties != nil {
-				cpID, cerr := h.createCounterpartyFromApplicationTx(r.Context(), tx, tenantID, memberID, updated, actorID)
-				if cerr != nil {
-					return fmt.Errorf("create counterparty (individual): %w", cerr)
-				}
-				newCPID = cpID
-			}
-			act, err := h.Applications.OpenDefaultIndividualAccountsTx(
-				r.Context(), tx, updated, memberID, memberNo,
-				defaultDepositProductID, parValue, actorID,
-			)
-			if err != nil {
-				return err
-			}
-			activation = act
-		}
-
-		// 2b. Stamp the application's materialized_counterparty_id
-		// bridge if a counterparty was created above.
-		if newCPID != uuid.Nil {
-			if _, err := tx.Exec(r.Context(),
-				`UPDATE membership_applications SET materialized_counterparty_id = $2 WHERE id = $1`,
-				updated.ID, newCPID,
-			); err != nil {
-				return fmt.Errorf("stamp materialized_counterparty_id: %w", err)
-			}
-		}
+		activation = act
 		return nil
 	})
 	if err != nil {
@@ -925,4 +826,105 @@ func guessInstitutionalKind(name string, payload json.RawMessage) domain.Counter
 	default:
 		return domain.CounterpartyOther
 	}
+}
+
+// approveAndActivateTx is the extracted body of the Approve handler's
+// activation transaction. Both the human-clicked Approve endpoint
+// and the Unified Inbox resolve callback (PR #8) call this so the
+// activation logic stays single-source. Caller wraps it in
+// WithTenantTx and handles the post-tx side effects (fee GL post +
+// welcome notification).
+func (h *ApplicationHandler) approveAndActivateTx(
+	ctx context.Context, tx pgx.Tx,
+	tenantID, appID, actorID uuid.UUID, conditions string,
+) (*domain.MembershipApplication, *store.ActivationResult, error) {
+	cur, err := h.Applications.GetTx(ctx, tx, appID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Read membership + share-policy settings the activation needs.
+	var defaultDepositProductID *uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT default_deposit_product_id FROM tenant_membership WHERE tenant_id = $1`,
+		tenantID,
+	).Scan(&defaultDepositProductID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, err
+	}
+	var parValue decimal.Decimal
+	if err := tx.QueryRow(ctx,
+		`SELECT share_par_value FROM tenant_operations WHERE tenant_id = $1`,
+		tenantID,
+	).Scan(&parValue); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		parValue = decimal.NewFromInt(100)
+	}
+
+	updated, err := h.Applications.TransitionTx(ctx, tx, store.TransitionInput{
+		ID:          cur.ID,
+		From:        cur.Status,
+		To:          domain.AppStatusApprovedActive,
+		ActorUserID: actorID,
+		Conditions:  conditions,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var (
+		activation *store.ActivationResult
+		newCPID    uuid.UUID
+	)
+	if updated.Kind == domain.ApplicationKindInstitutional {
+		act, err := h.Applications.ActivateApplicationTx(
+			ctx, tx, updated, h.Members, h.Orgs,
+			defaultDepositProductID, parValue, actorID,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		activation = act
+		if h.Counterparties != nil {
+			freshOrg, gerr := h.Orgs.ByIDTx(ctx, tx, act.OrgID)
+			if gerr != nil {
+				return nil, nil, fmt.Errorf("reload org for counterparty co-create: %w", gerr)
+			}
+			cpID, cerr := createCounterpartyForOrgTx(ctx, tx, h.Counterparties, tenantID, freshOrg, actorID)
+			if cerr != nil {
+				return nil, nil, fmt.Errorf("create counterparty (org): %w", cerr)
+			}
+			newCPID = cpID
+		}
+	} else {
+		memberID, memberNo, err := h.Applications.MaterialiseIndividualMemberTx(
+			ctx, tx, updated, h.Members, actorID,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		if h.Counterparties != nil {
+			cpID, cerr := h.createCounterpartyFromApplicationTx(ctx, tx, tenantID, memberID, updated, actorID)
+			if cerr != nil {
+				return nil, nil, fmt.Errorf("create counterparty (individual): %w", cerr)
+			}
+			newCPID = cpID
+		}
+		act, err := h.Applications.OpenDefaultIndividualAccountsTx(
+			ctx, tx, updated, memberID, memberNo,
+			defaultDepositProductID, parValue, actorID,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		activation = act
+	}
+
+	if newCPID != uuid.Nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE membership_applications SET materialized_counterparty_id = $2 WHERE id = $1`,
+			updated.ID, newCPID,
+		); err != nil {
+			return nil, nil, fmt.Errorf("stamp materialized_counterparty_id: %w", err)
+		}
+	}
+	return updated, activation, nil
 }

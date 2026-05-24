@@ -842,6 +842,18 @@ export async function approveApplication(id: string, conditions?: string): Promi
   return r.data.data;
 }
 
+// Unified Inbox (PR #8): submit an application for the member_onboarding
+// workflow instead of acting inline. Idempotent — second call returns
+// the existing wf_instance.
+export type SubmitOnboardingResponse = {
+  workflow_instance_id: string;
+  status: 'created' | 'existing';
+};
+export async function submitApplicationForOnboardingDecision(id: string): Promise<SubmitOnboardingResponse> {
+  const r = await api.post(`/v1/applications/${id}/submit-for-onboarding-decision`);
+  return r.data.data;
+}
+
 export async function postRegistrationFeeRefund(id: string): Promise<MembershipApplication> {
   const r = await api.post(`/v1/applications/${id}/post-refund`);
   return r.data.data;

@@ -126,6 +126,11 @@ func main() {
 		Counterparties: counterpartyStore,
 		Accounting: accountingClient, Notifier: notifyClient,
 		Logger: logger,
+		// PR #8 — Unified Inbox workflow integration.
+		WorkflowURL:           cfg.WorkflowURL,
+		MemberSelfURL:         cfg.MemberSelfURL,
+		WorkflowInternalToken: cfg.WorkflowInternalToken,
+		HTTP:                  &http.Client{Timeout: 10 * time.Second},
 	}
 	cpH := &handler.CounterpartyHandler{
 		DB: pool, Counterparties: counterpartyStore, Logger: logger,

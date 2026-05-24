@@ -15,12 +15,14 @@ import {
   approveApplication,
   declineApplication,
   getApplication,
+  getInboxStatus,
   postRegistrationFeeRefund,
   respondToChecklist,
   resubmitApplication,
   returnForCorrection,
   returnToReviewer,
   startReview,
+  submitApplicationForOnboardingDecision,
   submitForApproval,
   withdrawApplication,
   type ApplicationDetail,
@@ -61,6 +63,9 @@ export default function ApplicationDetailPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  // PR #8 — when on, inline Approve/Decline/Submit hide and a "Send
+  // for onboarding decision" CTA + status banner appears instead.
+  const [inboxEnabled, setInboxEnabled] = useState<boolean | null>(null);
 
   // Action prompts
   const [returnNote, setReturnNote] = useState('');
@@ -80,6 +85,24 @@ export default function ApplicationDetailPage() {
     catch (e) { setErr(asMsg(e)); }
   }
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
+  useEffect(() => {
+    getInboxStatus().then((s) => setInboxEnabled(s.unified_inbox_enabled)).catch(() => setInboxEnabled(false));
+  }, []);
+
+  // Auto-create a workflow_instance on first open for in-flight
+  // applications once the tenant has flipped the flag on. Mirrors
+  // PR #4 (loan applications). Fire-and-forget; refresh on success.
+  useEffect(() => {
+    if (!data || !inboxEnabled) return;
+    const a = data.application;
+    if (a.workflow_instance_id) return;
+    const eligible = ['submitted', 'under_review', 'reviewed_pending_app', 'returned_for_correction'];
+    if (!eligible.includes(a.status)) return;
+    submitApplicationForOnboardingDecision(id)
+      .then(() => load())
+      .catch(() => {}); // silent; the manual CTA stays available
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inboxEnabled, id, data?.application.workflow_instance_id]);
 
   async function action(fn: () => Promise<unknown>, ok: string) {
     setBusy(true); setErr(null); setInfo(null);
@@ -274,7 +297,29 @@ export default function ApplicationDetailPage() {
                   </button>
                 </>
               )}
-              {a.status === 'reviewed_pending_approval' && (
+              {/* PR #8 — When the Unified Inbox is on, every onboarding
+                  decision goes through the workflow engine. We surface
+                  a deep-link to the workflow instance (which the auto-
+                  create useEffect spawned on page mount) instead of the
+                  inline Approve/Decline/Return form. */}
+              {a.status === 'reviewed_pending_approval' && inboxEnabled && (
+                a.workflow_instance_id ? (
+                  <div className="alert alert-info">
+                    <strong>Onboarding decision in progress.</strong> The Approver is acting on this in the unified Approvals Inbox.
+                    <a href={`/approvals/${a.workflow_instance_id}`} className="btn btn-sm btn-accent" style={{ marginLeft: 8 }}>
+                      Open in Inbox →
+                    </a>
+                  </div>
+                ) : (
+                  <button className="btn btn-primary" disabled={busy} onClick={() => void action(async () => {
+                    const r = await submitApplicationForOnboardingDecision(id);
+                    if (r.workflow_instance_id) window.location.href = `/approvals/${r.workflow_instance_id}`;
+                  }, 'Sent for onboarding decision')}>
+                    Send for onboarding decision →
+                  </button>
+                )
+              )}
+              {a.status === 'reviewed_pending_approval' && !inboxEnabled && (
                 <>
                   <label>
                     <div className="muted tiny">Approval conditions (optional)</div>

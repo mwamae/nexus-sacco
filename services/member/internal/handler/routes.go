@@ -119,6 +119,12 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:approve")).Post("/applications/{id}/approve", d.Applications.Approve)
 			r.With(middleware.RequirePermission("members:approve")).Post("/applications/{id}/decline", d.Applications.Decline)
 			r.With(middleware.RequirePermission("members:approve")).Post("/applications/{id}/return-to-reviewer", d.Applications.ReturnToReviewer)
+			// PR #8 — Unified Inbox CTA. Replaces the inline Approve/
+			// Decline buttons when the tenant has unified_inbox_enabled.
+			// members:edit (not members:approve) so credit officers /
+			// reviewers can initiate; the actual decision is gated per-
+			// level inside the workflow service.
+			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/submit-for-onboarding-decision", d.Applications.SubmitForOnboardingDecision)
 			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/withdraw", d.Applications.Withdraw)
 			r.With(middleware.RequirePermission("members:edit")).Post("/applications/{id}/checklist", d.Applications.RespondChecklist)
 			r.With(middleware.RequirePermission("members:approve")).Post("/applications/{id}/post-refund", d.Applications.PostRefund)
@@ -133,5 +139,8 @@ func Routes(d Deps) http.Handler {
 	// (savings, accounting); the handler's own X-Internal-Token +
 	// User-Agent gate protects it.
 	r.Post("/internal/v1/members/dormancy/resolve", d.Status.ResolveDormancyFromWorkflow)
+	// PR #8 — Unified Inbox callback for membership-application
+	// onboarding decisions.
+	r.Post("/internal/v1/applications/{id}/resolve", d.Applications.ResolveFromWorkflow)
 	return r
 }
