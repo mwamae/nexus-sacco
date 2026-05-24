@@ -570,7 +570,7 @@ func (h *CollectionDeskHandler) ListReceipts(w http.ResponseWriter, r *http.Requ
 	}
 
 	tenantID, _ := middleware.TenantIDFrom(r)
-	var rows []domain.Receipt
+	var rows []store.ReceiptListItem
 	err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		r2, err := h.Receipts.ListTx(r.Context(), tx, f)
 		if err != nil {
@@ -584,7 +584,7 @@ func (h *CollectionDeskHandler) ListReceipts(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if rows == nil {
-		rows = []domain.Receipt{}
+		rows = []store.ReceiptListItem{}
 	}
 	httpx.OK(w, rows)
 }

@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -307,7 +308,20 @@ type ReceiptListFilter struct {
 	Limit, Offset int
 }
 
-func (s *ReceiptStore) ListTx(ctx context.Context, tx pgx.Tx, f ReceiptListFilter) ([]domain.Receipt, error) {
+// ReceiptListItem wraps domain.Receipt with two summary fields the
+// list endpoint computes via a LATERAL aggregate on receipt_lines.
+// Keeping these off domain.Receipt so the detail endpoint's wire
+// shape (which carries Lines []ReceiptLine) doesn't grow a pair of
+// zero-valued fields. Bug 3.1 fix: the old list response showed
+// LINES=0 for every row because the per-line array was never
+// populated by ListTx.
+type ReceiptListItem struct {
+	domain.Receipt
+	LineCount   int    `json:"line_count"`
+	LineSummary string `json:"line_summary"`
+}
+
+func (s *ReceiptStore) ListTx(ctx context.Context, tx pgx.Tx, f ReceiptListFilter) ([]ReceiptListItem, error) {
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 100
 	}
@@ -315,51 +329,177 @@ func (s *ReceiptStore) ListTx(ctx context.Context, tx pgx.Tx, f ReceiptListFilte
 	args := []any{}
 	idx := 1
 	if f.TillSessionID != nil {
-		where += fmt.Sprintf(" AND till_session_id = $%d", idx)
+		where += fmt.Sprintf(" AND r.till_session_id = $%d", idx)
 		args = append(args, *f.TillSessionID)
 		idx++
 	}
 	if f.VirtualTillID != nil {
-		where += fmt.Sprintf(" AND virtual_till_id = $%d", idx)
+		where += fmt.Sprintf(" AND r.virtual_till_id = $%d", idx)
 		args = append(args, *f.VirtualTillID)
 		idx++
 	}
 	if f.CashierUserID != nil {
-		where += fmt.Sprintf(" AND cashier_user_id = $%d", idx)
+		where += fmt.Sprintf(" AND r.cashier_user_id = $%d", idx)
 		args = append(args, *f.CashierUserID)
 		idx++
 	}
 	if f.ValueDate != nil {
-		where += fmt.Sprintf(" AND value_date = $%d::date", idx)
+		where += fmt.Sprintf(" AND r.value_date = $%d::date", idx)
 		args = append(args, f.ValueDate.Format("2006-01-02"))
 		idx++
 	}
 	if f.Status != nil {
-		where += fmt.Sprintf(" AND status = $%d::receipt_status", idx)
+		where += fmt.Sprintf(" AND r.status = $%d::receipt_status", idx)
 		args = append(args, string(*f.Status))
 		idx++
 	}
 	args = append(args, f.Limit, f.Offset)
+	// Single LATERAL join — voided lines are excluded so the count
+	// matches what the cashier sees in the detail view. The kinds
+	// array stays ordered by line_no so the formatted summary is
+	// stable across renders.
 	q := fmt.Sprintf(`
-		SELECT %s FROM receipts
-		%s
-		ORDER BY created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, receiptCols, where, idx, idx+1)
+		SELECT %s,
+		       COALESCE(lc.line_count, 0)   AS line_count,
+		       COALESCE(lc.line_kinds, '{}')::text[] AS line_kinds
+		  FROM receipts r
+		  LEFT JOIN LATERAL (
+		    SELECT
+		      count(*) AS line_count,
+		      array_agg(rl.kind::text ORDER BY rl.line_no) AS line_kinds
+		      FROM receipt_lines rl
+		     WHERE rl.receipt_id = r.id
+		       AND rl.voided_at IS NULL
+		  ) lc ON true
+		  %s
+		 ORDER BY r.created_at DESC
+		 LIMIT $%d OFFSET $%d
+	`, prefixReceiptCols("r"), where, idx, idx+1)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.Receipt
+	var out []ReceiptListItem
 	for rows.Next() {
-		r, err := scanReceipt(rows)
+		item, err := scanReceiptListItem(rows)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, *r)
+		out = append(out, *item)
 	}
 	return out, rows.Err()
+}
+
+// prefixReceiptCols aliases every column in receiptCols with the
+// given table alias so the LATERAL join doesn't ambiguate on
+// status / created_at / etc. Cheap string transform — receiptCols
+// is a compile-time constant.
+func prefixReceiptCols(alias string) string {
+	// Each column name is on its own logical line + comma; just
+	// prefix every bare identifier that starts each comma-separated
+	// item. Simpler: hand-roll the prefixed list here so we don't
+	// risk a regex misfire on the cast in `channel::text` /
+	// `status::text`.
+	return alias + `.id, ` + alias + `.tenant_id, ` + alias + `.serial, ` +
+		alias + `.counterparty_id, ` + alias + `.channel::text, ` +
+		alias + `.channel_ref, ` + alias + `.channel_amount, ` +
+		alias + `.value_date, ` + alias + `.narration, ` +
+		alias + `.cashier_user_id, ` + alias + `.till_session_id, ` +
+		alias + `.virtual_till_id, ` + alias + `.status::text, ` +
+		alias + `.pdf_document_id, ` + alias + `.voided_at, ` +
+		alias + `.voided_by, ` + alias + `.void_reason, ` +
+		alias + `.created_at, ` + alias + `.posted_at, ` +
+		alias + `.updated_at`
+}
+
+// scanReceiptListItem reads the same 20 receipt cols + 2 extra
+// aggregate cols (count + kinds array) and formats line_summary.
+func scanReceiptListItem(row pgx.Row) (*ReceiptListItem, error) {
+	var item ReceiptListItem
+	var channelStr, statusStr string
+	var kinds []string
+	if err := row.Scan(
+		&item.ID, &item.TenantID, &item.Serial, &item.CounterpartyID, &channelStr,
+		&item.ChannelRef, &item.ChannelAmount, &item.ValueDate, &item.Narration,
+		&item.CashierUserID, &item.TillSessionID, &item.VirtualTillID, &statusStr,
+		&item.PDFDocumentID, &item.VoidedAt, &item.VoidedBy, &item.VoidReason,
+		&item.CreatedAt, &item.PostedAt, &item.UpdatedAt,
+		&item.LineCount, &kinds,
+	); err != nil {
+		return nil, err
+	}
+	item.Channel = domain.ReceiptChannel(channelStr)
+	item.Status = domain.ReceiptStatus(statusStr)
+	item.LineSummary = formatLineSummary(kinds)
+	return &item, nil
+}
+
+// formatLineSummary turns ['savings_deposit','share_purchase','loan_repayment']
+// into "savings + share + loan", or ['fee','fee'] into "2 fees".
+// Truncates to 60 chars + ellipsis. Bug 3.1 plan rule:
+//   - empty:             ""
+//   - all same kind:     "<n> <label>" (singular for n=1, plural for >1)
+//   - mixed kinds:       distinct labels joined with " + ", with a
+//                        count prefix for any kind that repeats
+//                        (e.g. ['fee','fee','savings_deposit'] →
+//                        "savings + 2 fees")
+func formatLineSummary(kinds []string) string {
+	if len(kinds) == 0 {
+		return ""
+	}
+	counts := map[string]int{}
+	order := []string{}
+	for _, k := range kinds {
+		if _, seen := counts[k]; !seen {
+			order = append(order, k)
+		}
+		counts[k]++
+	}
+	parts := make([]string, 0, len(order))
+	for _, k := range order {
+		label := lineKindShortLabel(k)
+		if counts[k] > 1 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[k], pluralise(label, counts[k])))
+		} else {
+			parts = append(parts, label)
+		}
+	}
+	out := strings.Join(parts, " + ")
+	if len(out) > 60 {
+		out = out[:57] + "…"
+	}
+	return out
+}
+
+// lineKindShortLabel maps the canonical kind enum to the short form
+// the user sees in summaries. "savings_deposit" → "savings",
+// "share_purchase" → "share", "loan_repayment" → "loan",
+// "fee" / "welfare" → unchanged.
+func lineKindShortLabel(k string) string {
+	switch k {
+	case "savings_deposit":
+		return "savings"
+	case "share_purchase":
+		return "share"
+	case "loan_repayment":
+		return "loan"
+	default:
+		return k
+	}
+}
+
+// pluralise — single-rule english pluraliser scoped to the short
+// kind labels above. Anything that isn't already plural gets an "s".
+func pluralise(label string, n int) string {
+	if n <= 1 {
+		return label
+	}
+	switch label {
+	case "fees", "shares", "loans", "savings":
+		return label // already plural / mass noun
+	}
+	return label + "s"
 }
 
 // ─────────── Line updates (called from approvals execution + voids) ───────────

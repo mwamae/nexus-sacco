@@ -19,6 +19,7 @@ import {
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 type Filter = 'all' | MemberStatus;
 type KindFilter = 'all' | 'individual' | 'institutional';
@@ -55,6 +56,13 @@ export default function Members() {
     return 'all';
   }, []);
   const [kindFilter, setKindFilter] = useState<KindFilter>(initialKind);
+  // Bug 3.3: /members and /orgs share this page; pick the title from
+  // the kind filter so the tab matches what the user typed.
+  useDocumentTitle(
+    kindFilter === 'institutional' ? 'Organisations'
+      : kindFilter === 'individual' ? 'Members'
+        : 'Members & organisations',
+  );
 
   const [rows, setRows] = useState<RegisterRow[] | null>(null);
   const [total, setTotal] = useState(0);

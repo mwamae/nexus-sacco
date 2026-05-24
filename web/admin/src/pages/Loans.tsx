@@ -59,6 +59,7 @@ import {
 import { useAuth } from '../auth/AuthContext';
 import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 export default function LoansPage() {
   const path = window.location.pathname;
@@ -76,6 +77,7 @@ function ListsView() {
   const canApply = hasPermission('loans:apply');
   const [tab, setTab] = useState<'apps' | 'loans'>('apps');
   const [openNew, setOpenNew] = useState(false);
+  useDocumentTitle('Loans');
 
   return (
     <div className="page">
@@ -497,6 +499,7 @@ function AppDetail({ appId }: { appId: string }) {
   const [d, setD] = useState<LoanAppDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  useDocumentTitle(d ? `Application ${d.application.application_no}` : null);
   // Unified Inbox (PR #4): null while loading; true|false once known.
   // When true, inline Approve/Decline buttons hide and a "Send for
   // credit decision" CTA replaces them.
@@ -787,6 +790,7 @@ function LoanDetailView({ loanId }: { loanId: string }) {
   const { tenant, hasPermission } = useAuth();
   const currency = tenant?.currency_code ?? 'KES';
   const [d, setD] = useState<LoanDetail | null>(null);
+  useDocumentTitle(d ? `Loan ${d.loan.loan_no}` : null);
   const [accounts, setAccounts] = useState<MemberDepositItem[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

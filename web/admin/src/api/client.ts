@@ -1813,7 +1813,12 @@ export type ApiReceipt = {
   created_at: string;
   posted_at?: string | null;
   updated_at: string;
+  // Populated by getReceipt(id) only. Bug 3.1: the list endpoint
+  // instead populates line_count + line_summary so the LINES column
+  // is meaningful without a per-row detail fetch.
   lines?: ApiReceiptLine[];
+  line_count?: number;
+  line_summary?: string;
 };
 
 export type CurrentTillSession = {

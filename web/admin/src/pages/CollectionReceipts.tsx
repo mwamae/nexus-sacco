@@ -22,6 +22,7 @@ import {
   TillLabel,
   UserName,
 } from '../components/refs';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 const LINE_KIND_LABELS: Record<ReceiptLineKind, string> = {
   savings_deposit: 'Savings deposit',
@@ -48,6 +49,7 @@ function ReceiptsList() {
   const [rows, setRows] = useState<ApiReceipt[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [tillCode, setTillCode] = useState<string | null>(null);
+  useDocumentTitle("Today's receipts");
 
   useEffect(() => {
     void (async () => {
@@ -121,7 +123,11 @@ function ReceiptsList() {
                     <td className="tiny-mono">{r.serial}</td>
                     <td><MemberRef counterpartyId={r.counterparty_id} /></td>
                     <td>{r.channel}{r.channel_ref ? <span className="muted tiny"> · {r.channel_ref}</span> : null}</td>
-                    <td className="tiny-mono">{(r.lines?.length ?? 0)}</td>
+                    {/* Bug 3.1: list endpoint sends line_count +
+                        line_summary (e.g. "1 fee" / "savings + share
+                        + loan"); the lines[] array stays detail-only.
+                        Hover shows the kind summary. */}
+                    <td className="tiny" title={r.line_summary ?? ''}>{r.line_count ?? '—'}</td>
                     <td><span className="badge">{r.status}</span></td>
                     <td className="mono" style={{ textAlign: 'right' }}>{r.channel_amount}</td>
                     <td className="tiny-mono">{r.created_at.slice(11, 19)}</td>
@@ -159,13 +165,10 @@ function ReceiptDetail({ id }: { id: string }) {
     }
   }
   useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
-  // Browser tab title: show the receipt serial instead of the URL
-  // uuid so an officer can pick the right tab back.
-  useEffect(() => {
-    if (receipt) {
-      document.title = `Receipt ${receipt.serial}`;
-    }
-  }, [receipt]);
+  // Bug 3.3: show the receipt serial in the browser tab instead of
+  // the URL uuid so an officer can pick the right tab back. The hook
+  // restores the previous title on unmount.
+  useDocumentTitle(receipt ? `Receipt ${receipt.serial}` : null);
 
   async function renderPDF() {
     setRenderingPDF(true);

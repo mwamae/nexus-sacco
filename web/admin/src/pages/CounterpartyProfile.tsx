@@ -45,6 +45,7 @@ import { MemberAccountsSummary } from '../components/MemberAccountsSummary';
 import { MemberLedgerPanel } from '../components/MemberLedgerPanel';
 import { MemberStatusCard } from '../components/MemberStatusCard';
 import { usePageCrumb } from '../lib/pageCrumb';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 // One tab strip — spec-defined, identical for both kinds.
 type TabId = 'overview' | 'profile' | 'accounts' | 'people' | 'banking' | 'documents' | 'activity';
@@ -163,6 +164,7 @@ function CounterpartyShell({
   const legacyId = entity.kind === 'individual' ? entity.m.member_no : entity.o.org_no;
   const status = entity.kind === 'individual' ? entity.m.status : entity.o.status;
   usePageCrumb(displayName);
+  useDocumentTitle(displayName);
 
   return (
     <>

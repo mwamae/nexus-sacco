@@ -31,6 +31,7 @@ import {
 } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 import { usePageCrumb } from '../../lib/pageCrumb';
+import { useDocumentTitle } from '../../lib/useDocumentTitle';
 import { MemberRef, TechDetails } from '../../components/refs';
 
 const STATUS_LABEL: Record<ApplicationStatus, string> = {
@@ -77,6 +78,11 @@ export default function ApplicationDetailPage() {
   // Header now reads "Applications → APP-2026-000004 · Smoke Test Member Two"
   // once the application loads, instead of the registry fallback "Application".
   usePageCrumb(data?.application
+    ? `${data.application.application_no} · ${data.application.applicant_name}`
+    : null);
+  // Bug 3.3: browser tab title mirrors the crumb so a row of open
+  // application tabs can be told apart at a glance.
+  useDocumentTitle(data?.application
     ? `${data.application.application_no} · ${data.application.applicant_name}`
     : null);
 
@@ -154,7 +160,13 @@ export default function ApplicationDetailPage() {
       {a.status === 'approved_active' && a.materialized_counterparty_id && (
         <div className="card" style={{ marginTop: 12, borderColor: 'var(--pos)' }}>
           <div className="card-hd"><h3>Activation</h3><span className="card-sub" style={{ color: 'var(--pos)' }}>✓ materialized</span></div>
-          <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+          {/* Bug 3.2: the standalone "Open member →" button used to
+              point at /counterparties/<uuid>, a route that doesn't
+              exist (404). MemberRef already resolves the kind +
+              builds the right /members/<id> or /orgs/<id> link, so
+              the Member field IS the deep-link. Dropping the
+              redundant button keeps the activation card to 3 cols. */}
+          <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
             <Field label="Member"><MemberRef counterpartyId={a.materialized_counterparty_id} /></Field>
             <Field label="Materialized at" value={a.materialized_at?.slice(0, 19).replace('T', ' ') ?? '—'} mono />
             <Field label="Fee journal entry">
@@ -166,10 +178,6 @@ export default function ApplicationDetailPage() {
                 )
                 : <span className="muted">—</span>}
             </Field>
-            {/* PR #3 will rewrite this to use the resolved member's
-                kind-aware target route (/members/<id> or /orgs/<id>);
-                for now the label is corrected. */}
-            <a className="btn" href={`/counterparties/${a.materialized_counterparty_id}`} style={{ alignSelf: 'center' }}>Open member →</a>
           </div>
         </div>
       )}

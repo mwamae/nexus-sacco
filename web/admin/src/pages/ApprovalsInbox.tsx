@@ -25,6 +25,7 @@ import {
 import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
 import { LoanRef, MemberRef } from '../components/refs';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 // PR #9 — Inbox UX tabs.
 type TabKey = 'awaiting_me' | 'my_team' | 'all_in_tenant';
@@ -72,6 +73,11 @@ export default function ApprovalsInbox() {
   // tab change so a stale set doesn't leak across buckets.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+
+  // Bug 3.3: tab title is "Approvals" by default, switches to
+  // "<summary> · Approvals" while an action modal is open so the
+  // tab still names *what* the officer is reviewing.
+  useDocumentTitle(acting?.summary ? `${acting.summary} · Approvals` : 'Approvals');
 
   async function reload() {
     setErr(null);

@@ -33,6 +33,7 @@ import {
   type ReceiptChannel,
   type ReceiptLineKind,
 } from '../api/client';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 type LineDraft = {
   // ephemeral client id so React can key the rows
@@ -74,6 +75,7 @@ export default function CollectionDesk() {
   const [till, setTill] = useState<CurrentTillSession | null>(null);
   const [tillErr, setTillErr] = useState<string | null>(null);
   const [fees, setFees] = useState<FeeCatalogEntry[]>([]);
+  useDocumentTitle('Collection desk');
   useEffect(() => {
     getCurrentTillSession()
       .then((t) => setTill(t))
