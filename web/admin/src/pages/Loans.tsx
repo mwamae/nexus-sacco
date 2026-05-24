@@ -702,6 +702,15 @@ function AppDetail({ appId }: { appId: string }) {
             <KV label="Affordability ceiling" value={a.computed_max_installment ? `${currency} ${fmt(a.computed_max_installment)} / month` : '—'} />
             <KV label="Recommended" value={a.recommended_amount ? `${currency} ${fmt(a.recommended_amount)} over ${a.recommended_term_months} mo` : '—'} />
           </div>
+          {/* PR 2: render the scorer's soft warning when the product
+              used a deprecated multiplier basis. The ceiling is still
+              valid; this nudges the underwriter to ask Operations to
+              rebase the product to BOSA + shares. */}
+          {flags.filter((f) => f.code === 'legacy_multiplier_basis').map((f, i) => (
+            <div key={i} className="alert alert-warn tiny" style={{ marginTop: 8 }}>
+              <strong>Legacy multiplier basis · </strong>{f.message}
+            </div>
+          ))}
         </div>
       </div>
 

@@ -25,16 +25,23 @@ import (
 
 type ScoringInputs struct {
 	// Member context
-	MemberStatus       string          // 'active', 'dormant', 'blacklisted', ...
-	MembershipMonths   int             // months since member created_at
-	SharesHeld         int
-	ShareCapital       decimal.Decimal // shares × par
-	DepositsBalance    decimal.Decimal // sum of all deposit account balances
+	MemberStatus     string          // 'active', 'dormant', 'blacklisted', ...
+	MembershipMonths int             // months since member created_at
+	SharesHeld       int
+	ShareCapital     decimal.Decimal // shares × par
+	// Deposit balances split by segment (BOSA / FOSA, introduced
+	// with the regulatory taxonomy in PR 1). Loan-multiplier
+	// computation looks at BosaBalance only for the new bases;
+	// FosaBalance feeds savings-behaviour scoring and the legacy
+	// combined sum (FosaBalance + BosaBalance) when the BOSA_FOSA
+	// flag is off.
+	BosaBalance decimal.Decimal
+	FosaBalance decimal.Decimal
 
 	// Savings behaviour (last 12 months)
-	DepositTxnCount12mo  int
-	TotalDeposited12mo   decimal.Decimal
-	AvgMonthlyDeposit    decimal.Decimal
+	DepositTxnCount12mo int
+	TotalDeposited12mo  decimal.Decimal
+	AvgMonthlyDeposit   decimal.Decimal
 
 	// Loan history
 	ActiveLoans           int
@@ -91,11 +98,22 @@ type ScoreResult struct {
 
 // Score runs the full assessment. dtiThresholdPct and maxInstallmentPctOfDisposable
 // come from tenant_operations (defaults 40% and 50% respectively).
+//
+// bosaFosaEnabled toggles the loan-multiplier safety behaviour:
+//
+//	false (flag off, legacy): "deposits" / "shares_plus_deposits"
+//	  bases sum BOSA + FOSA exactly as they did before PR 1.
+//	  Existing tenants keep their ceilings; no warning fires.
+//	true  (flag on, segmented): "deposits" / "shares_plus_deposits"
+//	  silently route to the BOSA-only equivalent (matching what
+//	  prudential practice expects) and emit a soft_flag pointing
+//	  the credit officer at the loan-product config.
 func Score(
 	in ScoringInputs,
 	product *LoanProduct,
 	app ApplicationRequest,
 	dtiThresholdPct, maxInstallmentPctOfDisposable decimal.Decimal,
+	bosaFosaEnabled bool,
 ) ScoreResult {
 	r := ScoreResult{}
 
@@ -165,7 +183,11 @@ func Score(
 	r.RiskBand = bandForScore(r.OverallScore)
 
 	// ─── Multiplier ceiling (Computed max amount) ───
-	r.ComputedMaxAmount = computeMultiplierCeiling(in, product)
+	ceiling, multiplierWarning := computeMultiplierCeiling(in, product, bosaFosaEnabled)
+	r.ComputedMaxAmount = ceiling
+	if multiplierWarning != nil {
+		r.Flags = append(r.Flags, *multiplierWarning)
+	}
 
 	// ─── Affordability ───
 	r.NetDisposableIncome = app.MonthlyNetIncome.Add(app.OtherIncome).
@@ -357,24 +379,62 @@ func bandForScore(score int) string {
 	}
 }
 
-func computeMultiplierCeiling(in ScoringInputs, product *LoanProduct) decimal.Decimal {
+// computeMultiplierCeiling returns the multiplier-derived loan amount
+// cap + an optional soft-flag warning when a legacy basis was used
+// under bosaFosaEnabled=true. The warning is non-blocking; the
+// underwriter still sees the ceiling but should rebase the product.
+//
+// Acceptance scenarios (per PR 2 spec):
+//
+//	BOSA=0, FOSA=100k, basis=bosa, value=3 → ceiling 0 (NOT 300k).
+//	BOSA=50k,           basis=bosa, value=3 → ceiling 150k.
+//	bosaFosaEnabled=false → legacy bases retain the combined sum.
+func computeMultiplierCeiling(in ScoringInputs, product *LoanProduct, bosaFosaEnabled bool) (decimal.Decimal, *ScoreFlag) {
 	if product.MultiplierBasis == MultiplierNone || product.MultiplierValue == nil {
-		return product.MaxAmount
+		return product.MaxAmount, nil
 	}
-	var basis decimal.Decimal
+	var (
+		basis   decimal.Decimal
+		warning *ScoreFlag
+	)
 	switch product.MultiplierBasis {
 	case MultiplierShares:
 		basis = in.ShareCapital
+	case MultiplierBOSA:
+		basis = in.BosaBalance
+	case MultiplierBOSAPlusShares:
+		basis = in.ShareCapital.Add(in.BosaBalance)
 	case MultiplierDeposits:
-		basis = in.DepositsBalance
+		if bosaFosaEnabled {
+			// Legacy → BOSA only. SACCO-correct interpretation that
+			// matches what officers thought "deposits" meant when
+			// they configured the product.
+			basis = in.BosaBalance
+			warning = &ScoreFlag{
+				Severity: "soft_flag",
+				Code:     "legacy_multiplier_basis",
+				Message:  "Product uses the legacy 'deposits' multiplier basis; treating BOSA-only per SACCO prudential practice. Edit the product to use 'bosa' or 'bosa_plus_shares'.",
+			}
+		} else {
+			basis = in.BosaBalance.Add(in.FosaBalance)
+		}
 	case MultiplierSharesPlusDeps:
-		basis = in.ShareCapital.Add(in.DepositsBalance)
+		if bosaFosaEnabled {
+			basis = in.ShareCapital.Add(in.BosaBalance)
+			warning = &ScoreFlag{
+				Severity: "soft_flag",
+				Code:     "legacy_multiplier_basis",
+				Message:  "Product uses the legacy 'shares_plus_deposits' multiplier basis; treating share capital + BOSA per SACCO prudential practice. Edit the product to use 'bosa_plus_shares'.",
+			}
+		} else {
+			basis = in.ShareCapital.Add(in.BosaBalance).Add(in.FosaBalance)
+		}
 	}
 	ceiling := basis.Mul(*product.MultiplierValue).Round(2)
 	if ceiling.GreaterThan(product.MaxAmount) {
 		ceiling = product.MaxAmount
 	}
-	return ceiling
+	return ceiling, warning
 }
 
 // ComputeMonthlyInstallment computes the monthly installment for a

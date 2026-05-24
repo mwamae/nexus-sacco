@@ -9,6 +9,7 @@ import {
   createLoanPurposeCategory,
   deleteLoanProduct,
   extractError,
+  isLegacyMultiplierBasis,
   listLoanProducts,
   listLoanPurposeCategories,
   updateLoanProduct,
@@ -79,6 +80,19 @@ export default function LoanProductsPage() {
 
       {err && <div className="alert alert-error">{err}</div>}
 
+      {/* PR 2: surface tenants whose loan products still use the
+          pre-BOSA/FOSA multiplier bases. The scorer silently routes
+          those to BOSA-only when the tenant flag is on (and emits a
+          per-application warning), but the admin banner here is the
+          system-wide nudge to actually rebase the product. */}
+      {products && products.filter((p) => isLegacyMultiplierBasis(p.multiplier_basis)).length > 0 && (
+        <div className="alert alert-warn" style={{ marginBottom: 12 }}>
+          <strong>{products.filter((p) => isLegacyMultiplierBasis(p.multiplier_basis)).length} product(s)</strong>
+          {' '}use the legacy 'deposits' / 'shares + deposits' multiplier basis, which sums withdrawable savings (FOSA).
+          {' '}This is not SACCO-prudential-safe. Edit each affected product to use 'BOSA' or 'BOSA + shares'.
+        </div>
+      )}
+
       <div className="card">
         <div className="card-hd">
           <h3>Catalog</h3>
@@ -126,7 +140,14 @@ export default function LoanProductsPage() {
                     <td className="tiny">
                       {p.multiplier_basis === 'none' || !p.multiplier_value
                         ? '—'
-                        : `${p.multiplier_value}× ${p.multiplier_basis.replace('_', ' ')}`}
+                        : (
+                          <>
+                            {p.multiplier_value}× {p.multiplier_basis.replace(/_/g, ' ')}
+                            {isLegacyMultiplierBasis(p.multiplier_basis) && (
+                              <Badge tone="warn">legacy</Badge>
+                            )}
+                          </>
+                        )}
                     </td>
                     <td className="mono tiny">{p.min_guarantors}</td>
                     <td className="tiny">
@@ -349,16 +370,23 @@ function ProductModal({ initial, currency, onClose, onSaved }: {
             <div className="grid-3">
               <Field label="Minimum amount"><input className="input mono" value={minAmount} onChange={(e) => setMinAmount(e.target.value)} /></Field>
               <Field label="Maximum amount"><input className="input mono" value={maxAmount} onChange={(e) => setMaxAmount(e.target.value)} /></Field>
-              <Field label="Multiplier basis">
+              <Field
+                label="Multiplier basis"
+                hint={isLegacyMultiplierBasis(multBasis)
+                  ? "Deprecated: this basis sums withdrawable savings (FOSA), which doesn't meet SACCO prudential practice. Switch to 'bosa' or 'bosa + shares' so the ceiling is computed off the non-withdrawable bond."
+                  : undefined}
+              >
                 <select className="input" value={multBasis} onChange={(e) => setMultBasis(e.target.value as LoanMultiplierBasis)}>
                   <option value="none">None (use absolute max)</option>
                   <option value="shares">×  shares</option>
-                  <option value="deposits">×  deposits</option>
-                  <option value="shares_plus_deposits">×  shares + deposits</option>
+                  <option value="bosa">×  BOSA (member deposits)</option>
+                  <option value="bosa_plus_shares">×  BOSA + shares</option>
+                  <option value="deposits" disabled={!isLegacyMultiplierBasis(multBasis)}>×  deposits (legacy)</option>
+                  <option value="shares_plus_deposits" disabled={!isLegacyMultiplierBasis(multBasis)}>×  shares + deposits (legacy)</option>
                 </select>
               </Field>
               {multBasis !== 'none' && (
-                <Field label={`Multiplier value (e.g. 3 = "3× ${multBasis.replace('_', ' ')}")`}>
+                <Field label={`Multiplier value (e.g. 3 = "3× ${multBasis.replace(/_/g, ' ')}")`}>
                   <input className="input mono" value={multValue} onChange={(e) => setMultValue(e.target.value)} />
                 </Field>
               )}

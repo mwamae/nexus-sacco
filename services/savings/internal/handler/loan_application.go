@@ -387,6 +387,15 @@ func (h *LoanApplicationHandler) runScoringTx(ctx context.Context, tx pgx.Tx, ap
 	`).Scan(&dtiThresh, &maxInstallPct); err != nil {
 		return nil, err
 	}
+	// PR 2: BOSA/FOSA gates the loan-multiplier safety behaviour.
+	// Flag off → legacy combined-sum bases keep their current
+	// ceilings (no surprise drop for tenants that haven't opted
+	// in). Flag on → legacy bases route to BOSA-only and the
+	// scorer attaches a soft-flag warning.
+	bosaFosaEnabled, err := h.Tenants.BOSAFOSAEnabledTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	// Inputs.
 	in, err := h.Applications.GatherScoringInputsTx(ctx, tx, app.CounterpartyID, app.ProductID)
 	if err != nil {
@@ -402,7 +411,7 @@ func (h *LoanApplicationHandler) runScoringTx(ctx context.Context, tx pgx.Tx, ap
 		MonthlyExistingObligations: app.MonthlyExistingObligations,
 		EmploymentType:             app.EmploymentType,
 	}
-	result := domain.Score(*in, product, req, dtiThresh, maxInstallPct)
+	result := domain.Score(*in, product, req, dtiThresh, maxInstallPct, bosaFosaEnabled)
 
 	// JSON serialise factors + flags.
 	detailsJSON, _ := json.Marshal(result.Factors)

@@ -3062,7 +3062,17 @@ export type LoanProductFee = {
   display_order: number;
 };
 export type LoanCollateralRequirement = 'required' | 'optional' | 'not_applicable';
-export type LoanMultiplierBasis = 'none' | 'shares' | 'deposits' | 'shares_plus_deposits';
+// 'deposits' and 'shares_plus_deposits' are kept for backward
+// compatibility with existing tenants but are deprecated. New loan
+// products should pick 'bosa' or 'bosa_plus_shares' to match SACCO
+// prudential practice (FOSA savings don't secure loans).
+export type LoanMultiplierBasis =
+  | 'none' | 'shares' | 'bosa' | 'bosa_plus_shares'
+  | 'deposits' | 'shares_plus_deposits';
+
+export function isLegacyMultiplierBasis(b: LoanMultiplierBasis): boolean {
+  return b === 'deposits' || b === 'shares_plus_deposits';
+}
 
 export type LoanProduct = {
   id: string;

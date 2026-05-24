@@ -350,11 +350,21 @@ func (s *LoanApplicationStore) GatherScoringInputsTx(
 	_ = tx.QueryRow(ctx, `SELECT share_par_value FROM tenant_operations`).Scan(&parValue)
 	in.ShareCapital = decimal.NewFromInt(int64(in.SharesHeld)).Mul(parValue)
 
-	// Deposit balance + 12-month inflow stats.
+	// Deposit balance + 12-month inflow stats. PR 2: split the
+	// single SUM into segment-keyed sums via a join on
+	// deposit_products. The scorer's new BOSA-only basis depends on
+	// distinguishing the regulatory bucket. Legacy bases still see
+	// (BosaBalance + FosaBalance) when the BOSA_FOSA tenant flag is
+	// off (preserving pre-PR-1 ceiling math); the scorer routes
+	// that combination internally.
 	_ = tx.QueryRow(ctx, `
-		SELECT COALESCE(SUM(current_balance), 0)
-		FROM deposit_accounts WHERE counterparty_id = $1 AND status = 'active'
-	`, memberID).Scan(&in.DepositsBalance)
+		SELECT
+		  COALESCE(SUM(CASE WHEN dp.segment = 'bosa' THEN da.current_balance ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN dp.segment = 'fosa' THEN da.current_balance ELSE 0 END), 0)
+		FROM deposit_accounts da
+		JOIN deposit_products dp ON dp.id = da.product_id
+		WHERE da.counterparty_id = $1 AND da.status = 'active'
+	`, memberID).Scan(&in.BosaBalance, &in.FosaBalance)
 
 	_ = tx.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(amount), 0)

@@ -84,11 +84,31 @@ const (
 type LoanMultiplierBasis string
 
 const (
-	MultiplierNone           LoanMultiplierBasis = "none"
-	MultiplierShares         LoanMultiplierBasis = "shares"
+	MultiplierNone   LoanMultiplierBasis = "none"
+	MultiplierShares LoanMultiplierBasis = "shares"
+	// SACCO-prudential bases, introduced with the BOSA/FOSA split.
+	// "bosa" multiplies the member's non-withdrawable deposit bond
+	// only; "bosa_plus_shares" adds share capital on top. These are
+	// the values new loan products should be configured with.
+	MultiplierBOSA           LoanMultiplierBasis = "bosa"
+	MultiplierBOSAPlusShares LoanMultiplierBasis = "bosa_plus_shares"
+	// Deprecated: the legacy "deposits" / "shares_plus_deposits"
+	// values pre-date the BOSA/FOSA split — they sum *all* deposit
+	// balances (BOSA + FOSA), which is SACCO-unsafe because
+	// withdrawable FOSA shouldn't secure a loan. Kept for back-compat
+	// only; the scorer silently re-routes them to the BOSA-only
+	// equivalent and emits a soft warning when the BOSA_FOSA flag is
+	// on. Edit affected products to MultiplierBOSAPlusShares.
 	MultiplierDeposits       LoanMultiplierBasis = "deposits"
 	MultiplierSharesPlusDeps LoanMultiplierBasis = "shares_plus_deposits"
 )
+
+// IsLegacyMultiplierBasis reports whether the value is one of the
+// pre-BOSA/FOSA bases. The /loan-products UI uses this to surface a
+// "rebase to BOSA + shares" warning on affected rows.
+func (b LoanMultiplierBasis) IsLegacyMultiplierBasis() bool {
+	return b == MultiplierDeposits || b == MultiplierSharesPlusDeps
+}
 
 type LoanAppStatus string
 

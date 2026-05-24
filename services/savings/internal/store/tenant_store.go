@@ -70,3 +70,22 @@ func (s *TenantStore) SharePolicyTx(ctx context.Context, tx pgx.Tx) (*SharePolic
 	}
 	return &p, nil
 }
+
+// BOSAFOSAEnabledTx reports whether the current tenant has opted into
+// BOSA/FOSA segmentation. Defaults to false so any tenant that hasn't
+// flipped the flag (i.e. every tenant on day one) keeps the legacy
+// scoring behaviour without a surprise ceiling collapse.
+//
+// Reads via RLS — caller is responsible for being inside a
+// tenant-scoped transaction. `tenant_id = $1`-style filtering would
+// be redundant; the WHERE is implicit through current_tenant_id().
+func (s *TenantStore) BOSAFOSAEnabledTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var enabled bool
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(bosa_fosa_enabled, false) FROM tenants LIMIT 1
+	`).Scan(&enabled)
+	if err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
