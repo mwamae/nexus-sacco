@@ -24,6 +24,7 @@ import {
 } from '../api/client';
 import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
+import { LoanRef, MemberRef } from '../components/refs';
 
 // PR #9 — Inbox UX tabs.
 type TabKey = 'awaiting_me' | 'my_team' | 'all_in_tenant';
@@ -343,10 +344,7 @@ function InstanceRow({
         </td>
       )}
       <td>
-        <div style={{ fontWeight: 500 }}>
-          {i.summary ?? i.subject_kind.replace('_', ' ')}
-        </div>
-        <div className="tiny-mono">{i.subject_id}</div>
+        <SubjectRef instance={i} />
       </td>
       <td><Badge tone="neutral">{i.process_kind.replace(/_/g, ' ')}</Badge></td>
       <td>
@@ -488,7 +486,7 @@ function ActionModal({
       >
         <div className="card-hd">
           <h3>Act on {instance.process_kind.replace(/_/g, ' ')}</h3>
-          <span className="card-sub">{instance.subject_kind}: {instance.subject_id}</span>
+          <span className="card-sub"><SubjectRef instance={instance} /></span>
           <div className="card-hd-actions">
             <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={13} /></button>
           </div>
@@ -681,7 +679,7 @@ function SubjectMiniCard({ instance }: { instance: WFInstance }) {
     case 'cash':
       body = (
         <MiniGrid items={[
-          ['Counterparty', str(ctx['counterparty_id'])],
+          ['Member', str(ctx['counterparty_id']) ? <MemberRef counterpartyId={str(ctx['counterparty_id']) ?? undefined} /> : null],
           ['Amount', money(ctx['amount'])],
           ['Channel', str(ctx['channel'])],
           ['Reference', str(ctx['channel_ref'])],
@@ -754,8 +752,11 @@ function processKindFamily(kind: string): 'cash' | 'loan' | 'member' | 'batch' |
   return 'other';
 }
 
-function MiniGrid({ items }: { items: Array<[string, string | null]> }) {
-  const rows = items.filter(([, v]) => v && v !== '—');
+function MiniGrid({ items }: { items: Array<[string, ReactNode]> }) {
+  // Treat null + undefined + '—' + empty string as "absent" so rows
+  // collapse cleanly. ReactNode covers strings as well as MemberRef /
+  // LoanRef / etc. resolver components.
+  const rows = items.filter(([, v]) => v != null && v !== '—' && v !== '');
   if (rows.length === 0) return <div className="muted tiny">No context fields set.</div>;
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, fontSize: 12 }}>
@@ -812,6 +813,63 @@ function CommentsThread({ actions }: { actions: WFAction[] | null }) {
           {a.comments && <div style={{ marginTop: 3 }}>{a.comments}</div>}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─────────── SubjectRef ───────────
+//
+// Renders the subject of an instance using the resolver components
+// instead of a raw uuid. Dispatches on subject_kind so each kind
+// uses the right ref + link target. Falls back to the human
+// `summary` (or the kind name) when subject_kind is unrecognised.
+
+function SubjectRef({ instance }: { instance: WFInstance }) {
+  const kind = instance.subject_kind;
+  const summary = instance.summary;
+  const sid = instance.subject_id;
+
+  // Subjects we have a resolver for.
+  if (kind === 'member' || kind === 'counterparty') {
+    return (
+      <div>
+        <MemberRef counterpartyId={sid} />
+        {summary && <div className="muted tiny">{summary}</div>}
+      </div>
+    );
+  }
+  if (kind === 'loan') {
+    return (
+      <div>
+        <LoanRef loanId={sid} />
+        {summary && <div className="muted tiny">{summary}</div>}
+      </div>
+    );
+  }
+  // Application — the workflow's context already carries the
+  // applicant name + application_no, so use the summary alone +
+  // muted application no underneath. Avoids an extra HTTP fetch
+  // for a row that's already informative.
+  if (kind === 'membership_application' || kind === 'loan_application') {
+    const appNo = (instance.context as { application_no?: unknown })?.application_no;
+    const name  = (instance.context as { applicant_name?: unknown })?.applicant_name;
+    return (
+      <div>
+        <div style={{ fontWeight: 500 }}>
+          {typeof name === 'string' && name ? name : (summary ?? kind.replace(/_/g, ' '))}
+        </div>
+        {typeof appNo === 'string' && <div className="tiny-mono muted">{appNo}</div>}
+      </div>
+    );
+  }
+  // Cash receipts / batch runs / other — the engine-side `summary`
+  // is already human-readable (see e.g. collection_desk.go's
+  // postFeeLineTx); use it. Never surface a bare uuid.
+  return (
+    <div>
+      <div style={{ fontWeight: 500 }}>
+        {summary ?? kind.replace(/_/g, ' ')}
+      </div>
     </div>
   );
 }

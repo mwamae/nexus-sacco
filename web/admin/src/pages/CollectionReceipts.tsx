@@ -2,7 +2,7 @@
 // /collect/receipts/:id (single receipt detail). Same file because
 // they share types + the per-line status table.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   extractError,
   getCurrentTillSession,
@@ -15,6 +15,13 @@ import {
   type ApiReceiptLine,
   type ReceiptLineKind,
 } from '../api/client';
+import {
+  AccountRef,
+  MemberRef,
+  TechDetails,
+  TillLabel,
+  UserName,
+} from '../components/refs';
 
 const LINE_KIND_LABELS: Record<ReceiptLineKind, string> = {
   savings_deposit: 'Savings deposit',
@@ -99,7 +106,7 @@ function ReceiptsList() {
               <thead>
                 <tr>
                   <th>Serial</th>
-                  <th>Counterparty</th>
+                  <th>Member</th>
                   <th>Channel</th>
                   <th>Lines</th>
                   <th>Status</th>
@@ -112,7 +119,7 @@ function ReceiptsList() {
                 {rows.map((r) => (
                   <tr key={r.id}>
                     <td className="tiny-mono">{r.serial}</td>
-                    <td className="tiny-mono">{r.counterparty_id.slice(0, 8)}…</td>
+                    <td><MemberRef counterpartyId={r.counterparty_id} /></td>
                     <td>{r.channel}{r.channel_ref ? <span className="muted tiny"> · {r.channel_ref}</span> : null}</td>
                     <td className="tiny-mono">{(r.lines?.length ?? 0)}</td>
                     <td><span className="badge">{r.status}</span></td>
@@ -152,6 +159,13 @@ function ReceiptDetail({ id }: { id: string }) {
     }
   }
   useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
+  // Browser tab title: show the receipt serial instead of the URL
+  // uuid so an officer can pick the right tab back.
+  useEffect(() => {
+    if (receipt) {
+      document.title = `Receipt ${receipt.serial}`;
+    }
+  }, [receipt]);
 
   async function renderPDF() {
     setRenderingPDF(true);
@@ -233,7 +247,6 @@ function ReceiptDetail({ id }: { id: string }) {
                 <th style={{ textAlign: 'right' }}>Amount</th>
                 <th>Status</th>
                 <th>Approval</th>
-                <th>Posted txn</th>
                 <th></th>
               </tr>
             </thead>
@@ -245,18 +258,26 @@ function ReceiptDetail({ id }: { id: string }) {
                     {LINE_KIND_LABELS[l.kind]}
                     {l.narration && <div className="muted tiny">{l.narration}</div>}
                   </td>
-                  <td className="tiny-mono">
-                    {l.target_account_id ? l.target_account_id.slice(0, 8) + '…' : (l.fee_code ?? '—')}
+                  <td>
+                    {l.target_account_id
+                      ? <AccountRef accountId={l.target_account_id} kindHint={l.kind} />
+                      : (l.fee_code ?? '—')}
                   </td>
                   <td className="mono" style={{ textAlign: 'right' }}>{l.amount}</td>
-                  <td><span className="badge">{l.status}</span></td>
+                  <td>
+                    <span className="badge">{l.status}</span>
+                    {/* Posted-txn id is audit-only — hide behind a
+                        disclosure so the row stays readable. */}
+                    {l.posted_txn_id && (
+                      <TechDetails summary="Posted txn id">
+                        <span className="tiny-mono">{l.posted_txn_id}</span>
+                      </TechDetails>
+                    )}
+                  </td>
                   <td className="tiny-mono">
                     {l.approval_id
                       ? <a href={`/cash-approvals#${l.approval_id}`}>{l.approval_id.slice(0, 8)}…</a>
                       : <span className="muted">—</span>}
-                  </td>
-                  <td className="tiny-mono">
-                    {l.posted_txn_id ? l.posted_txn_id.slice(0, 8) + '…' : <span className="muted">—</span>}
                   </td>
                   <td>
                     {(l.status === 'pending' || l.status === 'posted') && (
@@ -279,10 +300,18 @@ function ReceiptDetail({ id }: { id: string }) {
       <div className="card" style={{ marginTop: 12 }}>
         <div className="card-hd"><h3>Metadata</h3></div>
         <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, fontSize: 13 }}>
-          <Meta label="Cashier" value={receipt.cashier_user_id.slice(0, 8) + '…'} mono />
-          <Meta label="Counterparty" value={receipt.counterparty_id.slice(0, 8) + '…'} mono />
-          <Meta label="Till session" value={receipt.till_session_id ? receipt.till_session_id.slice(0, 8) + '…' : '(virtual)'} mono />
-          <Meta label="Virtual till" value={receipt.virtual_till_id ? receipt.virtual_till_id.slice(0, 8) + '…' : '(physical)'} mono />
+          <Meta label="Cashier"><UserName userId={receipt.cashier_user_id} /></Meta>
+          <Meta label="Member"><MemberRef counterpartyId={receipt.counterparty_id} /></Meta>
+          <Meta label="Till">
+            {receipt.till_session_id
+              ? <TillLabel tillSessionId={receipt.till_session_id} />
+              : <span className="muted">(virtual)</span>}
+          </Meta>
+          <Meta label="Channel till">
+            {receipt.virtual_till_id
+              ? <TillLabel virtualTillId={receipt.virtual_till_id} />
+              : <span className="muted">(physical)</span>}
+          </Meta>
           <Meta label="Created" value={receipt.created_at.slice(0, 19).replace('T', ' ')} mono />
           <Meta label="Posted" value={receipt.posted_at ? receipt.posted_at.slice(0, 19).replace('T', ' ') : '—'} mono />
         </div>
@@ -291,11 +320,21 @@ function ReceiptDetail({ id }: { id: string }) {
   );
 }
 
-function Meta({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Meta({
+  label, value, mono, children,
+}: {
+  label: string;
+  value?: string;
+  mono?: boolean;
+  // Either pass `value` (legacy short-string usage) or `children` (a
+  // rich node like <UserName />). Passing both is harmless — children
+  // wins so the resolver components can render with their own styling.
+  children?: ReactNode;
+}) {
   return (
     <div>
       <div className="muted tiny">{label}</div>
-      <div className={mono ? 'tiny-mono' : 'tiny'}>{value}</div>
+      <div className={mono ? 'tiny-mono' : 'tiny'}>{children ?? value ?? '—'}</div>
     </div>
   );
 }

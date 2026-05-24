@@ -292,7 +292,7 @@ function StepBar({
   setStep: (s: Step) => void;
 }) {
   const steps: { id: Step; label: string }[] = [
-    { id: 'find', label: '1 · Find counterparty' },
+    { id: 'find', label: '1 · Find member' },
     { id: 'build', label: '2 · Build receipt' },
     { id: 'payment', label: '3 · Payment details' },
     { id: 'confirm', label: '4 · Confirm & post' },
@@ -365,8 +365,8 @@ function FindStep({ onPick }: { onPick: (cp: Counterparty) => void }) {
   return (
     <div className="card">
       <div className="card-hd">
-        <h3>Find counterparty</h3>
-        <span className="card-sub">By CP number, legacy ID, name, phone, email, or ID number.</span>
+        <h3>Find member</h3>
+        <span className="card-sub">By name, member number, phone, email, or ID number.</span>
       </div>
       <div className="card-body">
         <form
@@ -898,7 +898,7 @@ function ReceiptPreview(props: {
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
           <div>
-            <div className="muted tiny">Counterparty</div>
+            <div className="muted tiny">Member</div>
             <strong>{props.cp.display_name}</strong>
             <div className="tiny-mono">{props.cp.cp_number}</div>
           </div>

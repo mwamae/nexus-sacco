@@ -17,6 +17,7 @@ import {
   type FixedAsset,
 } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
+import { TechDetails } from '../../components/refs';
 
 const CATEGORY_GL: Record<string, string> = {
   furniture: '1500',
@@ -329,7 +330,15 @@ export default function FixedAssetsPage() {
                       <Stat label="Assets processed" value={String(runDetail.run.assets_processed)} />
                       <Stat label="Total depreciation" value={runDetail.run.total_depreciation} mono bold />
                       {runDetail.run.journal_entry_id && (
-                        <Stat label="Journal" value={runDetail.run.journal_entry_id.slice(0, 8) + '…'} mono />
+                        // Raw journal-entry uuid is audit-only; hide
+                        // behind the standard disclosure. A future
+                        // change can swap the uuid for a deep-link
+                        // to the journal entry detail page.
+                        <Stat label="Journal">
+                          <TechDetails summary="Journal entry id">
+                            <span className="tiny-mono">{runDetail.run.journal_entry_id}</span>
+                          </TechDetails>
+                        </Stat>
                       )}
                     </div>
 
@@ -409,14 +418,23 @@ export default function FixedAssetsPage() {
   );
 }
 
-function Stat({ label, value, mono, bold, color }: { label: string; value: string; mono?: boolean; bold?: boolean; color?: string }) {
+function Stat({
+  label, value, mono, bold, color, children,
+}: {
+  label: string;
+  value?: string;
+  mono?: boolean;
+  bold?: boolean;
+  color?: string;
+  children?: React.ReactNode;
+}) {
   return (
     <div>
       <div className="muted tiny">{label}</div>
       <div style={{
         fontSize: bold ? 22 : 18, fontWeight: bold ? 800 : 700,
         fontFamily: mono ? 'var(--font-mono)' : 'var(--font-mono)', color,
-      }}>{value}</div>
+      }}>{children ?? value ?? '—'}</div>
     </div>
   );
 }

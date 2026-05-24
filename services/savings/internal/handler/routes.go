@@ -28,6 +28,7 @@ type Deps struct {
 	MemberLedger *MemberLedgerHandler
 	Approvals   *PendingApprovalsHandler
 	Collection  *CollectionDeskHandler
+	VirtualTill *VirtualTillHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -71,6 +72,15 @@ func Routes(d Deps) http.Handler {
 				Get("/share-accounts/summary", d.Share.Summary)
 			r.With(middleware.RequirePermission("shares:bonus_issue")).
 				Post("/share-accounts/bonus-issue", d.Share.BonusIssue)
+			// Single-id getter for the admin AccountRef resolver.
+			// Lighter than GetByMember (no liens/cert/policy).
+			r.With(middleware.RequirePermission("shares:view")).
+				Get("/share-accounts/{id}", d.Share.GetAccountByID)
+
+			// Virtual tills — list-all (≤5 per tenant) feeds the
+			// TillLabel resolver cache.
+			r.With(middleware.RequirePermission("savings:view")).
+				Get("/virtual-tills", d.VirtualTill.List)
 
 			r.Route("/share-accounts/by-counterparty/{counterparty_id}", func(r chi.Router) {
 				r.With(middleware.RequirePermission("shares:view")).Get("/", d.Share.GetByMember)

@@ -202,6 +202,37 @@ type accountDTO struct {
 	Policy      policyDTO                `json:"policy"`
 }
 
+// GetAccountByID returns the bare share account by its uuid. Used by
+// the AccountRef admin component to resolve share_account.id → display
+// label without going through the heavier GetByMember envelope
+// (which loads liens + cert + policy).
+func (h *ShareHandler) GetAccountByID(w http.ResponseWriter, r *http.Request) {
+	id, err := parseUUIDParam(r, "id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var acct *domain.ShareAccount
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		a, err := h.Shares.GetAccountTx(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		acct = a
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.WriteErr(w, r, httpx.ErrNotFound("share account not found"))
+			return
+		}
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, acct)
+}
+
 func (h *ShareHandler) GetByMember(w http.ResponseWriter, r *http.Request) {
 	memberID, err := parseUUIDParam(r, "counterparty_id")
 	if err != nil {

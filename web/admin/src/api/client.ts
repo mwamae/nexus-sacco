@@ -5470,6 +5470,37 @@ export async function getTillSession(id: string): Promise<{ session: TillSession
   return r.data.data;
 }
 
+// ─── Virtual tills (savings — non-cash channels) ────────────────────
+//
+// One row per (tenant, non-cash channel), auto-provisioned by the
+// Collection Desk on first use of that channel. ≤5 rows per tenant
+// total, so listVirtualTills + module-level cache in TillLabel is
+// cheaper than a per-id getter.
+
+export type VirtualTill = {
+  id: string;
+  tenant_id: string;
+  channel: ReceiptChannel;
+  gl_account_code: string;
+  display_name: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listVirtualTills(): Promise<VirtualTill[]> {
+  const r = await api.get('/v1/virtual-tills');
+  return r.data.data.items ?? [];
+}
+
+// ─── Single-id share account (admin AccountRef resolver) ────────────
+// Returns the bare ShareAccount only — for the rich view (liens,
+// certificate, policy) use getShareAccountByMember.
+export async function getShareAccount(id: string): Promise<ShareAccount> {
+  const r = await api.get(`/v1/share-accounts/${id}`);
+  return r.data.data;
+}
+
 export async function closeTillSession(id: string, actualClose: string, notes?: string): Promise<TillSession> {
   const r = await api.post(`/v1/till-sessions/${id}/close`, { actual_close: actualClose, notes });
   return r.data.data;

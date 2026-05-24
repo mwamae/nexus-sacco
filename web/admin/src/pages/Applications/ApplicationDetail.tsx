@@ -31,6 +31,7 @@ import {
 } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 import { usePageCrumb } from '../../lib/pageCrumb';
+import { MemberRef, TechDetails } from '../../components/refs';
 
 const STATUS_LABEL: Record<ApplicationStatus, string> = {
   submitted: 'Pending review',
@@ -154,10 +155,21 @@ export default function ApplicationDetailPage() {
         <div className="card" style={{ marginTop: 12, borderColor: 'var(--pos)' }}>
           <div className="card-hd"><h3>Activation</h3><span className="card-sub" style={{ color: 'var(--pos)' }}>✓ materialized</span></div>
           <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-            <Field label="Counterparty ID" value={a.materialized_counterparty_id.slice(0, 8) + '…'} mono />
+            <Field label="Member"><MemberRef counterpartyId={a.materialized_counterparty_id} /></Field>
             <Field label="Materialized at" value={a.materialized_at?.slice(0, 19).replace('T', ' ') ?? '—'} mono />
-            <Field label="Fee journal entry" value={a.fee_journal_entry_id ? a.fee_journal_entry_id.slice(0, 8) + '…' : '—'} mono />
-            <a className="btn" href={`/counterparties/${a.materialized_counterparty_id}`} style={{ alignSelf: 'center' }}>Open counterparty →</a>
+            <Field label="Fee journal entry">
+              {a.fee_journal_entry_id
+                ? (
+                  <TechDetails summary="Journal entry id">
+                    <span className="tiny-mono">{a.fee_journal_entry_id}</span>
+                  </TechDetails>
+                )
+                : <span className="muted">—</span>}
+            </Field>
+            {/* PR #3 will rewrite this to use the resolved member's
+                kind-aware target route (/members/<id> or /orgs/<id>);
+                for now the label is corrected. */}
+            <a className="btn" href={`/counterparties/${a.materialized_counterparty_id}`} style={{ alignSelf: 'center' }}>Open member →</a>
           </div>
         </div>
       )}
@@ -414,11 +426,23 @@ export default function ApplicationDetailPage() {
   );
 }
 
-function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Field({
+  label, value, mono, children,
+}: {
+  label: string;
+  value?: string;
+  mono?: boolean;
+  // Children win when both are passed — lets callers drop a resolver
+  // component in without dropping the value-string overload everywhere
+  // else uses.
+  children?: React.ReactNode;
+}) {
   return (
     <div>
       <div className="muted tiny">{label}</div>
-      <div style={{ fontFamily: mono ? 'var(--font-mono)' : undefined }}>{value}</div>
+      <div style={{ fontFamily: mono ? 'var(--font-mono)' : undefined }}>
+        {children ?? value ?? '—'}
+      </div>
     </div>
   );
 }

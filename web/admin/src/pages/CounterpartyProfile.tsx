@@ -193,7 +193,7 @@ function CounterpartyShell({
 
       <div className="card" style={{ padding: 0 }}>
         <Tabs
-          ariaLabel="Counterparty sections"
+          ariaLabel="Member sections"
           tabs={TABS}
           value={tab}
           onChange={(t) => navigateTab(t)}

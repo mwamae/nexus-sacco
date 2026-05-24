@@ -343,6 +343,7 @@ func main() {
 		MemberLedger: memberLedgerH,
 		Approvals:    approvalsH,
 		Collection:   collectionDeskH,
+		VirtualTill:  &handler.VirtualTillHandler{DB: pool, Tills: virtualTillStore},
 		TenantStore:  tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,
