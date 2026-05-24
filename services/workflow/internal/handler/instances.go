@@ -51,11 +51,14 @@ type createInstanceReq struct {
 	ProcessKind    string         `json:"process_kind"`
 	DefinitionID   *uuid.UUID     `json:"definition_id"` // optional; falls back to active def for process_kind
 	SubjectKind    string         `json:"subject_kind"`
-	SubjectID      string         `json:"subject_id"`
+	SubjectID      uuid.UUID      `json:"subject_id"`
 	Context        map[string]any `json:"context"`
 	CallbackURL    string         `json:"callback_url"`
 	CallbackSecret string         `json:"callback_secret"`
 	InitiatorID    *uuid.UUID     `json:"initiator_id"`
+	// Unified Inbox additions:
+	Summary   string `json:"summary"`
+	SourceURL string `json:"source_url"`
 }
 
 func (h *InstanceHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -67,8 +70,7 @@ func (h *InstanceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ProcessKind = strings.TrimSpace(req.ProcessKind)
 	req.SubjectKind = strings.TrimSpace(req.SubjectKind)
-	req.SubjectID = strings.TrimSpace(req.SubjectID)
-	if req.ProcessKind == "" || req.SubjectKind == "" || req.SubjectID == "" {
+	if req.ProcessKind == "" || req.SubjectKind == "" || req.SubjectID == uuid.Nil {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("process_kind, subject_kind, and subject_id are required"))
 		return
 	}
@@ -153,6 +155,12 @@ func (h *InstanceHandler) Create(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Mirror the active level's SLA onto the indexed column so the
+		// "overdue" widget is a single scan instead of N JSON walks.
+		var breachAt *time.Time
+		if startLevel >= 0 && snap[startLevel].SLADueAt != nil {
+			breachAt = snap[startLevel].SLADueAt
+		}
 		inst, err := h.Instances.CreateTx(r.Context(), tx, store.CreateInstanceInput{
 			TenantID: tenantID, DefinitionID: def.ID,
 			ProcessKind: req.ProcessKind, SubjectKind: req.SubjectKind, SubjectID: req.SubjectID,
@@ -161,6 +169,9 @@ func (h *InstanceHandler) Create(w http.ResponseWriter, r *http.Request) {
 			LevelsSnapshot: snap,
 			StartingLevel:  maxInt(startLevel, 0),
 			StartingStatus: startStatus,
+			Summary:        strings.TrimSpace(req.Summary),
+			SourceURL:      strings.TrimSpace(req.SourceURL),
+			SLABreachAt:    breachAt,
 		})
 		if err != nil {
 			return err
@@ -212,7 +223,14 @@ func (h *InstanceHandler) List(w http.ResponseWriter, r *http.Request) {
 		Status:      domain.Status(strings.TrimSpace(q.Get("status"))),
 		ProcessKind: strings.TrimSpace(q.Get("process_kind")),
 		SubjectKind: strings.TrimSpace(q.Get("subject_kind")),
-		SubjectID:   strings.TrimSpace(q.Get("subject_id")),
+	}
+	if sid := strings.TrimSpace(q.Get("subject_id")); sid != "" {
+		parsed, err := uuid.Parse(sid)
+		if err != nil {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("subject_id must be a uuid"))
+			return
+		}
+		in.SubjectID = &parsed
 	}
 	if l := q.Get("limit"); l != "" {
 		fmt.Sscanf(l, "%d", &in.Limit)
@@ -662,4 +680,186 @@ func (h *InstanceHandler) recordCallback(parent context.Context, tenantID, insta
 		})
 		return err
 	})
+}
+
+// ─────────── POST /v1/workflow-instances/{id}/claim ───────────
+//
+// Locks an instance for 30 minutes so two approvers in the same role
+// don't double-process. Re-claiming by the same user extends the
+// expiry; another user trying to claim while the lock is live gets
+// 409. Claims clear automatically when the instance reaches a terminal
+// status (see store.UpdateProgressTx).
+//
+// The Inbox uses the three claim columns to bucket items:
+//   • claimed_by IS NULL                         → "Awaiting me"
+//   • claimed_by = current_user                  → "Claimed by me"
+//   • claimed_by IS NOT NULL AND <> current_user → "My team" (read-only)
+
+const claimTTL = 30 * time.Minute
+
+func (h *InstanceHandler) Claim(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("id must be a uuid"))
+		return
+	}
+	tenantID, _ := middleware.TenantIDFrom(r)
+	userID, _ := middleware.UserIDFrom(r)
+	if userID == uuid.Nil {
+		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
+		return
+	}
+	var inst *domain.Instance
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		i, cErr := h.Instances.ClaimTx(r.Context(), tx, id, userID, claimTTL)
+		if cErr != nil {
+			return cErr
+		}
+		inst = i
+		_, aErr := h.Actions.WriteTx(r.Context(), tx, store.CreateActionInput{
+			TenantID: tenantID, InstanceID: id,
+			Action: domain.ActClaim, ActorID: &userID,
+			Comments: "claimed",
+			Metadata: map[string]any{"expires_at": i.ClaimExpires},
+		})
+		return aErr
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrClaimContested) {
+			httpx.WriteErr(w, r, httpx.ErrConflict("workflow instance is already claimed by another user"))
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.WriteErr(w, r, httpx.ErrNotFound("workflow instance not found"))
+			return
+		}
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, inst)
+}
+
+// ─────────── POST /v1/workflow-instances/{id}/release ───────────
+//
+// Releases a held claim. Allowed for: the current claimant OR a
+// platform admin (in case a user goes on leave with items locked).
+// Non-claimant releases produce a 403.
+
+func (h *InstanceHandler) Release(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("id must be a uuid"))
+		return
+	}
+	tenantID, _ := middleware.TenantIDFrom(r)
+	userID, _ := middleware.UserIDFrom(r)
+	claims := middleware.ClaimsFrom(r)
+	var inst *domain.Instance
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		i, gErr := h.Instances.ByIDTx(r.Context(), tx, id)
+		if gErr != nil {
+			return gErr
+		}
+		if i.ClaimedBy == nil {
+			// Already released — no-op, return current state.
+			inst = i
+			return nil
+		}
+		// Authorisation: only the current claimant or a platform admin
+		// may release. Stops one approver from yanking another's lock.
+		isClaimant := *i.ClaimedBy == userID
+		isAdmin := claims != nil && claims.IsPlatformAdmin
+		if !isClaimant && !isAdmin {
+			return httpx.ErrForbidden("only the current claimant or a platform admin may release a claim")
+		}
+		if rErr := h.Instances.ReleaseTx(r.Context(), tx, id); rErr != nil {
+			return rErr
+		}
+		updated, gErr := h.Instances.ByIDTx(r.Context(), tx, id)
+		if gErr != nil {
+			return gErr
+		}
+		inst = updated
+		_, aErr := h.Actions.WriteTx(r.Context(), tx, store.CreateActionInput{
+			TenantID: tenantID, InstanceID: id,
+			Action: domain.ActRelease, ActorID: &userID,
+			Comments: "released",
+		})
+		return aErr
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.WriteErr(w, r, httpx.ErrNotFound("workflow instance not found"))
+			return
+		}
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, inst)
+}
+
+// ─────────── POST /v1/workflow-instances/{id}/comments ───────────
+//
+// Threaded comment on an instance. Stored as a wf_actions row with
+// action='comment' so the existing actions timeline renders it
+// alongside decision history without schema sprawl. Anyone with
+// workflow:view can comment; the decision form gates writers
+// separately.
+
+type commentReq struct {
+	Body string `json:"body"`
+}
+
+func (h *InstanceHandler) Comment(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("id must be a uuid"))
+		return
+	}
+	tenantID, _ := middleware.TenantIDFrom(r)
+	userID, _ := middleware.UserIDFrom(r)
+	var req commentReq
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	req.Body = strings.TrimSpace(req.Body)
+	if req.Body == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("comment body is required"))
+		return
+	}
+	claims := middleware.ClaimsFrom(r)
+	var role string
+	if claims != nil && len(claims.Roles) > 0 {
+		role = claims.Roles[0]
+	}
+	var action *domain.Action
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		// Existence check — returns a clean 404 instead of letting the
+		// FK violation surface as a 500.
+		if _, gErr := h.Instances.ByIDTx(r.Context(), tx, id); gErr != nil {
+			return gErr
+		}
+		a, wErr := h.Actions.WriteTx(r.Context(), tx, store.CreateActionInput{
+			TenantID: tenantID, InstanceID: id,
+			Action:   domain.ActComment,
+			ActorID:  &userID,
+			ActorRole: role,
+			Comments: req.Body,
+		})
+		if wErr != nil {
+			return wErr
+		}
+		action = a
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.WriteErr(w, r, httpx.ErrNotFound("workflow instance not found"))
+			return
+		}
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.Created(w, action)
 }

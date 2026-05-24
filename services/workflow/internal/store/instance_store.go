@@ -32,7 +32,7 @@ type CreateInstanceInput struct {
 	DefinitionID   uuid.UUID
 	ProcessKind    string
 	SubjectKind    string
-	SubjectID      string
+	SubjectID      uuid.UUID
 	Context        map[string]any
 	CallbackURL    string
 	CallbackSecret string
@@ -40,6 +40,10 @@ type CreateInstanceInput struct {
 	LevelsSnapshot []domain.LevelState // already-resolved (conditional levels marked skipped)
 	StartingLevel  int
 	StartingStatus domain.Status
+	// Unified Inbox additions:
+	Summary     string     // one-line description for the Inbox row
+	SourceURL   string     // deep-link back to the creating page
+	SLABreachAt *time.Time // active-level SLA mirror at creation time
 }
 
 func (s *InstanceStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateInstanceInput) (*domain.Instance, error) {
@@ -50,16 +54,16 @@ func (s *InstanceStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateInstan
 		INSERT INTO wf_instances (
 		  tenant_id, definition_id, process_kind, subject_kind, subject_id,
 		  status, current_level, context, callback_url, callback_secret,
-		  initiator_id, levels
+		  initiator_id, levels, summary, source_url, sla_breach_at
 		) VALUES (
 		  $1, $2, $3, $4, $5,
 		  $6, $7, $8, NULLIF($9,''), NULLIF($10,''),
-		  $11, $12
+		  $11, $12, NULLIF($13,''), NULLIF($14,''), $15
 		)
 		RETURNING `+instanceSelectCols+`
 	`, in.TenantID, in.DefinitionID, in.ProcessKind, in.SubjectKind, in.SubjectID,
 		in.StartingStatus, in.StartingLevel, ctxBytes, in.CallbackURL, in.CallbackSecret,
-		in.InitiatorID, lvlsBytes,
+		in.InitiatorID, lvlsBytes, in.Summary, in.SourceURL, in.SLABreachAt,
 	).Scan(instanceScanDests(&i)...)
 	if err != nil {
 		return nil, fmt.Errorf("insert instance: %w", err)
@@ -84,7 +88,7 @@ type ListInstancesInput struct {
 	Status      domain.Status
 	ProcessKind string
 	SubjectKind string
-	SubjectID   string
+	SubjectID   *uuid.UUID
 	Limit       int
 	Offset      int
 }
@@ -109,9 +113,9 @@ func (s *InstanceStore) ListTx(ctx context.Context, tx pgx.Tx, in ListInstancesI
 		where = append(where, fmt.Sprintf("subject_kind = $%d", len(args)+1))
 		args = append(args, in.SubjectKind)
 	}
-	if in.SubjectID != "" {
+	if in.SubjectID != nil {
 		where = append(where, fmt.Sprintf("subject_id = $%d", len(args)+1))
-		args = append(args, in.SubjectID)
+		args = append(args, *in.SubjectID)
 	}
 	whereSQL := ""
 	if len(where) > 0 {
@@ -148,16 +152,104 @@ func (s *InstanceStore) ListTx(ctx context.Context, tx pgx.Tx, in ListInstancesI
 }
 
 // UpdateProgressTx persists the per-level array + top-level status/current_level/completed_at.
+// Also mirrors the active level's sla_due_at to the indexed sla_breach_at
+// column, and releases the claim if the instance becomes terminal.
 func (s *InstanceStore) UpdateProgressTx(ctx context.Context, tx pgx.Tx, i *domain.Instance) error {
 	lvlsBytes, err := json.Marshal(i.Levels)
 	if err != nil {
 		return err
 	}
+	breachAt := activeLevelSLA(i)
+	terminal := isTerminal(i.Status)
 	_, err = tx.Exec(ctx, `
 		UPDATE wf_instances
-		SET status = $2, current_level = $3, levels = $4, completed_at = $5
+		SET status         = $2,
+		    current_level  = $3,
+		    levels         = $4,
+		    completed_at   = $5,
+		    sla_breach_at  = $6,
+		    -- terminal status clears any outstanding claim so the
+		    -- Inbox doesn't show ghost locks.
+		    claimed_by     = CASE WHEN $7 THEN NULL ELSE claimed_by    END,
+		    claimed_at     = CASE WHEN $7 THEN NULL ELSE claimed_at    END,
+		    claim_expires  = CASE WHEN $7 THEN NULL ELSE claim_expires END
 		WHERE id = $1
-	`, i.ID, i.Status, i.CurrentLevel, lvlsBytes, i.CompletedAt)
+	`, i.ID, i.Status, i.CurrentLevel, lvlsBytes, i.CompletedAt, breachAt, terminal)
+	return err
+}
+
+// activeLevelSLA returns the SLA-due timestamp of the current
+// (in-progress / awaiting_info / returned) level, if any. NULL means
+// no active SLA — either the instance is terminal or the current
+// level has no sla_hours configured.
+func activeLevelSLA(i *domain.Instance) *time.Time {
+	if isTerminal(i.Status) {
+		return nil
+	}
+	if i.CurrentLevel < 0 || i.CurrentLevel >= len(i.Levels) {
+		return nil
+	}
+	return i.Levels[i.CurrentLevel].SLADueAt
+}
+
+func isTerminal(s domain.Status) bool {
+	switch s {
+	case domain.StatusApproved, domain.StatusRejected, domain.StatusCancelled, domain.StatusExpired:
+		return true
+	}
+	return false
+}
+
+// ─────────── Claim / release ───────────
+
+// ErrClaimContested is returned when a claim attempt finds the instance
+// already locked by another user whose claim hasn't expired.
+var ErrClaimContested = errors.New("workflow: instance already claimed")
+
+// ClaimTx atomically takes a lock on the instance for the given user
+// for ttl duration. If another user holds an unexpired lock,
+// returns ErrClaimContested. Idempotent: same user re-claiming
+// extends the expiry to now+ttl.
+func (s *InstanceStore) ClaimTx(ctx context.Context, tx pgx.Tx, id, userID uuid.UUID, ttl time.Duration) (*domain.Instance, error) {
+	now := time.Now().UTC()
+	expires := now.Add(ttl)
+	// Atomic update — only succeeds if no live claim by a different user.
+	tag, err := tx.Exec(ctx, `
+		UPDATE wf_instances
+		SET claimed_by    = $2,
+		    claimed_at    = $3,
+		    claim_expires = $4
+		WHERE id = $1
+		  AND (claimed_by IS NULL
+		       OR claimed_by = $2
+		       OR claim_expires < $3)
+	`, id, userID, now, expires)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		// Either the instance doesn't exist or someone else holds it.
+		// Differentiate so the handler can pick 404 vs 409.
+		var holder uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT claimed_by FROM wf_instances WHERE id = $1`, id).Scan(&holder); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, ErrNotFound
+			}
+			return nil, err
+		}
+		return nil, ErrClaimContested
+	}
+	return s.ByIDTx(ctx, tx, id)
+}
+
+// ReleaseTx clears the claim. Caller must be the current claimant
+// OR have a privileged override (the handler decides).
+func (s *InstanceStore) ReleaseTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE wf_instances
+		SET claimed_by = NULL, claimed_at = NULL, claim_expires = NULL
+		WHERE id = $1
+	`, id)
 	return err
 }
 
@@ -319,7 +411,9 @@ const instanceSelectCols = `
 id, tenant_id, definition_id, process_kind, subject_kind, subject_id,
 status, current_level, context, COALESCE(callback_url,''),
 COALESCE(callback_status,''), callback_delivered_at,
-initiator_id, started_at, completed_at, levels`
+initiator_id, started_at, completed_at, levels,
+COALESCE(summary,''), COALESCE(source_url,''),
+claimed_by, claimed_at, claim_expires, sla_breach_at`
 
 func instanceScanDests(i *domain.Instance) []any {
 	return []any{
@@ -327,6 +421,8 @@ func instanceScanDests(i *domain.Instance) []any {
 		&i.Status, &i.CurrentLevel, jsonScanner(&i.Context), &i.CallbackURL,
 		&i.CallbackStatus, &i.CallbackDeliveredAt,
 		&i.InitiatorID, &i.StartedAt, &i.CompletedAt, levelsScanner(&i.Levels),
+		&i.Summary, &i.SourceURL,
+		&i.ClaimedBy, &i.ClaimedAt, &i.ClaimExpires, &i.SLABreachAt,
 	}
 }
 

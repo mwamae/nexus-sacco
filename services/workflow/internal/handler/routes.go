@@ -54,6 +54,11 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("workflow:view")).Get("/workflow-instances/{id}", d.Instances.Get)
 			r.With(middleware.RequirePermission("workflow:view")).Post("/workflow-instances", d.Instances.Create)
 			r.With(middleware.RequirePermission("workflow:view")).Post("/workflow-instances/{id}/actions", d.Instances.Action)
+
+			// Unified Inbox additions: claim/release lock + threaded comments.
+			r.With(middleware.RequirePermission("workflow:view")).Post("/workflow-instances/{id}/claim", d.Instances.Claim)
+			r.With(middleware.RequirePermission("workflow:view")).Post("/workflow-instances/{id}/release", d.Instances.Release)
+			r.With(middleware.RequirePermission("workflow:view")).Post("/workflow-instances/{id}/comments", d.Instances.Comment)
 		})
 	})
 	return r

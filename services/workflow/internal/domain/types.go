@@ -50,13 +50,17 @@ const (
 	ActCancel         ActionKind = "cancel"
 	ActCallbackFired  ActionKind = "callback_fired"
 	ActSLABreached    ActionKind = "sla_breached"
+	ActComment        ActionKind = "comment"
+	ActClaim          ActionKind = "claim"
+	ActRelease        ActionKind = "release"
 )
 
 type Quorum string
 
 const (
-	QuorumAnyOne Quorum = "any_one"
-	QuorumAll    Quorum = "all"
+	QuorumAnyOne   Quorum = "any_one"
+	QuorumAll      Quorum = "all"
+	QuorumMajority Quorum = "majority"
 )
 
 // LevelDef is the definition-time level shape (stored in wf_levels).
@@ -114,7 +118,7 @@ type Instance struct {
 	DefinitionID  uuid.UUID    `json:"definition_id"`
 	ProcessKind   string       `json:"process_kind"`
 	SubjectKind   string       `json:"subject_kind"`
-	SubjectID     string       `json:"subject_id"`
+	SubjectID     uuid.UUID    `json:"subject_id"`
 	Status        Status       `json:"status"`
 	CurrentLevel  int          `json:"current_level"`
 	Context       any          `json:"context"`
@@ -125,6 +129,13 @@ type Instance struct {
 	StartedAt     time.Time    `json:"started_at"`
 	CompletedAt   *time.Time   `json:"completed_at,omitempty"`
 	Levels        []LevelState `json:"levels"`
+	// Unified Inbox additions (migration 0002):
+	Summary       string       `json:"summary,omitempty"`        // one-line Inbox description
+	SourceURL     string       `json:"source_url,omitempty"`     // deep-link back to originating page
+	ClaimedBy     *uuid.UUID   `json:"claimed_by,omitempty"`
+	ClaimedAt     *time.Time   `json:"claimed_at,omitempty"`
+	ClaimExpires  *time.Time   `json:"claim_expires,omitempty"`
+	SLABreachAt   *time.Time   `json:"sla_breach_at,omitempty"`  // mirror of active-level sla_due_at; indexed
 }
 
 type Action struct {
