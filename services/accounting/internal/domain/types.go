@@ -122,7 +122,11 @@ type JournalEntry struct {
 	RejectedAt      *time.Time         `json:"rejected_at,omitempty"`
 	RejectionReason *string            `json:"rejection_reason,omitempty"`
 	UpdatedAt       time.Time          `json:"updated_at"`
-	Lines           []JournalLine      `json:"lines,omitempty"`
+	// Set when the Unified Inbox cutover (PR #7) gates this entry
+	// through the workflow engine. Drives the deep-link banner +
+	// the dispatcher dedup on resolve callback.
+	WorkflowInstanceID *uuid.UUID  `json:"workflow_instance_id,omitempty"`
+	Lines              []JournalLine `json:"lines,omitempty"`
 }
 
 type JournalLine struct {

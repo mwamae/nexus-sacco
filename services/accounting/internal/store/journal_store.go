@@ -43,7 +43,8 @@ const entryCols = `
 	entry_type, source_module, source_ref, narration, status,
 	total_debits, total_credits, reversal_of,
 	created_by, created_at, posted_by, posted_at,
-	rejected_by, rejected_at, rejection_reason, updated_at
+	rejected_by, rejected_at, rejection_reason, updated_at,
+	workflow_instance_id
 `
 
 func scanEntry(row pgx.Row) (*domain.JournalEntry, error) {
@@ -56,6 +57,7 @@ func scanEntry(row pgx.Row) (*domain.JournalEntry, error) {
 		&e.TotalDebits, &e.TotalCredits, &e.ReversalOf,
 		&e.CreatedBy, &e.CreatedAt, &e.PostedBy, &e.PostedAt,
 		&e.RejectedBy, &e.RejectedAt, &e.RejectionReason, &e.UpdatedAt,
+		&e.WorkflowInstanceID,
 	)
 	if err != nil {
 		return nil, err

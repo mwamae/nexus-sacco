@@ -61,6 +61,10 @@ func Routes(d Deps) http.Handler {
 	// engine POSTs here on terminal status; the handler's own auth
 	// gate (X-Internal-Token + User-Agent fallback) protects it.
 	r.Post("/internal/v1/fiscal-year-close-proposals/resolve", d.FiscalYear.ResolveFromWorkflow)
+	// PR #7 — workflow callback for manual journal entries +
+	// reversals. Single endpoint dispatches by the JE's existing
+	// status field.
+	r.Post("/internal/v1/journal-entries/resolve", d.Journals.ResolveFromWorkflow)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
@@ -85,6 +89,10 @@ func Routes(d Deps) http.Handler {
 			r.Get("/journal-entries/{id}", d.Journals.Get)
 			r.Post("/journal-entries/{id}/approve", d.Journals.Approve)
 			r.Post("/journal-entries/{id}/reject", d.Journals.Reject)
+			// PR #7 — Unified Inbox reversal CTA. Creates an inverse-
+			// lines draft + a journal_reversal wf_instance (Board-
+			// only). Posts via the resolve callback on approve.
+			r.Post("/journal-entries/{id}/reverse", d.Journals.Reverse)
 
 			// Reports
 			r.Get("/reports/trial-balance", d.Reports.TrialBalance)

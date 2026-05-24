@@ -41,6 +41,13 @@ type JournalHandler struct {
 	Periods  *store.PeriodStore
 	Engine   *posting.Engine
 	Logger   *slog.Logger
+
+	// PR #7 — Unified Inbox workflow integration. Empty WorkflowURL
+	// disables the gate; the legacy maker/checker stays the only path.
+	WorkflowURL           string
+	AccountingSelfURL     string
+	WorkflowInternalToken string
+	HTTP                  *http.Client
 }
 
 // ─────────── List / Get ───────────
@@ -169,7 +176,11 @@ func (h *JournalHandler) Create(w http.ResponseWriter, r *http.Request) {
 	tid, _ := middleware.TenantIDFrom(r)
 	actor, _ := middleware.UserIDFrom(r)
 
-	var out *domain.JournalEntry
+	var (
+		out          *domain.JournalEntry
+		totalDebit   decimal.Decimal
+		affectsEquity bool
+	)
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		// Resolve account codes + parse decimals up-front so errors
 		// surface before any insert.
@@ -189,6 +200,14 @@ func (h *JournalHandler) Create(w http.ResponseWriter, r *http.Request) {
 			acct, aerr := h.CoA.GetByCodeTx(r.Context(), tx, ln.AccountCode)
 			if aerr != nil {
 				return httpx.ErrBadRequest("line " + strconv.Itoa(i+1) + ": unknown account_code " + ln.AccountCode)
+			}
+			// Track the totals that feed the workflow condition:
+			// `amount` is the total debit side (== total credit, the
+			// engine balance-checks at post time); `affects_equity`
+			// is true if any line touches an equity account.
+			totalDebit = totalDebit.Add(d)
+			if acct.Class == domain.ClassEquity {
+				affectsEquity = true
 			}
 			lines = append(lines, store.EntryLineInput{
 				AccountID: acct.ID, Debit: d, Credit: c, Narration: ln.Narration,
@@ -214,6 +233,30 @@ func (h *JournalHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
+	}
+
+	// PR #7 — when the tenant is on the Unified Inbox, every manual
+	// JE goes through the workflow engine. The seeded definition's
+	// condition skips both levels when amount ≤ 100k AND
+	// affects_equity = false; in that case the engine auto-approves
+	// at creation and fires the resolve callback immediately, which
+	// posts the entry. Above-threshold or equity-touching entries
+	// stop at the Reviewer level until a human acts.
+	if h.WorkflowURL != "" && h.tenantHasUnifiedInbox(r.Context(), tid) {
+		wfID, wfErr := h.createJEWorkflowInstance(r, tid, out, totalDebit, affectsEquity, actor, "manual_journal_entry")
+		if wfErr != nil {
+			// Roll back is hard at this point (separate tx); surface
+			// the error but leave the draft in pending_approval —
+			// the legacy Approve endpoint still works as a fallback.
+			httpx.WriteErr(w, r, wfErr)
+			return
+		}
+		_ = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+			_, e := tx.Exec(r.Context(),
+				`UPDATE journal_entries SET workflow_instance_id = $1 WHERE id = $2`, wfID, out.ID)
+			return e
+		})
+		out.WorkflowInstanceID = &wfID
 	}
 	httpx.Created(w, out)
 }

@@ -9,10 +9,12 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   approveJournalEntry,
   createJournalEntry,
+  getInboxStatus,
   getJournalEntry,
   listCoA,
   listJournalEntries,
   rejectJournalEntry,
+  reverseJournalEntry,
   type CoAAccount,
   type JournalEntry,
   type JournalEntryStatus,
@@ -42,6 +44,10 @@ export default function JournalEntriesPage() {
   const [selectedID, setSelectedID] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  // PR #7 — when on, the inline Approve/Reject buttons hide; the
+  // Create action automatically gates through the workflow and the
+  // detail rows show a "Open in Inbox →" deep-link instead.
+  const [inboxEnabled, setInboxEnabled] = useState(false);
 
   async function load() {
     setErr(null);
@@ -53,6 +59,9 @@ export default function JournalEntriesPage() {
     }
   }
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filterStatus]);
+  useEffect(() => {
+    getInboxStatus().then((s) => setInboxEnabled(s.unified_inbox_enabled)).catch(() => {});
+  }, []);
 
   async function onApprove(id: string) {
     if (!confirm('Approve and post this entry? It becomes immutable on success.')) return;
@@ -70,6 +79,15 @@ export default function JournalEntriesPage() {
     try {
       await rejectJournalEntry(id, reason);
       setInfo('Entry rejected.');
+      await load();
+    } catch (ex) { setErr(extractErr(ex)); }
+  }
+  async function onReverse(id: string) {
+    if (!confirm('Request a reversal of this posted entry? An inverse-lines draft will be sent to the Board for approval.')) return;
+    setErr(null); setInfo(null);
+    try {
+      const e = await reverseJournalEntry(id);
+      setInfo(`Reversal draft created (entry ${e.id.slice(0, 8)}) — sent to Board for approval.`);
       await load();
     } catch (ex) { setErr(extractErr(ex)); }
   }
@@ -147,7 +165,21 @@ export default function JournalEntriesPage() {
                         </span>
                       </td>
                       <td onClick={(ev) => ev.stopPropagation()}>
-                        {e.status === 'pending_approval' && (
+                        {/* Pending entries — under unified inbox we hide
+                            the inline Approve/Reject and show a deep-
+                            link instead. Sub-threshold entries usually
+                            won't sit here long because the seeded
+                            condition auto-approves them at creation. */}
+                        {e.status === 'pending_approval' && inboxEnabled && (
+                          e.workflow_instance_id ? (
+                            <a className="btn btn-sm btn-accent" href={`/approvals/${e.workflow_instance_id}`}>
+                              Open in Inbox →
+                            </a>
+                          ) : (
+                            <span className="muted tiny">Awaiting workflow…</span>
+                          )
+                        )}
+                        {e.status === 'pending_approval' && !inboxEnabled && (
                           <div className="row" style={{ gap: 4 }}>
                             {!isOwn ? (
                               <button className="btn btn-sm btn-primary" onClick={() => void onApprove(e.id)}>
@@ -162,6 +194,15 @@ export default function JournalEntriesPage() {
                               Reject
                             </button>
                           </div>
+                        )}
+                        {/* Posted entries get a Reverse CTA when inbox
+                            is on. Reversals go through journal_reversal
+                            (Board only); the inverse draft is created
+                            immediately and posts on Board approval. */}
+                        {e.status === 'posted' && inboxEnabled && (
+                          <button className="btn btn-sm btn-ghost" onClick={() => void onReverse(e.id)}>
+                            Request reversal
+                          </button>
                         )}
                       </td>
                     </tr>

@@ -87,6 +87,11 @@ func main() {
 		Journals: &handler.JournalHandler{
 			DB: pool, CoA: coaStore, Journals: journalStore,
 			Periods: periodStore, Engine: engine, Logger: logger,
+			// PR #7 — Unified Inbox workflow integration.
+			WorkflowURL:           cfg.WorkflowURL,
+			AccountingSelfURL:     cfg.AccountingSelfURL,
+			WorkflowInternalToken: cfg.WorkflowInternalToken,
+			HTTP:                  &http.Client{Timeout: 10 * time.Second},
 		},
 		Reports: &handler.ReportHandler{DB: pool, Reports: reportStore, Logger: logger},
 		FiscalYear: &handler.FiscalYearHandler{

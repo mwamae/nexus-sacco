@@ -4825,6 +4825,10 @@ export type JournalEntry = {
   rejected_by?: string | null;
   rejected_at?: string | null;
   rejection_reason?: string | null;
+  // Set when the Unified Inbox (PR #7) gates the JE through the
+  // workflow engine. Drives the deep-link banner + the "Open in
+  // Inbox →" affordance.
+  workflow_instance_id?: string | null;
   lines?: JournalLine[];
 };
 
@@ -4854,6 +4858,18 @@ export async function approveJournalEntry(id: string): Promise<JournalEntry> {
 }
 export async function rejectJournalEntry(id: string, reason?: string): Promise<void> {
   await api.post(`/v1/journal-entries/${id}/reject`, { reason });
+}
+
+// Unified Inbox (PR #7): request a reversal of a posted journal
+// entry. Backend creates an inverse-lines draft + a journal_reversal
+// wf_instance (always Board). Returns the draft entry; the actual
+// post fires on workflow approval via the resolve callback.
+export async function reverseJournalEntry(id: string, input: {
+  reversal_date?: string; // YYYY-MM-DD; defaults to today
+  narration?: string;
+} = {}): Promise<JournalEntry> {
+  const r = await api.post(`/v1/journal-entries/${id}/reverse`, input);
+  return r.data.data;
 }
 
 export type AccountingPeriod = {
