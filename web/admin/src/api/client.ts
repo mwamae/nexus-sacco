@@ -3953,7 +3953,7 @@ export async function getMemberLoanHistory(counterpartyId: string): Promise<Memb
 // for cases where staff need a "all the money this member moved"
 // view without flipping between three module screens.
 
-export type LedgerSource = 'deposit' | 'loan' | 'share';
+export type LedgerSource = 'deposit' | 'loan' | 'share' | 'fee';
 
 export type LedgerRow = {
   source: LedgerSource;
@@ -3966,19 +3966,25 @@ export type LedgerRow = {
   // full enum lists. Frontend renders this via a chip mapping.
   txn_type: string;
   account_id: string;
-  // account_no for deposit / share rows; loan_no for loan rows.
+  // account_no for deposit / share rows; loan_no for loan rows;
+  // fee_code (or 'welfare') for fee rows.
   account_label: string;
   narration?: string | null;
   // Both are non-negative decimal strings. Exactly one is non-zero on
   // cash-flow rows; both are zero on info-only rows (e.g. an interest
   // accrual on a loan, which adds to outstanding but is not a cash
-  // movement).
+  // movement). Fee rows are always debit-only.
   debit: string;
   credit: string;
   // Source-account balance immediately after this row. For deposits
   // this is deposit_accounts.balance_after; for loans the loan's
   // principal_balance; for shares the share account amount value.
+  // Fee rows have no per-account balance — always 0.
   balance_after: string;
+  // Set on source='fee' rows so the UI can deep-link to
+  // /collect/receipts/{receipt_id} for the printable slip. Null on
+  // every other source.
+  receipt_id?: string | null;
 };
 
 export type LedgerPage = {

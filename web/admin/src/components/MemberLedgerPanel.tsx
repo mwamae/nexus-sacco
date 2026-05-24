@@ -53,6 +53,11 @@ const TYPE_CHIPS: Record<string, ChipDef> = {
   redemption:        { label: 'SHARE REDEMPTION', tone: 'pos' },
   adjustment:        { label: 'SHARE ADJUSTMENT', tone: 'accent' },
   bonus_issue:       { label: 'BONUS SHARES',     tone: 'pos' },
+  // receipt_line_kind — fee + welfare lines from the Collection
+  // Desk. Both are debit-only; we keep them as distinct chips so an
+  // operator can tell a hard fee from a welfare contribution.
+  fee:               { label: 'FEE',              tone: 'neg' },
+  welfare:           { label: 'WELFARE',          tone: 'warn' },
 };
 
 function chipFor(t: string): ChipDef {
@@ -66,11 +71,20 @@ function moduleHrefFor(row: LedgerRow): string {
     case 'deposit': return `/deposits?account=${row.account_id}`;
     case 'loan':    return `/loans/${row.account_id}`;
     case 'share':   return `/shares?account=${row.account_id}`;
+    // Fee rows carry receipt_id explicitly; account_id reuses the
+    // line id (no per-member fee account exists) so the receipt id
+    // is what we deep-link with.
+    case 'fee':     return `/collect/receipts/${row.receipt_id ?? row.account_id}`;
   }
 }
 
 function sourceLabel(s: LedgerSource): string {
-  return s === 'deposit' ? 'Deposits' : s === 'loan' ? 'Loans' : 'Shares';
+  switch (s) {
+    case 'deposit': return 'Deposits';
+    case 'loan':    return 'Loans';
+    case 'share':   return 'Shares';
+    case 'fee':     return 'Fees';
+  }
 }
 
 function fmtMoney(s: string): string {

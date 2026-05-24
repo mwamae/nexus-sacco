@@ -1,12 +1,13 @@
-// Member ledger — unified read-model that joins the three per-module
-// transaction tables (deposit / loan / share) into one timeline for a
-// single member.
+// Member ledger — unified read-model that joins the four per-module
+// transaction sources (deposit / loan / share / receipt_lines) into
+// one timeline for a single member.
 //
-// Why a store (not a view): the savings service already owns all three
-// tables; building this as a Go-level UNION ALL keeps the cardinality
-// + cursor pagination explicit and side-steps a view migration on
-// what's still an evolving schema. A materialised view (or a snapshot
-// table) is the next-step option if this query becomes hot.
+// Why a store (not a view): the savings service already owns every
+// source table; building this as a Go-level UNION ALL keeps the
+// cardinality + cursor pagination explicit and side-steps a view
+// migration on what's still an evolving schema. A materialised view
+// (or a snapshot table) is the next-step option if this query becomes
+// hot.
 //
 // Cash-flow semantics — debit / credit are from the MEMBER's pocket:
 //   credit  = money flowing IN  to the member
@@ -27,10 +28,18 @@
 //     credit:  transfer_in
 //     debit:   purchase
 //     info-only: adjustment, redemption, bonus_issue
+//   receipt_lines (kind IN ('fee', 'welfare'), status='posted', not voided)
+//     debit:   amount  (every fee/welfare line is money out of the
+//                       member's pocket; never a credit)
+//     account_label = fee_code (catalog code, e.g. STMT_FEE) or
+//                     'welfare' for ad-hoc welfare lines.
+//     balance_after = 0   (no per-member fee account exists)
+//     receipt_id is exposed on the row so the UI can deep-link to
+//     /collect/receipts/{receipt_id} for the printable slip.
 //
 // balance_after is the source-account's balance immediately after the
 // row — not a cross-module running total (no such thing exists for a
-// member spanning savings + loans + shares).
+// member spanning savings + loans + shares + fees).
 
 package store
 
@@ -59,6 +68,11 @@ const (
 	LedgerSourceDeposit LedgerSource = "deposit"
 	LedgerSourceLoan    LedgerSource = "loan"
 	LedgerSourceShare   LedgerSource = "share"
+	// LedgerSourceFee surfaces receipt_lines with
+	// kind IN ('fee', 'welfare') as standalone timeline entries.
+	// See the doc comment block at the top of this file for the
+	// per-source mapping rules.
+	LedgerSourceFee LedgerSource = "fee"
 )
 
 // LedgerRow is the unified shape returned over the wire. Fields that
@@ -66,18 +80,22 @@ const (
 // generic `account_label`; consumers can branch on `source` if they
 // need to display source-specific affordances.
 type LedgerRow struct {
-	Source        LedgerSource    `json:"source"`
-	TxnID         uuid.UUID       `json:"txn_id"`
-	TxnNo         string          `json:"txn_no"`
-	PostedAt      time.Time       `json:"posted_at"`
-	ValueDate     *time.Time      `json:"value_date,omitempty"`
-	TxnType       string          `json:"txn_type"`
-	AccountID     uuid.UUID       `json:"account_id"`
-	AccountLabel  string          `json:"account_label"`
-	Narration     *string         `json:"narration,omitempty"`
-	Debit         decimal.Decimal `json:"debit"`
-	Credit        decimal.Decimal `json:"credit"`
-	BalanceAfter  decimal.Decimal `json:"balance_after"`
+	Source       LedgerSource    `json:"source"`
+	TxnID        uuid.UUID       `json:"txn_id"`
+	TxnNo        string          `json:"txn_no"`
+	PostedAt     time.Time       `json:"posted_at"`
+	ValueDate    *time.Time      `json:"value_date,omitempty"`
+	TxnType      string          `json:"txn_type"`
+	AccountID    uuid.UUID       `json:"account_id"`
+	AccountLabel string          `json:"account_label"`
+	Narration    *string         `json:"narration,omitempty"`
+	Debit        decimal.Decimal `json:"debit"`
+	Credit       decimal.Decimal `json:"credit"`
+	BalanceAfter decimal.Decimal `json:"balance_after"`
+	// ReceiptID is set only on source='fee' rows so the UI can
+	// deep-link to /collect/receipts/{receipt_id}. NULL on every
+	// other source.
+	ReceiptID *uuid.UUID `json:"receipt_id,omitempty"`
 }
 
 type LedgerPage struct {
@@ -129,7 +147,8 @@ WITH deposits AS (
          THEN ABS(t.amount) ELSE 0 END           AS debit,
     CASE WHEN t.txn_type IN ('deposit','transfer_in','interest_credit','opening_balance')
          THEN ABS(t.amount) ELSE 0 END           AS credit,
-    t.balance_after                              AS balance_after
+    t.balance_after                              AS balance_after,
+    NULL::uuid                                   AS receipt_id
     FROM deposit_transactions t
     JOIN deposit_accounts a ON a.id = t.account_id
    WHERE t.counterparty_id = $1
@@ -153,7 +172,8 @@ loans AS (
     CASE WHEN t.txn_type = 'disbursement'
          THEN ABS(t.amount) ELSE 0 END           AS credit,
     -- principal_balance is the running outstanding for the loan.
-    l.principal_balance                          AS balance_after
+    l.principal_balance                          AS balance_after,
+    NULL::uuid                                   AS receipt_id
     FROM loan_transactions t
     JOIN loans l ON l.id = t.loan_id
    WHERE t.counterparty_id = $1
@@ -174,15 +194,49 @@ shares AS (
          THEN ABS(t.amount) ELSE 0 END           AS debit,
     CASE WHEN t.txn_type = 'transfer_in'
          THEN ABS(t.amount) ELSE 0 END           AS credit,
-    t.balance_after_amount                       AS balance_after
+    t.balance_after_amount                       AS balance_after,
+    NULL::uuid                                   AS receipt_id
     FROM share_transactions t
     JOIN share_accounts a ON a.id = t.account_id
    WHERE t.counterparty_id = $1
      AND t.posted_at < $2
+),
+fees AS (
+  -- Fee + welfare receipt lines surface as standalone ledger rows.
+  -- There's no per-member fee account, so account_id reuses the line
+  -- id for a stable key + account_label shows the catalog code
+  -- (or 'welfare' for ad-hoc welfare lines). Always debit-only —
+  -- a fee is money out of the member's pocket. We filter on the
+  -- line's own posted_at (not the receipt header's) so the cursor
+  -- ordering matches what the row actually shows; and on status +
+  -- voided_at to exclude reversed/rejected lines.
+  SELECT
+    'fee'::text                                  AS source,
+    rl.id                                        AS txn_id,
+    r.serial                                     AS txn_no,
+    rl.posted_at                                 AS posted_at,
+    r.value_date                                 AS value_date,
+    rl.kind::text                                AS txn_type,
+    rl.id                                        AS account_id,
+    COALESCE(rl.fee_code, 'welfare')             AS account_label,
+    rl.narration,
+    rl.amount                                    AS debit,
+    0::numeric                                   AS credit,
+    0::numeric                                   AS balance_after,
+    r.id                                         AS receipt_id
+    FROM receipt_lines rl
+    JOIN receipts r ON r.id = rl.receipt_id
+   WHERE r.counterparty_id = $1
+     AND rl.posted_at IS NOT NULL
+     AND rl.posted_at < $2
+     AND rl.kind IN ('fee', 'welfare')
+     AND rl.status = 'posted'
+     AND rl.voided_at IS NULL
 )
 SELECT * FROM deposits
 UNION ALL SELECT * FROM loans
 UNION ALL SELECT * FROM shares
+UNION ALL SELECT * FROM fees
 ORDER BY posted_at DESC, txn_id DESC
 LIMIT $3
 `
@@ -198,16 +252,19 @@ LIMIT $3
 		var source string
 		var narration *string
 		var valueDate *time.Time
+		var receiptID *uuid.UUID
 		if err := rows.Scan(
 			&source, &r.TxnID, &r.TxnNo, &r.PostedAt, &valueDate, &r.TxnType,
 			&r.AccountID, &r.AccountLabel, &narration,
 			&r.Debit, &r.Credit, &r.BalanceAfter,
+			&receiptID,
 		); err != nil {
 			return nil, err
 		}
 		r.Source = LedgerSource(source)
 		r.Narration = narration
 		r.ValueDate = valueDate
+		r.ReceiptID = receiptID
 		page.Rows = append(page.Rows, r)
 	}
 	if err := rows.Err(); err != nil {
