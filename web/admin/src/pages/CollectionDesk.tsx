@@ -18,6 +18,7 @@ import {
   extractError,
   getCurrentTillSession,
   getDepositAccountsByMember,
+  getInboxStatus,
   getMemberLoanHistory,
   getOutstanding,
   listCounterparties,
@@ -75,6 +76,9 @@ export default function CollectionDesk() {
   const [till, setTill] = useState<CurrentTillSession | null>(null);
   const [tillErr, setTillErr] = useState<string | null>(null);
   const [fees, setFees] = useState<FeeCatalogEntry[]>([]);
+  // PR 5: gates the BOSA-aware picker grouping. Flag off = unchanged
+  // 4-chip strip.
+  const [segmentEnabled, setSegmentEnabled] = useState(false);
   useDocumentTitle('Collection desk');
   useEffect(() => {
     getCurrentTillSession()
@@ -83,6 +87,7 @@ export default function CollectionDesk() {
     listFees(false)
       .then((f) => setFees(f))
       .catch(() => setFees([])); // catalog absence shouldn't block the desk
+    getInboxStatus().then((s) => setSegmentEnabled(s.bosa_fosa_enabled)).catch(() => setSegmentEnabled(false));
   }, []);
 
   const [step, setStep] = useState<Step>('find');
@@ -237,6 +242,7 @@ export default function CollectionDesk() {
                 fees={fees}
                 deposits={cpDeposits}
                 loans={cpLoans}
+                segmentEnabled={segmentEnabled}
                 onContinue={() => {
                   setChannelAmount(subtotal.toFixed(2));
                   setStep('payment');
@@ -526,16 +532,25 @@ function OutstandingPanel({
 // ─────────── Step 2: build receipt ───────────
 
 function BuildStep({
-  lines, setLines, fees, deposits, loans, onContinue,
+  lines, setLines, fees, deposits, loans, segmentEnabled, onContinue,
 }: {
   lines: LineDraft[];
   setLines: (l: LineDraft[]) => void;
   fees: FeeCatalogEntry[];
   deposits: MemberDepositItem[];
   loans: Loan[];
+  segmentEnabled: boolean;
   onContinue: () => void;
 }) {
-  function add(kind: ReceiptLineKind) {
+  // PR 5: when the BOSA/FOSA flag is on, savings_deposit lines are
+  // split into two chips ("Member savings (FOSA)" / "Member deposit
+  // (BOSA)") that pre-pick a target account from the matching pool.
+  // The wire-level kind stays `savings_deposit`; the segment is
+  // implied by the account's product per Step 0 concern #8.
+  const fosaDeposits = deposits.filter((d) => d.product.segment === 'fosa');
+  const bosaDeposits = deposits.filter((d) => d.product.segment === 'bosa');
+
+  function add(kind: ReceiptLineKind, preferSegment?: 'bosa' | 'fosa') {
     // Pre-pick the first valid target so each row opens with a real
     // selection — saves the cashier a click + makes the "no targets
     // available" state obvious (the row appears with an empty select).
@@ -548,9 +563,14 @@ function BuildStep({
       }]);
       return;
     }
-    if (kind === 'savings_deposit' && deposits.length > 0) {
-      setLines([...lines, { rowKey: rowKey(), kind, target_account_id: deposits[0].account.id, amount: '' }]);
-      return;
+    if (kind === 'savings_deposit') {
+      const pool = preferSegment === 'bosa'
+        ? bosaDeposits
+        : preferSegment === 'fosa' ? fosaDeposits : deposits;
+      if (pool.length > 0) {
+        setLines([...lines, { rowKey: rowKey(), kind, target_account_id: pool[0].account.id, amount: '' }]);
+        return;
+      }
     }
     if (kind === 'loan_repayment' && loans.length > 0) {
       setLines([...lines, { rowKey: rowKey(), kind, target_account_id: loans[0].id, amount: '' }]);
@@ -575,11 +595,43 @@ function BuildStep({
         <span className="card-sub">{lines.length} line{lines.length === 1 ? '' : 's'} · subtotal KES {subtotal.toFixed(2)}</span>
         <div className="card-hd-actions">
           <div className="fchips">
-            {(['savings_deposit', 'share_purchase', 'loan_repayment', 'fee'] as ReceiptLineKind[]).map((k) => (
-              <button key={k} type="button" className="fchip" onClick={() => add(k)}>
-                + {LINE_KIND_LABELS[k]}
-              </button>
-            ))}
+            {segmentEnabled ? (
+              <>
+                {/* PR 5: grouped picker. Each chip pre-picks the right
+                    pool of accounts; the kind stays savings_deposit
+                    on the wire either way. BOSA chip is disabled
+                    when the member has no BOSA account so a cashier
+                    doesn't add a line with no target. */}
+                <button
+                  type="button"
+                  className="fchip"
+                  onClick={() => add('savings_deposit', 'fosa')}
+                  disabled={fosaDeposits.length === 0}
+                  title={fosaDeposits.length === 0 ? 'No FOSA savings accounts on file for this member.' : undefined}
+                >
+                  + Member savings (FOSA)
+                </button>
+                <button
+                  type="button"
+                  className="fchip"
+                  onClick={() => add('savings_deposit', 'bosa')}
+                  disabled={bosaDeposits.length === 0}
+                  title={bosaDeposits.length === 0 ? 'No BOSA bond account on file — member must open one first.' : undefined}
+                >
+                  + Member deposit (BOSA)
+                </button>
+                <button type="button" className="fchip" onClick={() => add('share_purchase')}>+ Share purchase</button>
+                <button type="button" className="fchip" onClick={() => add('fee')}>+ Fee payment</button>
+                <button type="button" className="fchip" onClick={() => add('welfare')}>+ Welfare</button>
+                <button type="button" className="fchip" onClick={() => add('loan_repayment')}>+ Loan repayment</button>
+              </>
+            ) : (
+              (['savings_deposit', 'share_purchase', 'loan_repayment', 'fee'] as ReceiptLineKind[]).map((k) => (
+                <button key={k} type="button" className="fchip" onClick={() => add(k)}>
+                  + {LINE_KIND_LABELS[k]}
+                </button>
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -612,11 +664,39 @@ function BuildStep({
                           value={l.target_account_id ?? ''}
                           onChange={(e) => update(i, { target_account_id: e.target.value })}
                         >
-                          {deposits.map((d) => (
-                            <option key={d.account.id} value={d.account.id}>
-                              {d.product.code} · {d.account.account_no} (bal KES {d.account.current_balance})
-                            </option>
-                          ))}
+                          {/* PR 5: group by segment when the flag is
+                              on. The chip the cashier picked
+                              determines the pre-selection; the
+                              dropdown lets them switch within the
+                              row across either bucket. */}
+                          {segmentEnabled ? (
+                            <>
+                              {bosaDeposits.length > 0 && (
+                                <optgroup label="BOSA · Member deposits">
+                                  {bosaDeposits.map((d) => (
+                                    <option key={d.account.id} value={d.account.id}>
+                                      {d.product.code} · {d.account.account_no} (bal KES {d.account.current_balance})
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              )}
+                              {fosaDeposits.length > 0 && (
+                                <optgroup label="FOSA · Withdrawable savings">
+                                  {fosaDeposits.map((d) => (
+                                    <option key={d.account.id} value={d.account.id}>
+                                      {d.product.code} · {d.account.account_no} (bal KES {d.account.current_balance})
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              )}
+                            </>
+                          ) : (
+                            deposits.map((d) => (
+                              <option key={d.account.id} value={d.account.id}>
+                                {d.product.code} · {d.account.account_no} (bal KES {d.account.current_balance})
+                              </option>
+                            ))
+                          )}
                         </select>
                       ) : (
                         <span className="muted tiny">No savings accounts for this member.</span>

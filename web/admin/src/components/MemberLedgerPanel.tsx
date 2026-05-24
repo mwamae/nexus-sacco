@@ -194,6 +194,16 @@ function LedgerView({
                 </td>
                 <td>
                   <Badge tone={c.tone}>{c.label}</Badge>
+                  {/* PR 5: BOSA/FOSA chip next to the txn-type chip
+                      when present (deposit rows only). Makes the
+                      regulatory bucket readable at-a-glance in a
+                      ledger that may interleave BOSA + FOSA. */}
+                  {r.segment === 'bosa' && (
+                    <Badge tone="warn">BOSA</Badge>
+                  )}
+                  {r.segment === 'fosa' && (
+                    <Badge tone="neutral">FOSA</Badge>
+                  )}
                   {r.narration && (
                     <div className="muted tiny" style={{ marginTop: 2 }}>{r.narration}</div>
                   )}

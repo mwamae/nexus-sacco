@@ -96,6 +96,10 @@ type LedgerRow struct {
 	// deep-link to /collect/receipts/{receipt_id}. NULL on every
 	// other source.
 	ReceiptID *uuid.UUID `json:"receipt_id,omitempty"`
+	// Segment is set only on source='deposit' rows (PR 5) so the
+	// Member 360 ledger can render a BOSA/FOSA chip alongside the
+	// txn-type chip. Loan / share / fee rows leave this NULL.
+	Segment *string `json:"segment,omitempty"`
 }
 
 type LedgerPage struct {
@@ -148,9 +152,14 @@ WITH deposits AS (
     CASE WHEN t.txn_type IN ('deposit','transfer_in','interest_credit','opening_balance')
          THEN ABS(t.amount) ELSE 0 END           AS credit,
     t.balance_after                              AS balance_after,
-    NULL::uuid                                   AS receipt_id
+    NULL::uuid                                   AS receipt_id,
+    -- PR 5: surface BOSA/FOSA on deposit rows so the Member 360
+    -- ledger can render a segment chip alongside the txn-type chip.
+    -- Other CTEs (loan/share/fee) emit NULL.
+    dp.segment::text                             AS segment
     FROM deposit_transactions t
     JOIN deposit_accounts a ON a.id = t.account_id
+    JOIN deposit_products dp ON dp.id = a.product_id
    WHERE t.counterparty_id = $1
      AND t.posted_at < $2
 ),
@@ -173,7 +182,8 @@ loans AS (
          THEN ABS(t.amount) ELSE 0 END           AS credit,
     -- principal_balance is the running outstanding for the loan.
     l.principal_balance                          AS balance_after,
-    NULL::uuid                                   AS receipt_id
+    NULL::uuid                                   AS receipt_id,
+    NULL::text                                   AS segment
     FROM loan_transactions t
     JOIN loans l ON l.id = t.loan_id
    WHERE t.counterparty_id = $1
@@ -195,7 +205,8 @@ shares AS (
     CASE WHEN t.txn_type = 'transfer_in'
          THEN ABS(t.amount) ELSE 0 END           AS credit,
     t.balance_after_amount                       AS balance_after,
-    NULL::uuid                                   AS receipt_id
+    NULL::uuid                                   AS receipt_id,
+    NULL::text                                   AS segment
     FROM share_transactions t
     JOIN share_accounts a ON a.id = t.account_id
    WHERE t.counterparty_id = $1
@@ -223,7 +234,8 @@ fees AS (
     rl.amount                                    AS debit,
     0::numeric                                   AS credit,
     0::numeric                                   AS balance_after,
-    r.id                                         AS receipt_id
+    r.id                                         AS receipt_id,
+    NULL::text                                   AS segment
     FROM receipt_lines rl
     JOIN receipts r ON r.id = rl.receipt_id
    WHERE r.counterparty_id = $1
@@ -253,11 +265,12 @@ LIMIT $3
 		var narration *string
 		var valueDate *time.Time
 		var receiptID *uuid.UUID
+		var segment *string
 		if err := rows.Scan(
 			&source, &r.TxnID, &r.TxnNo, &r.PostedAt, &valueDate, &r.TxnType,
 			&r.AccountID, &r.AccountLabel, &narration,
 			&r.Debit, &r.Credit, &r.BalanceAfter,
-			&receiptID,
+			&receiptID, &segment,
 		); err != nil {
 			return nil, err
 		}
@@ -265,6 +278,7 @@ LIMIT $3
 		r.Narration = narration
 		r.ValueDate = valueDate
 		r.ReceiptID = receiptID
+		r.Segment = segment
 		page.Rows = append(page.Rows, r)
 	}
 	if err := rows.Err(); err != nil {

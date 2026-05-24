@@ -9,9 +9,10 @@
 // the "at a glance" entry point before the officer drills into the
 // editor or scrolls down to the ledger.
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   getDepositAccountsByMember,
+  getInboxStatus,
   getMemberLoanHistory,
   getShareAccountByMember,
   type Loan,
@@ -19,7 +20,7 @@ import {
   type ShareAccountView,
 } from '../api/client';
 import { AsyncPanel, isTimeoutError } from './AsyncPanel';
-import { StatusBadge } from './Badge';
+import { Badge, StatusBadge } from './Badge';
 
 type Bundle = {
   deposits: MemberDepositItem[];
@@ -53,6 +54,15 @@ export function MemberAccountsSummary({
     return { deposits, loans: loanHistory.loans ?? [], share };
   }, [counterpartyId]);
 
+  // PR 5: BOSA/FOSA tiles + segment-grouped rows are gated on the
+  // tenant flag so flag-off tenants see the legacy single-list view.
+  const [segmentEnabled, setSegmentEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    getInboxStatus()
+      .then((s) => setSegmentEnabled(s.bosa_fosa_enabled))
+      .catch(() => setSegmentEnabled(false));
+  }, []);
+
   return (
     <div className="card" style={{ marginTop: 14 }}>
       <div className="card-hd">
@@ -77,9 +87,78 @@ export function MemberAccountsSummary({
             : "We couldn't fetch this member's accounts."}
           skeleton={<SummarySkeleton />}
         >
-          {(b) => <SummaryTable bundle={b} counterpartyId={counterpartyId} currency={currency} />}
+          {(b) => (
+            <>
+              {segmentEnabled && <TileStrip bundle={b} currency={currency} />}
+              <SummaryTable bundle={b} counterpartyId={counterpartyId} currency={currency} segmentEnabled={!!segmentEnabled} />
+            </>
+          )}
         </AsyncPanel>
       </div>
+    </div>
+  );
+}
+
+// PR 5: BOSA / FOSA / Share capital / Net position tiles at the top
+// of the Accounts card. Sums are derived per-render from the same
+// bundle the table reads, so they stay in sync with the rows below
+// without a separate fetch.
+function TileStrip({ bundle, currency }: { bundle: Bundle; currency: string }) {
+  const bosa = bundle.deposits
+    .filter((d) => d.product.segment === 'bosa')
+    .reduce((s, d) => s + parseFloat(d.account.current_balance || '0'), 0);
+  const fosa = bundle.deposits
+    .filter((d) => d.product.segment === 'fosa')
+    .reduce((s, d) => s + parseFloat(d.account.current_balance || '0'), 0);
+  const shares = bundle.share ? parseFloat(bundle.share.account.total_value || '0') : 0;
+  const loans = bundle.loans.reduce((s, r) => s + parseFloat(r.loan.principal_balance || '0'), 0);
+  // Net position = BOSA + FOSA + Shares − outstanding loan principal.
+  // Same shape as the FinanceDashboard's net-equity-per-member view;
+  // simple, unweighted, doesn't pretend to be a credit metric.
+  const net = bosa + fosa + shares - loans;
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(4, 1fr)',
+        gap: 12,
+        padding: '14px 16px 4px',
+      }}
+    >
+      <Tile
+        label="BOSA deposits"
+        value={`${currency} ${fmtMoney(bosa)}`}
+        hint="secures loans · redeemable on exit"
+        chip={<Badge tone="warn">BOSA</Badge>}
+      />
+      <Tile
+        label="FOSA savings"
+        value={`${currency} ${fmtMoney(fosa)}`}
+        hint="withdrawable balance"
+        chip={<Badge tone="neutral">FOSA</Badge>}
+      />
+      <Tile
+        label="Share capital"
+        value={`${currency} ${fmtMoney(shares)}`}
+        hint="equity · redeemable on exit"
+      />
+      <Tile
+        label="Net position"
+        value={`${currency} ${fmtMoney(net)}`}
+        hint={loans > 0 ? `after ${currency} ${fmtMoney(loans)} loan principal` : 'no active loans'}
+      />
+    </div>
+  );
+}
+
+function Tile({ label, value, hint, chip }: { label: string; value: string; hint: string; chip?: React.ReactNode }) {
+  return (
+    <div>
+      <div className="muted tiny" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        {label} {chip}
+      </div>
+      <div style={{ fontSize: 18, fontWeight: 800, fontFamily: 'var(--font-mono)', marginTop: 2 }}>{value}</div>
+      <div className="muted tiny" style={{ marginTop: 2 }}>{hint}</div>
     </div>
   );
 }
@@ -88,11 +167,20 @@ function SummaryTable({
   bundle,
   counterpartyId,
   currency,
+  segmentEnabled,
 }: {
   bundle: Bundle;
   counterpartyId: string;
   currency: string;
+  segmentEnabled: boolean;
 }) {
+  // PR 5: split deposits by segment when the flag is on so the
+  // BOSA bond is visually separated from withdrawable FOSA. Order
+  // intentionally: shares → BOSA → FOSA → loans, mirroring the
+  // funding-mix progression on the SASRA return UI.
+  const bosa = bundle.deposits.filter((d) => d.product.segment === 'bosa');
+  const fosa = bundle.deposits.filter((d) => d.product.segment === 'fosa');
+
   return (
     <table className="tbl">
       <thead>
@@ -124,21 +212,26 @@ function SummaryTable({
           </tr>
         )}
 
-        {bundle.deposits.map((d) => (
-          <tr key={d.account.id}>
-            <td><strong>Savings</strong></td>
-            <td>
-              <div className="tiny-mono">{d.account.account_no}</div>
-              <div className="muted tiny">{d.product.name} · {d.product.code}</div>
-            </td>
-            <td><StatusBadge status={d.account.status} /></td>
-            <td className="mono num" style={{ textAlign: 'right' }}>
-              {currency} {fmtMoney(d.account.current_balance)}
-            </td>
-            <td>
-              <a className="btn btn-sm" href={`/deposits?member=${counterpartyId}&account=${d.account.id}`}>Open →</a>
+        {segmentEnabled && bosa.length > 0 && (
+          <tr>
+            <td colSpan={5} className="muted tiny" style={{ background: 'var(--surface-2)', textTransform: 'uppercase', letterSpacing: '.5px', padding: '6px 12px' }}>
+              BOSA · Member deposits
             </td>
           </tr>
+        )}
+        {(segmentEnabled ? bosa : []).map((d) => (
+          <DepositRow key={d.account.id} d={d} counterpartyId={counterpartyId} currency={currency} segmentEnabled />
+        ))}
+
+        {segmentEnabled && fosa.length > 0 && (
+          <tr>
+            <td colSpan={5} className="muted tiny" style={{ background: 'var(--surface-2)', textTransform: 'uppercase', letterSpacing: '.5px', padding: '6px 12px' }}>
+              FOSA · Withdrawable savings
+            </td>
+          </tr>
+        )}
+        {(segmentEnabled ? fosa : bundle.deposits).map((d) => (
+          <DepositRow key={d.account.id} d={d} counterpartyId={counterpartyId} currency={currency} segmentEnabled={segmentEnabled} />
         ))}
 
         {bundle.loans.map((row) => (
@@ -160,6 +253,36 @@ function SummaryTable({
         ))}
       </tbody>
     </table>
+  );
+}
+
+function DepositRow({ d, counterpartyId, currency, segmentEnabled }: {
+  d: MemberDepositItem; counterpartyId: string; currency: string; segmentEnabled: boolean;
+}) {
+  return (
+    <tr>
+      <td>
+        <strong>{d.product.segment === 'bosa' ? 'Deposit' : 'Savings'}</strong>
+        {segmentEnabled && (
+          <div style={{ marginTop: 2 }}>
+            {d.product.segment === 'bosa'
+              ? <Badge tone="warn">BOSA</Badge>
+              : <Badge tone="neutral">FOSA</Badge>}
+          </div>
+        )}
+      </td>
+      <td>
+        <div className="tiny-mono">{d.account.account_no}</div>
+        <div className="muted tiny">{d.product.name} · {d.product.code}</div>
+      </td>
+      <td><StatusBadge status={d.account.status} /></td>
+      <td className="mono num" style={{ textAlign: 'right' }}>
+        {currency} {fmtMoney(d.account.current_balance)}
+      </td>
+      <td>
+        <a className="btn btn-sm" href={`/deposits?member=${counterpartyId}&account=${d.account.id}`}>Open →</a>
+      </td>
+    </tr>
   );
 }
 

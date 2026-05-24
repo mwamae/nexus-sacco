@@ -14,6 +14,7 @@ import {
   getCurrentCertificate,
   getDepositAccountsByMember,
   getDepositStatement,
+  getInboxStatus,
   getShareAccountByMember,
   listDepositProducts,
   listShareTransactions,
@@ -55,6 +56,7 @@ const PRODUCT_LABEL: Record<DepositProduct['product_type'], string> = {
   goal: 'Goal',
   emergency: 'Emergency',
   group: 'Group',
+  member_deposit: 'Member deposit',
 };
 
 const SHARE_CHANNEL_LABELS: Record<SharePaymentChannel, string> = {
@@ -148,6 +150,12 @@ export function MemberAccountsPanel({ counterpartyId, currency }: { counterparty
   // the AsyncPanel to re-run its fetcher via the deps array.
   const [reloadNonce, setReloadNonce] = useState(0);
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
+  // PR 5: gates segment-grouped rail rendering. Loads once per mount;
+  // flag flips are not expected mid-session so we don't refetch.
+  const [segmentEnabled, setSegmentEnabled] = useState(false);
+  useEffect(() => {
+    getInboxStatus().then((s) => setSegmentEnabled(s.bosa_fosa_enabled)).catch(() => setSegmentEnabled(false));
+  }, []);
 
   const fetcher = useCallback(async () => {
     // Shares is optional (a member may not have bought any), so its
@@ -232,6 +240,7 @@ export function MemberAccountsPanel({ counterpartyId, currency }: { counterparty
             currency={currency}
             selected={selected}
             onSelect={setSelected}
+            segmentEnabled={segmentEnabled}
           />
           <div style={{ flex: 1, padding: 14, borderLeft: '1px solid var(--border)', minWidth: 0 }}>
             {selected.kind === 'shares' && shares && (
@@ -292,14 +301,22 @@ export function MemberAccountsPanel({ counterpartyId, currency }: { counterparty
 // ─────────── Left rail ───────────
 
 function Rail({
-  shares, deposits, currency, selected, onSelect,
+  shares, deposits, currency, selected, onSelect, segmentEnabled,
 }: {
   shares: ShareAccountView | null;
   deposits: MemberDepositItem[];
   currency: string;
   selected: Selection;
   onSelect: (s: Selection) => void;
+  segmentEnabled: boolean;
 }) {
+  // PR 5: when the BOSA/FOSA flag is on, split deposit-account rail
+  // items into a BOSA section + FOSA section. Each section gets a
+  // small heading so the BOSA bond's distinct regulatory role is
+  // visible from the rail without opening the detail pane.
+  const bosa = deposits.filter((d) => d.product.segment === 'bosa');
+  const fosa = deposits.filter((d) => d.product.segment === 'fosa');
+
   return (
     <div style={{ width: 240, flexShrink: 0, padding: '8px 0' }}>
       {shares && (
@@ -311,20 +328,69 @@ function Rail({
           onClick={() => onSelect({ kind: 'shares' })}
         />
       )}
-      {deposits.map((it) => (
-        <RailItem
-          key={it.account.id}
-          eyebrow={PRODUCT_LABEL[it.product.product_type]}
-          title={`${currency} ${fmtMoney(it.account.current_balance)}`}
-          subtitle={`${it.product.name} · ${it.account.account_no}`}
-          status={it.account.status}
-          active={selected.kind === 'deposit' && selected.accountId === it.account.id}
-          onClick={() => onSelect({ kind: 'deposit', accountId: it.account.id })}
-        />
-      ))}
+
+      {segmentEnabled ? (
+        <>
+          {bosa.length > 0 && <RailHeading>BOSA · Member deposits</RailHeading>}
+          {bosa.map((it) => (
+            <RailItem
+              key={it.account.id}
+              eyebrow={PRODUCT_LABEL[it.product.product_type]}
+              title={`${currency} ${fmtMoney(it.account.current_balance)}`}
+              subtitle={`${it.product.name} · ${it.account.account_no}`}
+              status={it.account.status}
+              active={selected.kind === 'deposit' && selected.accountId === it.account.id}
+              onClick={() => onSelect({ kind: 'deposit', accountId: it.account.id })}
+            />
+          ))}
+          {fosa.length > 0 && <RailHeading>FOSA · Withdrawable savings</RailHeading>}
+          {fosa.map((it) => (
+            <RailItem
+              key={it.account.id}
+              eyebrow={PRODUCT_LABEL[it.product.product_type]}
+              title={`${currency} ${fmtMoney(it.account.current_balance)}`}
+              subtitle={`${it.product.name} · ${it.account.account_no}`}
+              status={it.account.status}
+              active={selected.kind === 'deposit' && selected.accountId === it.account.id}
+              onClick={() => onSelect({ kind: 'deposit', accountId: it.account.id })}
+            />
+          ))}
+        </>
+      ) : (
+        deposits.map((it) => (
+          <RailItem
+            key={it.account.id}
+            eyebrow={PRODUCT_LABEL[it.product.product_type]}
+            title={`${currency} ${fmtMoney(it.account.current_balance)}`}
+            subtitle={`${it.product.name} · ${it.account.account_no}`}
+            status={it.account.status}
+            active={selected.kind === 'deposit' && selected.accountId === it.account.id}
+            onClick={() => onSelect({ kind: 'deposit', accountId: it.account.id })}
+          />
+        ))
+      )}
+
       {!shares && deposits.length === 0 && (
         <div className="muted tiny" style={{ padding: 16 }}>No accounts.</div>
       )}
+    </div>
+  );
+}
+
+function RailHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className="muted tiny"
+      style={{
+        padding: '10px 14px 4px',
+        textTransform: 'uppercase',
+        letterSpacing: '.5px',
+        fontWeight: 600,
+        borderTop: '1px solid var(--border)',
+        marginTop: 4,
+      }}
+    >
+      {children}
     </div>
   );
 }

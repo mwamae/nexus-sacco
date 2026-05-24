@@ -4021,6 +4021,10 @@ export type LedgerRow = {
   // /collect/receipts/{receipt_id} for the printable slip. Null on
   // every other source.
   receipt_id?: string | null;
+  // PR 5: BOSA/FOSA chip data. Populated only on source='deposit'
+  // rows; null/undefined on loan/share/fee rows. Reads from the
+  // joined deposit_products.segment in the ledger query.
+  segment?: 'bosa' | 'fosa' | null;
 };
 
 export type LedgerPage = {
