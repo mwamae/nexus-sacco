@@ -5855,12 +5855,21 @@ export type SASRAReturn = {
     net_loans: string;
     provision_coverage_pct: string;
   };
-  deposits: { member_savings: string; fixed_deposits: string; total: string };
+  // PR 4: BOSA/FOSA split. The pre-PR-4 shape was
+  // `{ member_savings, fixed_deposits, total }`; renamed so a
+  // grep for `member_deposits_bosa` / `member_savings_fosa`
+  // surfaces every consumer.
+  deposits: {
+    member_savings_fosa: string;
+    member_deposits_bosa: string;
+    total: string;
+  };
   borrowings: string;
   liquid_assets: string;
   short_term_liabilities: string;
   ratios: SASRARatio[];
   all_compliant: boolean;
+  warnings: { code: string; message: string }[];
 };
 
 export async function sasraReturn(asOf?: string): Promise<SASRAReturn> {

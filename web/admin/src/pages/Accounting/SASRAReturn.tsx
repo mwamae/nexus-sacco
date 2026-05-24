@@ -65,6 +65,20 @@ export default function SASRAReturnPage() {
 
       {data && (
         <>
+          {/* PR 4: warnings strip — surfaces data-quality concerns
+              that aren't ratio breaches (e.g. BOSA bucket empty on a
+              lending tenant). Rendered above the report so they're
+              seen before anyone interprets the ratios below. */}
+          {data.warnings.length > 0 && (
+            <div className="card" style={{ marginTop: 12 }}>
+              {data.warnings.map((w) => (
+                <div key={w.code} className="alert alert-warn" style={{ margin: 0 }}>
+                  <strong>{labelForWarning(w.code)} · </strong>{w.message}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* ─── Statement of Financial Position summary ─── */}
           <div className="card" style={{ marginTop: 12 }}>
             <div className="card-hd"><h3>Statement of Financial Position</h3></div>
@@ -72,6 +86,31 @@ export default function SASRAReturnPage() {
               <Stat label="Total assets" value={data.position.total_assets} bold />
               <Stat label="Total liabilities" value={data.position.total_liabilities} />
               <Stat label="Total equity" value={data.position.total_equity} />
+            </div>
+          </div>
+
+          {/* PR 4: Funding mix — the three sources of SACCO funding,
+              segmented per SASRA practice. The denomination split
+              (BOSA vs FOSA) drives "core capital ÷ total deposits"
+              vs "liquidity ratio" denominators below. */}
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="card-hd"><h3>Funding mix</h3></div>
+            <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18 }}>
+              <FundingTile
+                label="Member deposits (BOSA)"
+                value={data.deposits.member_deposits_bosa}
+                hint="secures loans · redeemable on exit"
+              />
+              <FundingTile
+                label="Member savings (FOSA)"
+                value={data.deposits.member_savings_fosa}
+                hint="withdrawable · earns interest"
+              />
+              <FundingTile
+                label="Share capital"
+                value={data.capital.share_capital}
+                hint="equity · redeemable on exit"
+              />
             </div>
           </div>
 
@@ -126,14 +165,16 @@ export default function SASRAReturnPage() {
             </div>
           </div>
 
-          {/* ─── Deposits + Borrowings + Liquidity ─── */}
+          {/* ─── Liquidity ─── */}
+          {/* PR 4: deposits moved into the "Funding mix" card above.
+              This card now focuses on the liquidity primitives
+              that feed the liquidity ratio. */}
           <div className="card" style={{ marginTop: 12 }}>
-            <div className="card-hd"><h3>Funding & liquidity</h3></div>
-            <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 18 }}>
-              <Stat label="Member savings" value={data.deposits.member_savings} />
-              <Stat label="Fixed deposits" value={data.deposits.fixed_deposits} />
-              <Stat label="External borrowings" value={data.borrowings} />
+            <div className="card-hd"><h3>Liquidity</h3></div>
+            <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18 }}>
               <Stat label="Liquid assets" value={data.liquid_assets} bold />
+              <Stat label="Short-term liabilities (FOSA + payables)" value={data.short_term_liabilities} />
+              <Stat label="External borrowings" value={data.borrowings} />
             </div>
           </div>
 
@@ -183,6 +224,26 @@ export default function SASRAReturnPage() {
       )}
     </div>
   );
+}
+
+// FundingTile is the BOSA / FOSA / Share-capital variant of Stat —
+// includes a one-line hint under the value to disambiguate the
+// three sources of funding for the reader.
+function FundingTile({ label, value, hint }: { label: string; value: string; hint: string }) {
+  return (
+    <div>
+      <div className="muted tiny">{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, fontFamily: 'var(--font-mono)' }}>{value}</div>
+      <div className="muted tiny" style={{ marginTop: 2 }}>{hint}</div>
+    </div>
+  );
+}
+
+function labelForWarning(code: string): string {
+  switch (code) {
+    case 'bosa_bucket_empty': return 'Capital adequacy';
+    default: return code;
+  }
 }
 
 function Stat({ label, value, bold, color }: { label: string; value: string; bold?: boolean; color?: string }) {

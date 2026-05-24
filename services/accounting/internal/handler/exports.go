@@ -627,8 +627,12 @@ func (h *ExportHandler) buildSASRAReturn(ctx context.Context, f *excelize.File, 
 	})
 
 	row = writeSection(f, sheet, row, st, "Deposits", [][]any{
-		{"Member savings", decStr(report.Deposits.MemberSavings)},
-		{"Fixed deposits", decStr(report.Deposits.FixedDeposits)},
+		// PR 4: BOSA / FOSA segmentation surfaces as two distinct
+		// regulator-facing lines. Fixed deposits (2100) roll up
+		// into FOSA after the PR 3 reclassification — the prior
+		// "Fixed deposits" line stops being meaningful.
+		{"Member deposits (BOSA, non-withdrawable)", decStr(report.Deposits.MemberDepositsBOSA)},
+		{"Member savings (FOSA, withdrawable)", decStr(report.Deposits.MemberSavingsFOSA)},
 		{"Total deposits", decStr(report.Deposits.Total)},
 	})
 

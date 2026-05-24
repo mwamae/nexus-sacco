@@ -769,6 +769,18 @@ type SASRAReturn struct {
 	ShortTermLiab     decimal.Decimal      `json:"short_term_liabilities"`
 	Ratios            []SASRARatio         `json:"ratios"`
 	AllCompliant      bool                 `json:"all_compliant"`
+	// Warnings surface non-blocking BOSA/FOSA configuration concerns
+	// the underwriter / regulator should see when reviewing the
+	// return — empty in steady state. Distinct from Ratios.Compliant
+	// because these aren't ratio failures, they're data-quality
+	// signals (e.g. BOSA bucket is empty on a tenant with active
+	// loans, suggesting the BOSA onboarding step was skipped).
+	Warnings []SASRAWarning `json:"warnings"`
+}
+
+type SASRAWarning struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 type PositionSummary struct {
@@ -804,10 +816,25 @@ type LoanPortfolioSummary struct {
 	ProvCoverage    decimal.Decimal `json:"provision_coverage_pct"`
 }
 
+// DepositSummary — the two regulatory buckets after the BOSA/FOSA
+// split (PR 1-4). Field names follow the spec literally so callers
+// can grep for `member_savings_fosa` / `member_deposits_bosa`.
+//
+//   MemberSavingsFOSA = sum of CR balances on liability accounts
+//     tagged `member_savings` — ordinary savings, holiday, emergency,
+//     goal, junior, and (after PR 3 reclassification) fixed deposits.
+//     This is the "withdrawable savings" bucket the liquidity ratio
+//     uses as its denominator.
+//   MemberDepositsBOSA = sum of CR balances on liability accounts
+//     tagged `member_deposits` — currently just 2050 (Member Deposits
+//     bond). Non-withdrawable, drives the loan-multiplier ceiling,
+//     forms the denominator of "core capital ÷ total deposits".
+//   Total = the two added together. Kept for backwards-compatible
+//     callers that just wanted the gross member-liability number.
 type DepositSummary struct {
-	MemberSavings  decimal.Decimal `json:"member_savings"`   // 2000-2099 (member_savings type)
-	FixedDeposits  decimal.Decimal `json:"fixed_deposits"`   // 2100 (member_deposits type)
-	Total          decimal.Decimal `json:"total"`
+	MemberSavingsFOSA  decimal.Decimal `json:"member_savings_fosa"`
+	MemberDepositsBOSA decimal.Decimal `json:"member_deposits_bosa"`
+	Total              decimal.Decimal `json:"total"`
 }
 
 // SASRAReturnTx — read every CoA account's projected balance, bucket
@@ -934,8 +961,14 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 		provCoverage = provisions.Div(grossLoans).Mul(decimal.NewFromInt(100)).Round(2)
 	}
 
-	// ─── Deposits ───
-	var memberSavings, fixedDeposits decimal.Decimal
+	// ─── Deposits (BOSA / FOSA split, PR 4) ───
+	// FOSA = sum of every member_savings-tagged liability (ordinary,
+	// holiday, emergency, goal, junior, and — after PR 3 — fixed
+	// deposits at 2100, which were reclassified out of member_deposits).
+	// BOSA = sum of every member_deposits-tagged liability (currently
+	// 2050 only; codes 2052–2059 reserved for sub-classed BOSA
+	// products).
+	var fosaTotal, bosaTotal decimal.Decimal
 	for _, b := range bals {
 		if b.class != "liability" {
 			continue
@@ -943,12 +976,16 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 		v := natural(b.code)
 		switch b.typ {
 		case "member_savings":
-			memberSavings = memberSavings.Add(v)
+			fosaTotal = fosaTotal.Add(v)
 		case "member_deposits":
-			fixedDeposits = fixedDeposits.Add(v)
+			bosaTotal = bosaTotal.Add(v)
 		}
 	}
-	deposits := DepositSummary{MemberSavings: memberSavings, FixedDeposits: fixedDeposits, Total: memberSavings.Add(fixedDeposits)}
+	deposits := DepositSummary{
+		MemberSavingsFOSA:  fosaTotal,
+		MemberDepositsBOSA: bosaTotal,
+		Total:              fosaTotal.Add(bosaTotal),
+	}
 
 	// ─── External borrowings (2500, 2510 — long_term_liability) ───
 	var borrowings decimal.Decimal
@@ -1005,11 +1042,16 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 			Notes: "SASRA prudential minimum: 10%",
 		},
 		{
+			// PR 4: denominator is share capital + BOSA (the
+			// SACCO's permanent capital base + non-withdrawable
+			// member bonds). Pre-PR-4 this was deposits.Total —
+			// which included withdrawable FOSA, against which
+			// regulators don't expect cover.
 			Label:       "Core capital to total deposits",
-			Numerator:   coreCapital, Denominator: deposits.Total,
-			Ratio:       pct(coreCapital, deposits.Total),
+			Numerator:   coreCapital, Denominator: shareCap.Add(deposits.MemberDepositsBOSA),
+			Ratio:       pct(coreCapital, shareCap.Add(deposits.MemberDepositsBOSA)),
 			Threshold:   decimal.NewFromFloat(8.00), Operator: "min",
-			Notes: "SASRA prudential minimum: 8%",
+			Notes: "Total deposits = share capital + BOSA bond. SASRA prudential minimum: 8%",
 		},
 		{
 			Label:       "Institutional capital to total assets",
@@ -1023,7 +1065,7 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 			Numerator:   liquidAssets, Denominator: shortTermLiab,
 			Ratio:       pct(liquidAssets, shortTermLiab),
 			Threshold:   decimal.NewFromFloat(15.00), Operator: "min",
-			Notes: "Liquid assets ÷ withdrawable savings + payables; SASRA minimum: 15%",
+			Notes: "Liquid assets ÷ (FOSA withdrawable savings + payables). SASRA minimum: 15%",
 		},
 		{
 			Label:       "External borrowings to total assets",
@@ -1065,6 +1107,33 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 		}
 	}
 
+	// ─── Warnings (PR 4) ───
+	// "BOSA is empty but the tenant is lending" is a data-quality
+	// alarm: it means members were onboarded without a BOSA bond
+	// and the loan-multiplier ceiling is being computed against
+	// zero collateral. The errors() return is swallowed
+	// intentionally — the SASRA return itself is more important
+	// than the warning; if the count queries fail, we just don't
+	// surface the warning that quarter.
+	warnings := []SASRAWarning{}
+	if deposits.MemberDepositsBOSA.IsZero() {
+		var memberCount, activeLoanCount int
+		_ = tx.QueryRow(ctx, `
+			SELECT
+			  (SELECT count(*) FROM members),
+			  (SELECT count(*) FROM loans WHERE status IN ('active', 'in_arrears', 'restructured'))
+		`).Scan(&memberCount, &activeLoanCount)
+		if memberCount > 0 && activeLoanCount > 0 {
+			warnings = append(warnings, SASRAWarning{
+				Code: "bosa_bucket_empty",
+				Message: fmt.Sprintf(
+					"Capital adequacy: BOSA bucket is zero but the SACCO has %d member(s) and %d active loan(s). Active loans should be secured by non-withdrawable member deposits — confirm the BOSA onboarding step ran or back-fill member BOSA accounts.",
+					memberCount, activeLoanCount,
+				),
+			})
+		}
+	}
+
 	return &SASRAReturn{
 		AsOf:       asOf,
 		FiscalYear: asOf.Year(),
@@ -1091,6 +1160,7 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 		ShortTermLiab: shortTermLiab,
 		Ratios:        ratios,
 		AllCompliant:  allCompliant,
+		Warnings:      warnings,
 	}, nil
 }
 
