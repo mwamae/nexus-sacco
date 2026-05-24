@@ -14,6 +14,7 @@ import (
 type Deps struct {
 	Definitions *DefinitionHandler
 	Instances   *InstanceHandler
+	InboxStatus *InboxStatusHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -59,6 +60,10 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("workflow:view")).Post("/workflow-instances/{id}/claim", d.Instances.Claim)
 			r.With(middleware.RequirePermission("workflow:view")).Post("/workflow-instances/{id}/release", d.Instances.Release)
 			r.With(middleware.RequirePermission("workflow:view")).Post("/workflow-instances/{id}/comments", d.Instances.Comment)
+
+			// Inbox-status probe — frontend gates the /cash-approvals
+			// deprecation banner off this.
+			r.With(middleware.RequirePermission("workflow:view")).Get("/inbox-status", d.InboxStatus.Get)
 		})
 	})
 	return r

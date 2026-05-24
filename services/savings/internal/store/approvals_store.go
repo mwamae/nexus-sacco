@@ -35,7 +35,7 @@ const approvalCols = `
 	subject_member_id, subject_account_id, subject_loan_id, amount,
 	payload, maker_user_id, maker_at, maker_note,
 	checker_user_id, checker_at, checker_note,
-	result_txn_id, result_error, created_at
+	result_txn_id, result_error, created_at, workflow_instance_id
 `
 
 func scanApproval(row pgx.Row) (*domain.PendingApproval, error) {
@@ -46,7 +46,7 @@ func scanApproval(row pgx.Row) (*domain.PendingApproval, error) {
 		&p.SubjectMemberID, &p.SubjectAccountID, &p.SubjectLoanID, &p.Amount,
 		&p.Payload, &p.MakerUserID, &p.MakerAt, &p.MakerNote,
 		&p.CheckerUserID, &p.CheckerAt, &p.CheckerNote,
-		&p.ResultTxnID, &p.ResultError, &p.CreatedAt,
+		&p.ResultTxnID, &p.ResultError, &p.CreatedAt, &p.WorkflowInstanceID,
 	)
 	if err != nil {
 		return nil, err

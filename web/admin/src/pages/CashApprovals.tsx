@@ -13,6 +13,7 @@ import {
   cancelPendingApproval,
   declinePendingApproval,
   extractError,
+  getInboxStatus,
   getPendingApproval,
   listPendingApprovals,
   type ApprovalKind,
@@ -46,10 +47,37 @@ export default function CashApprovalsPage() {
   return <ApprovalQueue />;
 }
 
+// useInboxStatus is the per-page hook for the Unified Inbox feature
+// flag. Returns `null` while loading + on lookup failure (treat as
+// "flag off" so the legacy UI stays available on transient errors).
+function useInboxStatus(): boolean | null {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    getInboxStatus()
+      .then((s) => setEnabled(s.unified_inbox_enabled))
+      .catch(() => setEnabled(false));
+  }, []);
+  return enabled;
+}
+
+// DeprecationBanner — shown at the top of /cash-approvals when the
+// tenant has opted in. Points users at the canonical Inbox.
+function DeprecationBanner({ workflowInstanceId }: { workflowInstanceId?: string }) {
+  const target = workflowInstanceId ? `/approvals/${workflowInstanceId}` : '/approvals';
+  return (
+    <div className="alert alert-info" style={{ marginBottom: 14 }}>
+      <strong>Heads up — cash approvals have moved.</strong>{' '}
+      Decisions now live in the unified Approvals Inbox. This page is read-only and will be removed in a future release.{' '}
+      <a className="btn btn-sm" href={target} style={{ marginLeft: 8 }}>Open in Inbox →</a>
+    </div>
+  );
+}
+
 // ─────────── Queue ───────────
 
 function ApprovalQueue() {
   const { tenant } = useAuth();
+  const inboxEnabled = useInboxStatus();
   const [items, setItems] = useState<PendingApproval[]>([]);
   const [status, setStatus] = useState<ApprovalStatus | ''>('pending');
   const [kind, setKind] = useState<ApprovalKind | ''>('');
@@ -83,6 +111,8 @@ function ApprovalQueue() {
           <div className="page-sub">{pendingCount} pending · maker-checker queue</div>
         </div>
       </div>
+
+      {inboxEnabled && <DeprecationBanner />}
 
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-hd">
@@ -142,7 +172,13 @@ function ApprovalQueue() {
                   <td className="tiny-mono">{p.maker_user_id.slice(0, 8)}…</td>
                   <td className="tiny-mono">{p.maker_at.slice(0, 16).replace('T', ' ')}</td>
                   <td><StatusBadge status={p.status} /></td>
-                  <td><a className="btn btn-sm" href={`/cash-approvals/${p.id}`}>Open</a></td>
+                  <td>
+                    {inboxEnabled && p.workflow_instance_id ? (
+                      <a className="btn btn-sm btn-accent" href={`/approvals/${p.workflow_instance_id}`}>Open in Inbox →</a>
+                    ) : (
+                      <a className="btn btn-sm" href={`/cash-approvals/${p.id}`}>Open</a>
+                    )}
+                  </td>
                 </tr>
               ))}
               {items.length === 0 && (
@@ -160,6 +196,7 @@ function ApprovalQueue() {
 
 function ApprovalDetail({ id }: { id: string }) {
   const { tenant, user, hasPermission } = useAuth();
+  const inboxEnabled = useInboxStatus();
   const [p, setP] = useState<PendingApproval | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -248,7 +285,10 @@ function ApprovalDetail({ id }: { id: string }) {
         </div>
       </div>
 
-      {isPending && (
+      {isPending && inboxEnabled && (
+        <DeprecationBanner workflowInstanceId={p.workflow_instance_id} />
+      )}
+      {isPending && !inboxEnabled && (
         <div className="card">
           <div className="card-hd"><h3>Decision</h3></div>
           <div className="card-body">

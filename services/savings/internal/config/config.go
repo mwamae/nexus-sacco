@@ -37,6 +37,12 @@ type Config struct {
 	// non-fatal during the integration rollout.
 	AccountingURL           string
 	AccountingInternalToken string
+
+	// Workflow service shared secret for callbacks that mirror an
+	// approved/rejected wf_instance back onto a pending_approvals
+	// row (PR #3 Unified Inbox). Blank in dev — the resolve handler
+	// falls back to a User-Agent prefix check.
+	WorkflowInternalToken string
 }
 
 func Load() (*Config, error) {
@@ -55,6 +61,7 @@ func Load() (*Config, error) {
 		NotificationInternalToken: getEnv("NOTIFICATION_INTERNAL_TOKEN", ""),
 		AccountingURL:             getEnv("ACCOUNTING_SERVICE_URL", "http://localhost:8086"),
 		AccountingInternalToken:   getEnv("ACCOUNTING_INTERNAL_TOKEN", ""),
+		WorkflowInternalToken:     getEnv("WORKFLOW_INTERNAL_TOKEN", ""),
 	}
 	if len(cfg.JWTSecret) < 32 {
 		return nil, errors.New("JWT_SECRET must be at least 32 bytes")

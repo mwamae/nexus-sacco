@@ -56,6 +56,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        '/api/v1/inbox-status': {
+          target: workflowTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/share-accounts': {
           target: savingsTarget,
           changeOrigin: false,

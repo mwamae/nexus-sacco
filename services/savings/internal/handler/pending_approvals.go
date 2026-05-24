@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -69,6 +70,11 @@ type PendingApprovalsHandler struct {
 	// approvals coming from the legacy per-panel buttons (no receipt
 	// linkage to begin with).
 	Receipts *store.ReceiptStore
+
+	// Shared secret the workflow service includes on its terminal-
+	// status callback POSTs. When empty (dev fallback) we rely on the
+	// User-Agent prefix check instead. See ResolveFromWorkflow.
+	WorkflowInternalToken string
 
 	Logger *slog.Logger
 }
@@ -664,4 +670,115 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		return res, txnID, nil
 	}
 	return nil, nil, domain.ErrApprovalKindUnknown
+}
+
+// ─────────── POST /internal/v1/pending-approvals/{id}/resolve ───────────
+//
+// Webhook target for the workflow service's terminal-status
+// callback. Triggered by the Unified Inbox consolidation
+// (PR #3): once a workflow_instance reaches approved/rejected/
+// cancelled, the engine POSTs here so this row mirrors the
+// decision + (on approve) fires the existing executePayloadTx
+// dispatcher.
+//
+// Idempotency: pending_approvals already in a terminal status
+// short-circuit to 200 + no-op so a redelivered callback
+// can't double-post a transaction. The same is true for
+// already-mirrored rows whose result_txn_id is set.
+//
+// Auth: this endpoint lives under /internal/v1/... and is NOT
+// JWT-protected. It checks the configured WORKFLOW_INTERNAL_TOKEN
+// against the X-Internal-Token header. When the env var is empty
+// (dev only) we fall back to a User-Agent prefix check so
+// localhost workflow → savings still works without manual token
+// wiring.
+
+type workflowCallbackEnvelope struct {
+	TenantID  uuid.UUID `json:"tenant_id"`
+	Event     string    `json:"event"` // "approved" | "rejected" | "cancelled"
+	Instance  struct {
+		ID        uuid.UUID `json:"id"`
+		Context   map[string]any `json:"context"`
+	} `json:"instance"`
+}
+
+func (h *PendingApprovalsHandler) ResolveFromWorkflow(w http.ResponseWriter, r *http.Request) {
+	// Trust gate — match WorkflowInternalToken, else fall back to
+	// the User-Agent prefix the workflow service always sends.
+	expected := h.WorkflowInternalToken
+	got := r.Header.Get("X-Internal-Token")
+	if expected != "" {
+		if got != expected {
+			httpx.WriteErr(w, r, httpx.ErrUnauthorized("invalid internal token"))
+			return
+		}
+	} else if !strings.HasPrefix(r.Header.Get("User-Agent"), "nexus-workflow") {
+		httpx.WriteErr(w, r, httpx.ErrUnauthorized("workflow callback expected"))
+		return
+	}
+
+	id, err := parseUUIDParam(r, "approval_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var env workflowCallbackEnvelope
+	if err := httpx.DecodeJSON(r, &env); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if env.TenantID == uuid.Nil || env.Event == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("tenant_id and event required"))
+		return
+	}
+
+	var out *domain.PendingApproval
+	var executed any
+	err = h.DB.WithTenantTx(r.Context(), env.TenantID, func(tx pgx.Tx) error {
+		pa, err := h.Approvals.GetTx(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		// Idempotent: already terminal → no-op, return current state.
+		// The workflow service may redeliver on transient transport
+		// failures; the resolve must be safe to receive twice.
+		if pa.Status != domain.ApprovalStatusPending {
+			out = pa
+			return nil
+		}
+		switch env.Event {
+		case "approved":
+			result, txnID, execErr := h.executePayloadTx(r.Context(), tx, pa)
+			if execErr != nil {
+				_ = h.Approvals.MarkExecErrorTx(r.Context(), tx, id, execErr.Error())
+				return execErr
+			}
+			executed = result
+			// Use the workflow's initiator (stored as approval maker)
+			// as the checker attribution — the actual checker identity
+			// is captured in the workflow instance's action audit.
+			updated, err := h.Approvals.MarkApprovedTx(r.Context(), tx, id, pa.MakerUserID, nil, txnID)
+			if err != nil {
+				return err
+			}
+			out = updated
+		case "rejected", "cancelled":
+			updated, err := h.Approvals.MarkDeclinedTx(r.Context(), tx, id, pa.MakerUserID, nil)
+			if err != nil {
+				return err
+			}
+			out = updated
+		default:
+			return httpx.ErrBadRequest("unsupported event: " + env.Event)
+		}
+		return nil
+	})
+	if err != nil {
+		writeApprovalErr(w, r, err)
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"approval": out,
+		"result":   executed,
+	})
 }

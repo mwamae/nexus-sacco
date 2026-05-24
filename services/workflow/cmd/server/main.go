@@ -72,9 +72,10 @@ func main() {
 		CallbackTimeout: cfg.CallbackTimeout, Logger: logger,
 		Notifier: notifyClient,
 	}
+	inboxH := &handler.InboxStatusHandler{DB: pool}
 
 	router := handler.Routes(handler.Deps{
-		Definitions: defH, Instances: instH,
+		Definitions: defH, Instances: instH, InboxStatus: inboxH,
 		TenantStore: tenants, Issuer: issuer,
 		AppDomain: cfg.AppDomain, Logger: logger,
 	})

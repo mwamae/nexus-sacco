@@ -153,6 +153,12 @@ func newTestEnv(t *testing.T) *testEnv {
 		r.Post("/receipts/{id}/lines/{line_id}/void", collectionH.VoidLine)
 		r.Post("/pending-approvals/{approval_id}/approve", approvalsH.Approve)
 	})
+	// Internal service-to-service surface (the Unified Inbox
+	// workflow-callback target). Mounted alongside /v1 so PR #3
+	// tests can drive it directly.
+	r.Route("/internal/v1", func(r chi.Router) {
+		r.Post("/pending-approvals/{approval_id}/resolve", approvalsH.ResolveFromWorkflow)
+	})
 
 	srv := httptest.NewServer(r)
 

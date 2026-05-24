@@ -225,16 +225,17 @@ func main() {
 		Logger: logger,
 	}
 	approvalsH := &handler.PendingApprovalsHandler{
-		DB:          pool,
-		Approvals:   approvalsStore,
-		Deposit:     depositH,
-		Share:       shareH,
-		Loan:        loanH,
-		LoanRepay:   loanRepayH,
-		LoanCollect: loanCollectH,
-		LoanReports: loanReportsH,
-		Receipts:    receiptStore,
-		Logger:      logger,
+		DB:                    pool,
+		Approvals:             approvalsStore,
+		Deposit:               depositH,
+		Share:                 shareH,
+		Loan:                  loanH,
+		LoanRepay:             loanRepayH,
+		LoanCollect:           loanCollectH,
+		LoanReports:           loanReportsH,
+		Receipts:              receiptStore,
+		WorkflowInternalToken: cfg.WorkflowInternalToken,
+		Logger:                logger,
 	}
 	collectionDeskH := &handler.CollectionDeskHandler{
 		DB:             pool,

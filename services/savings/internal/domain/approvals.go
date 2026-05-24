@@ -79,6 +79,10 @@ type PendingApproval struct {
 	ResultTxnID      *uuid.UUID        `json:"result_txn_id,omitempty"`
 	ResultError      *string           `json:"result_error,omitempty"`
 	CreatedAt        time.Time         `json:"created_at"`
+	// Set when the Unified Inbox cutover migrated this row into a
+	// workflow_instance. Frontend uses it to deep-link from the
+	// legacy /cash-approvals page to /approvals/{id}.
+	WorkflowInstanceID *uuid.UUID `json:"workflow_instance_id,omitempty"`
 }
 
 var (

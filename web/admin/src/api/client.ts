@@ -3973,7 +3973,26 @@ export type PendingApproval = {
   result_txn_id?: string;
   result_error?: string;
   created_at: string;
+  // Set after the Unified Inbox cutover (PR #3): the workflow_instance
+  // this row was migrated into. Frontend uses it to deep-link from
+  // /cash-approvals to /approvals/{id} once the tenant flag is on.
+  workflow_instance_id?: string;
 };
+
+// ─── Unified Inbox status probe ───
+//
+// Backed by GET /v1/inbox-status on the workflow service. Tells the
+// frontend whether to render the /cash-approvals deprecation banner
+// for the current tenant.
+
+export type InboxStatus = {
+  unified_inbox_enabled: boolean;
+};
+
+export async function getInboxStatus(): Promise<InboxStatus> {
+  const r = await api.get('/v1/inbox-status');
+  return r.data.data;
+}
 
 export type ApprovalToggles = {
   deposit: boolean;

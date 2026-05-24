@@ -47,6 +47,13 @@ func Routes(d Deps) http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	// Service-to-service endpoints — no JWT auth. Each handler does
+	// its own token / source check. Lives under /internal so it can
+	// be firewalled at the ingress.
+	r.Route("/internal/v1", func(r chi.Router) {
+		r.Post("/pending-approvals/{approval_id}/resolve", d.Approvals.ResolveFromWorkflow)
+	})
+
 	r.Route("/v1", func(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Authenticated(d.Issuer))
