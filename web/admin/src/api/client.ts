@@ -1969,9 +1969,12 @@ export type WFLevelStatus =
 export type WFActionKind =
   | 'create' | 'approve' | 'reject' | 'return' | 'request_info'
   | 'resume' | 'escalate' | 'reassign' | 'cancel'
-  | 'callback_fired' | 'sla_breached';
+  | 'callback_fired' | 'sla_breached'
+  // PR #1 / PR #9 — Unified Inbox additions.
+  | 'comment' | 'claim' | 'release';
 
-export type WFQuorum = 'any_one' | 'all';
+// PR #1 — majority quorum added alongside any_one / all.
+export type WFQuorum = 'any_one' | 'all' | 'majority';
 
 export type WFLevelDef = {
   id?: string;
@@ -2034,6 +2037,17 @@ export type WFInstance = {
   started_at: string;
   completed_at?: string;
   levels: WFLevelState[];
+  // PR #9 — Unified Inbox UX fields. Backed by the columns added in
+  // PR #1's 0002_unified_inbox migration. claimed_* drives the
+  // Awaiting-me / My-team / All-in-tenant tab bucketing; summary +
+  // source_url drive the per-row card; sla_breach_at is an indexed
+  // mirror of the active level's sla_due_at.
+  summary?: string;
+  source_url?: string;
+  claimed_by?: string;
+  claimed_at?: string;
+  claim_expires?: string;
+  sla_breach_at?: string;
 };
 
 export type WFAction = {
@@ -2111,6 +2125,23 @@ export type WFActionRequest = {
 
 export async function actOnInstance(id: string, req: WFActionRequest): Promise<WFInstance> {
   const r = await api.post(`/v1/workflow-instances/${id}/actions`, req);
+  return r.data.data;
+}
+
+// PR #9 — Inbox UX. Claim takes a 30-minute lock so two approvers
+// in the same role don't double-decide. 409 on contention.
+export async function claimWorkflowInstance(id: string): Promise<WFInstance> {
+  const r = await api.post(`/v1/workflow-instances/${id}/claim`);
+  return r.data.data;
+}
+export async function releaseWorkflowInstance(id: string): Promise<WFInstance> {
+  const r = await api.post(`/v1/workflow-instances/${id}/release`);
+  return r.data.data;
+}
+// Threaded comments — stored as wf_actions rows with action='comment'
+// (see services/workflow/.../instances.go Comment handler from PR #1).
+export async function addWorkflowInstanceComment(id: string, body: string): Promise<WFAction> {
+  const r = await api.post(`/v1/workflow-instances/${id}/comments`, { body });
   return r.data.data;
 }
 
