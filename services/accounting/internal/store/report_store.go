@@ -967,12 +967,25 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 	for _, c := range liquidCodes {
 		liquidAssets = liquidAssets.Add(natural(c))
 	}
-	// Short-term liabilities: member savings (withdrawable on demand)
-	// + WHT payable + accrued expenses + dividend payable + other
-	// payables + unearned income.
-	shortTermCodes := []string{"2000", "2010", "2020", "2030", "2040", "2200", "2210", "2220", "2230", "2240"}
+	// Short-term liabilities = withdrawable member savings (FOSA) +
+	// payables. PR 3 swapped the hardcoded code list for a
+	// subtype-driven scan so that:
+	//   • 2100 (Fixed Deposits), which was just reclassified from
+	//     member_deposits → member_savings, lands in this bucket
+	//     automatically — term deposits become liquid on maturity.
+	//   • adding a future FOSA product GL code doesn't silently miss
+	//     this denominator (the hardcoded array was a recurring
+	//     drift bug).
+	// member_deposits (BOSA bond) is intentionally excluded — it's
+	// non-withdrawable, redeemable only on member exit.
 	var shortTermLiab decimal.Decimal
-	for _, c := range shortTermCodes {
+	for _, b := range bals {
+		if b.class == "liability" && b.typ == "member_savings" {
+			shortTermLiab = shortTermLiab.Add(natural(b.code))
+		}
+	}
+	payableCodes := []string{"2200", "2210", "2220", "2230", "2240"}
+	for _, c := range payableCodes {
 		shortTermLiab = shortTermLiab.Add(natural(c))
 	}
 

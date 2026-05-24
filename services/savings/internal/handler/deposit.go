@@ -588,15 +588,15 @@ func channelCashAccount(ch domain.DepositChannel) string {
 // surfaces unposted transactions; the accounting team can replay them
 // via the manual journal entry path.
 // resolveLiabilityAcct opens a short tenant-scoped read tx to look up
-// the deposit account's product and map its product_type to a CoA
-// liability code. Falls back to 2000 if the lookup fails so the GL
-// post still succeeds (degrades to the old behaviour).
+// the deposit account's product and map (segment, product_type) to a
+// CoA liability code. Falls back to 2000 if the lookup fails so the
+// GL post still succeeds (degrades to the old behaviour).
 func (h *DepositHandler) resolveLiabilityAcct(r *http.Request, tenantID uuid.UUID, productID uuid.UUID) string {
 	liab := "2000"
 	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		p, err := h.Products.GetTx(r.Context(), tx, productID)
 		if err == nil && p != nil {
-			liab = depositLiabilityCode(p.ProductType)
+			liab = depositLiabilityCode(p.Segment, p.ProductType)
 		}
 		return nil
 	})
@@ -604,13 +604,20 @@ func (h *DepositHandler) resolveLiabilityAcct(r *http.Request, tenantID uuid.UUI
 }
 
 // depositLiabilityCode resolves the CoA liability account for a
-// deposit product. Each savings product is a distinct line on the
-// SACCO's balance sheet — fixed deposits are not the same liability
-// as ordinary savings, even though both credit a member's account.
+// deposit product. Routing is segment-first (PR 3) — every BOSA
+// product maps to 2050 regardless of the underlying product_type;
+// FOSA products keep the pre-PR-3 product_type → 2000-range mapping.
 //
-// Falls back to 2000 Ordinary Savings if the product type is
-// unrecognised so a typo doesn't silently drop the post.
-func depositLiabilityCode(productType domain.DepositProductType) string {
+// The product_type switch enumerates every value explicitly so a new
+// type doesn't silently default to ordinary (the original 'group'
+// fallthrough caused a quiet GL miscredit). Unknown types fall back
+// to 2000 with a clear comment.
+func depositLiabilityCode(segment domain.DepositSegment, productType domain.DepositProductType) string {
+	if segment == domain.SegmentBOSA {
+		// 2050 = Member Deposits (BOSA). Codes 2052–2059 reserved
+		// for sub-classed BOSA products if a tenant wants them.
+		return "2050"
+	}
 	switch productType {
 	case domain.ProductOrdinary:
 		return "2000"
@@ -624,6 +631,20 @@ func depositLiabilityCode(productType domain.DepositProductType) string {
 		return "2040"
 	case domain.ProductFixed:
 		return "2100"
+	case domain.ProductGroup:
+		// Group / chama savings are pooled FOSA; treat as ordinary
+		// for GL purposes until a dedicated 2090 code is added.
+		// (PR 3 correction #5 — this case used to fall through.)
+		return "2000"
+	case domain.ProductMemberDeposit:
+		// member_deposit products are always BOSA by definition,
+		// caught above. If we somehow get here with a mis-tagged
+		// product (FOSA segment + member_deposit type), favour
+		// 2050 over the FOSA default to keep the GL classification
+		// safe — a misclassified deposit lands on the BOSA line,
+		// which is easier to spot in reconciliation than the
+		// other way around.
+		return "2050"
 	}
 	return "2000"
 }
