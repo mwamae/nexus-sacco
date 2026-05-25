@@ -5300,6 +5300,32 @@ export async function cashFlow(from: string, to: string): Promise<{
   return r.data.data;
 }
 
+// ─────────── Subledger Reconciliation ───────────
+
+export type ReconciliationRow = {
+  code: string;
+  name: string;
+  gl_balance: string;
+  subledger_balance: string;
+  delta: string;
+  delta_pct_of_gl: string;
+  status: 'ok' | 'warn' | 'error';
+  last_je_id?: string;
+  last_je_no?: string;
+};
+
+export type SubledgerReconciliation = {
+  as_of: string;
+  overall_status: 'ok' | 'warn' | 'error';
+  rows: ReconciliationRow[];
+};
+
+export async function reconciliation(asOf?: string): Promise<SubledgerReconciliation> {
+  const qs = asOf ? `?as_of=${asOf}` : '';
+  const r = await api.get(`/v1/reports/reconciliation${qs}`);
+  return r.data.data;
+}
+
 // ─────────── Fees & Collections Summary ───────────
 //
 // Lives on the savings service (where receipts/receipt_lines/fee_catalog

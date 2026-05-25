@@ -52,6 +52,7 @@ import IncomeStatementPage from './pages/Accounting/IncomeStatement';
 import ChangesInEquityPage from './pages/Accounting/ChangesInEquity';
 import CashFlowPage from './pages/Accounting/CashFlow';
 import FeesSummaryPage from './pages/Accounting/FeesSummary';
+import ReconciliationPage from './pages/Accounting/Reconciliation';
 import FiscalYearClosePage from './pages/Accounting/FiscalYearClose';
 import BankAccountsPage from './pages/Accounting/BankAccounts';
 import BankAccountDetailPage from './pages/Accounting/BankAccountDetail';
@@ -156,6 +157,7 @@ function Gate() {
   else if (path === '/accounting/changes-in-equity') page = <ChangesInEquityPage />;
   else if (path === '/accounting/cash-flow') page = <CashFlowPage />;
   else if (path === '/accounting/fees-summary') page = <FeesSummaryPage />;
+  else if (path === '/accounting/reconciliation') page = <ReconciliationPage />;
   else if (path === '/accounting/year-end-close') page = <FiscalYearClosePage />;
   else if (path === '/bank-accounts') page = <BankAccountsPage />;
   else if (path.startsWith('/bank-accounts/')) page = <BankAccountDetailPage />;

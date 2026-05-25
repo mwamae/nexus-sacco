@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/nexussacco/accounting/internal/auth"
 	"github.com/nexussacco/accounting/internal/config"
 	"github.com/nexussacco/accounting/internal/db"
@@ -29,6 +32,10 @@ import (
 
 func main() {
 	migrate := flag.Bool("migrate", false, "run database migrations and exit")
+	runRecon := flag.String("run-reconciliation", "",
+		"run the subledger reconciliation report for the named tenant slug, print JSON to stdout, exit non-zero on overall_status=error (for ops cron + email-on-failure)")
+	reconAsOf := flag.String("recon-as-of", "",
+		"reconciliation as-of date in YYYY-MM-DD (defaults to today)")
 	flag.Parse()
 	if *migrate {
 		_ = os.Setenv("DB_SKIP_SET_ROLE", "1")
@@ -93,7 +100,12 @@ func main() {
 			WorkflowInternalToken: cfg.WorkflowInternalToken,
 			HTTP:                  &http.Client{Timeout: 10 * time.Second},
 		},
-		Reports: &handler.ReportHandler{DB: pool, Reports: reportStore, Logger: logger},
+		Reports: &handler.ReportHandler{
+			DB:         pool,
+			Reports:    reportStore,
+			ReconStore: store.NewReconciliationStore(pool.Pool),
+			Logger:     logger,
+		},
 		FiscalYear: &handler.FiscalYearHandler{
 			DB: pool, FY: fyStore, Proposals: fyProposalStore,
 			Periods: periodStore, Engine: engine, Logger: logger,
@@ -127,6 +139,52 @@ func main() {
 		AppDomain:   cfg.AppDomain,
 		Logger:      logger,
 	})
+
+	// CLI: subledger reconciliation. One-shot mode for ops cron;
+	// emits JSON to stdout and exits with status code reflecting the
+	// overall_status:
+	//   • 0 → ok
+	//   • 1 → warn  (drift exists but within tolerance)
+	//   • 2 → error (one or more accounts diverged beyond tolerance)
+	// Shell wrapper for daily check:
+	//   0 6 * * * acct -run-reconciliation=tujenge || mail finance@…
+	if *runRecon != "" {
+		asOf := time.Now()
+		if *reconAsOf != "" {
+			t, perr := time.Parse("2006-01-02", *reconAsOf)
+			if perr != nil {
+				logger.Error("reconciliation: -recon-as-of must be YYYY-MM-DD", "err", perr)
+				os.Exit(1)
+			}
+			asOf = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC)
+		}
+		t, terr := tenants.BySlug(ctx, *runRecon)
+		if terr != nil {
+			logger.Error("reconciliation: tenant lookup", "slug", *runRecon, "err", terr)
+			os.Exit(1)
+		}
+		reconStore := store.NewReconciliationStore(pool.Pool)
+		var report *store.SubledgerReconciliationReport
+		rerr := pool.WithTenantTx(ctx, t.ID, func(tx pgx.Tx) error {
+			var err error
+			report, err = reconStore.ReconciliationTx(ctx, tx, asOf)
+			return err
+		})
+		if rerr != nil {
+			logger.Error("reconciliation: run", "err", rerr)
+			os.Exit(1)
+		}
+		body, _ := json.MarshalIndent(report, "", "  ")
+		_, _ = os.Stdout.Write(body)
+		_, _ = os.Stdout.WriteString("\n")
+		switch report.OverallStatus {
+		case "error":
+			os.Exit(2)
+		case "warn":
+			os.Exit(1)
+		}
+		return
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

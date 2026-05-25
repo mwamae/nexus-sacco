@@ -24,9 +24,38 @@ import (
 )
 
 type ReportHandler struct {
-	DB      *db.Pool
-	Reports *store.ReportStore
-	Logger  *slog.Logger
+	DB         *db.Pool
+	Reports    *store.ReportStore
+	ReconStore *store.ReconciliationStore
+	Logger     *slog.Logger
+}
+
+// Reconciliation — subledger vs GL diff per account.
+//   GET /v1/reports/reconciliation?as_of=YYYY-MM-DD
+// See store/reconciliation_store.go for the per-row math + status
+// thresholds.
+func (h *ReportHandler) Reconciliation(w http.ResponseWriter, r *http.Request) {
+	asOf := time.Now()
+	if v := r.URL.Query().Get("as_of"); v != "" {
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("as_of must be YYYY-MM-DD"))
+			return
+		}
+		asOf = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC)
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var report *store.SubledgerReconciliationReport
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		var err error
+		report, err = h.ReconStore.ReconciliationTx(r.Context(), tx, asOf)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, report)
 }
 
 func (h *ReportHandler) TrialBalance(w http.ResponseWriter, r *http.Request) {
