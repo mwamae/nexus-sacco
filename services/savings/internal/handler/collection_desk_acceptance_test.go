@@ -234,24 +234,17 @@ func TestCollectionDeskAcceptance_MixedReceiptHappyPath(t *testing.T) {
 	if !strings.HasPrefix(created.Serial, "R-mpesa-") {
 		t.Errorf("serial prefix: want R-mpesa-..., got %q", created.Serial)
 	}
-	// Fee line should already be posted (catalog path, no approval).
-	// Non-fee lines should be pending with an approval_id attached.
+	// Wave 2 of the approvals-coverage rollout: every line kind
+	// (including fee + welfare) now consults its matching
+	// approval_* toggle. The dev fixture flipped all toggles to
+	// TRUE during migration 0030, so every line is pending +
+	// approval_id-attached now — including fees.
 	for _, l := range created.Lines {
-		switch l.Kind {
-		case "fee":
-			if l.Status != "posted" {
-				t.Errorf("fee line: want status=posted, got %s", l.Status)
-			}
-			if l.ApprovalID != nil {
-				t.Errorf("fee line: should have no approval_id, got %v", l.ApprovalID)
-			}
-		default:
-			if l.Status != "pending" {
-				t.Errorf("line kind=%s: want status=pending, got %s", l.Kind, l.Status)
-			}
-			if l.ApprovalID == nil {
-				t.Errorf("line kind=%s: missing approval_id", l.Kind)
-			}
+		if l.Status != "pending" {
+			t.Errorf("line kind=%s: want status=pending, got %s", l.Kind, l.Status)
+		}
+		if l.ApprovalID == nil {
+			t.Errorf("line kind=%s: missing approval_id", l.Kind)
 		}
 	}
 

@@ -21,6 +21,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -70,6 +71,11 @@ type recordFeeResp struct {
 	// id rather than inserting again. When set, Payment is the
 	// existing row.
 	DuplicateOf *uuid.UUID `json:"duplicate_of,omitempty"`
+	// Wave 2 — set when the application_fee toggle was ON and the
+	// payment is now sitting in /cash-approvals waiting for a
+	// second user. UI uses this to show a "pending approval"
+	// state on the just-recorded row.
+	PendingApprovalID *uuid.UUID `json:"pending_approval_id,omitempty"`
 }
 
 // RecordFeePayment handles POST /v1/applications/{id}/fee-payments.
@@ -126,9 +132,10 @@ func (h *ApplicationHandler) RecordFeePayment(w http.ResponseWriter, r *http.Req
 	}
 
 	var (
-		recorded    *domain.ApplicationFeePayment
-		application *domain.MembershipApplication
-		duplicate   *uuid.UUID
+		recorded          *domain.ApplicationFeePayment
+		application       *domain.MembershipApplication
+		duplicate         *uuid.UUID
+		pendingApprovalID *uuid.UUID
 	)
 	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		// Load application + state guard.
@@ -191,22 +198,64 @@ func (h *ApplicationHandler) RecordFeePayment(w http.ResponseWriter, r *http.Req
 			return ierr
 		}
 
-		// GL post (best-effort; disabled posting in dev stamps a
-		// synthetic id so the row's posted_at fires either way).
-		jeID, postErr := h.postFeePaymentToGL(r.Context(), tenantID, app, ins, false)
-		if postErr != nil {
-			return postErr
+		// Wave 2 — branch on the approval_application_fee toggle:
+		//   ON  → queue an approval, leave journal_entry_id NULL;
+		//          materialise blocks until a second user approves.
+		//   OFF → existing inline GL post.
+		gated, terr := store.ReadApprovalApplicationFeeToggleTx(r.Context(), tx)
+		if terr != nil {
+			// Defensive: a degraded toggle read drops back to the
+			// inline path. Same rationale as the helper's doc
+			// comment — never block onboarding on a tooling miss.
+			gated = false
 		}
-		if jeID != uuid.Nil {
-			if err := h.FeePayments.SetJournalEntryTx(r.Context(), tx, ins.ID, jeID); err != nil {
-				return err
+		if gated {
+			payload, perr := json.Marshal(map[string]any{
+				"application_id":    appID,
+				"application_no":    app.ApplicationNo,
+				"payment_id":        ins.ID,
+				"amount":            ins.Amount,
+				"channel":           ins.Channel,
+				"channel_reference": ins.ChannelReference,
+				"value_date":        ins.ValueDate,
+			})
+			if perr != nil {
+				return perr
 			}
-			ins.JournalEntryID = &jeID
-			now := time.Now()
-			ins.PostedAt = &now
+			memberCP := app.MaterializedCounterpartyID
+			title := fmt.Sprintf("Application fee · %s · %s",
+				app.ApplicationNo, ins.Amount.StringFixed(2))
+			approvalID, qerr := store.QueueApplicationFeeApprovalTx(
+				r.Context(), tx, actorID, memberCP, title, ins.Amount, payload,
+			)
+			if qerr != nil {
+				return qerr
+			}
+			if serr := h.FeePayments.SetApprovalIDTx(r.Context(), tx, ins.ID, approvalID); serr != nil {
+				return serr
+			}
+			pendingApprovalID = &approvalID
+		} else {
+			// Toggle off — original inline path.
+			jeID, postErr := h.postFeePaymentToGL(r.Context(), tenantID, app, ins, false)
+			if postErr != nil {
+				return postErr
+			}
+			if jeID != uuid.Nil {
+				if err := h.FeePayments.SetJournalEntryTx(r.Context(), tx, ins.ID, jeID); err != nil {
+					return err
+				}
+				ins.JournalEntryID = &jeID
+				now := time.Now()
+				ins.PostedAt = &now
+			}
 		}
 
-		// Recompute aggregates on the parent app row.
+		// Recompute aggregates on the parent app row. Pending
+		// payments DO count toward fee_amount_paid in the
+		// aggregate (the cashier saw the cash), but fee_status
+		// won't flip to 'paid' until the JE lands — see the
+		// RecomputeAggregatesTx implementation.
 		if _, err := h.FeePayments.RecomputeAggregatesTx(r.Context(), tx, appID); err != nil {
 			return err
 		}
@@ -223,7 +272,12 @@ func (h *ApplicationHandler) RecordFeePayment(w http.ResponseWriter, r *http.Req
 		writeFeePaymentErr(w, r, err, recorded)
 		return
 	}
-	httpx.OK(w, recordFeeResp{Payment: recorded, Application: application, DuplicateOf: duplicate})
+	httpx.OK(w, recordFeeResp{
+		Payment:           recorded,
+		Application:       application,
+		DuplicateOf:       duplicate,
+		PendingApprovalID: pendingApprovalID,
+	})
 }
 
 // VoidFeePayment handles POST /v1/applications/{id}/fee-payments/{paymentId}/void.

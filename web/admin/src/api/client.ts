@@ -910,6 +910,11 @@ export type ApplicationFeePayment = {
   // backfill produces a synthetic receipt for this payment).
   // Null for un-materialised applications.
   receipt_id?: string | null;
+  // Wave 2 — set when approval_application_fee is ON and the
+  // payment was queued. journal_entry_id stays null until a
+  // second user approves; the UI uses this to render a
+  // "pending approval" badge.
+  approval_id?: string | null;
 };
 
 export async function listApplicationFeePayments(applicationId: string): Promise<ApplicationFeePayment[]> {

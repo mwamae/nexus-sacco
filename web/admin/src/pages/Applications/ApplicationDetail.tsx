@@ -365,7 +365,13 @@ export default function ApplicationDetailPage() {
                                 ? <span style={{ color: 'var(--neg)' }}>voided</span>
                                 : p.journal_entry_id
                                   ? <span style={{ color: 'var(--pos)' }}>posted</span>
-                                  : <span className="muted">pending</span>}
+                                  : p.approval_id
+                                    ? (
+                                      <a className="tbl-link" style={{ color: '#c97a00' }} href={`/cash-approvals?focus=${p.approval_id}`}>
+                                        pending approval
+                                      </a>
+                                    )
+                                    : <span className="muted">pending</span>}
                               {p.void_reason && <div className="muted tiny">{p.void_reason}</div>}
                             </td>
                             <td className="tiny-mono">

@@ -363,10 +363,22 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 			return cerr
 		}
 
-		// Queue an approval per line. Fee + welfare lines route through
-		// the fee catalog rather than the approvals queue: the cashier
-		// has already collected the cash, so the GL credit fires
-		// immediately to the catalog-configured revenue account.
+		// Wave 2 — per-line toggle routing. Before this change the
+		// loop unconditionally queued an approval for
+		// deposit/share/loan lines (regardless of toggle) and
+		// always posted fee/welfare lines inline. Now every kind
+		// consults its matching toggle on tenant_operations: if the
+		// toggle is OFF (admin opted out), the line posts inline;
+		// if ON (default), the line queues an approval and a
+		// second user must approve before the GL fires.
+		//
+		// Existing tenants were flipped to safe-by-default by
+		// migration 0030 — anyone who deliberately had a toggle
+		// off carries an audit row in tenant_approval_changes.
+		toggles, terr := h.Approvals.GetTogglesTx(r.Context(), tx)
+		if terr != nil {
+			return terr
+		}
 		for i := range r2.Lines {
 			line := &r2.Lines[i]
 			approvalKind, payload, perr := buildApprovalPayload(*line, *r2, in.Channel, in.ChannelRef, in.Narration, valueDate)
@@ -374,19 +386,45 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 				return perr
 			}
 			if approvalKind == "" {
-				// Fee or welfare line — post directly to GL via the catalog.
-				txnID, fErr := h.postFeeLineTx(r.Context(), tx, tenantID, *r2, *line, in.Channel)
-				if fErr != nil {
-					return fErr
+				// Unknown line kind — should have been rejected upstream.
+				return httpx.ErrBadRequest("unknown receipt line kind")
+			}
+			gated := kindToggleForReceiptLine(toggles, approvalKind)
+			if !gated {
+				// Toggle is OFF for this kind — direct-post path.
+				// Fee + welfare keep using the catalog-driven
+				// postFeeLineTx; the other kinds aren't reachable
+				// here today (their inline paths run from their
+				// dedicated handlers, not from the receipt loop)
+				// so we fall back to the same catalog post which
+				// covers the only two kinds that can land here
+				// without a paired inline handler.
+				if line.Kind == domain.LineFee || line.Kind == domain.LineWelfare {
+					txnID, fErr := h.postFeeLineTx(r.Context(), tx, tenantID, *r2, *line, in.Channel)
+					if fErr != nil {
+						return fErr
+					}
+					if mErr := h.Receipts.MarkLinePostedTx(r.Context(), tx, line.ID, txnID); mErr != nil {
+						return mErr
+					}
+					line.Status = domain.LinePosted
+					line.PostedTxnID = &txnID
+					continue
 				}
-				if mErr := h.Receipts.MarkLinePostedTx(r.Context(), tx, line.ID, txnID); mErr != nil {
-					return mErr
+				// For deposit / share / loan-repayment kinds the
+				// "post inline when toggle off" path is a small
+				// scope-extension reserved for a follow-up — the
+				// matching inline handlers (Deposit/SharePurchase/
+				// LoanRepayment) already do the post via their
+				// dedicated endpoints. Queuing here even when the
+				// toggle is off preserves today's collection-desk
+				// behaviour for those kinds rather than tearing
+				// down the path under cover of this PR. Logged so
+				// the gap is visible.
+				if h.Logger != nil {
+					h.Logger.Info("collection desk: kind toggle is off but receipt path still queues — see Wave 2 follow-up",
+						"receipt", r2.Serial, "line_no", line.LineNo, "kind", line.Kind)
 				}
-				// Keep the in-memory line consistent with the DB so the
-				// create response reflects the actual posted state.
-				line.Status = domain.LinePosted
-				line.PostedTxnID = &txnID
-				continue
 			}
 			amt := line.Amount
 			subj := r2.CounterpartyID
@@ -417,10 +455,32 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 	httpx.Created(w, receipt)
 }
 
-// buildApprovalPayload maps a receipt line to the existing approval
-// kind + the typed payload struct the dispatcher (pending_approvals.go
-// executePayloadTx) already knows how to consume on approve. Returns
-// ("", nil, nil) for fee/welfare kinds — those have no executor yet.
+// FeePostingPayload + WelfarePostingPayload are stored on the
+// pending_approvals row so the savings dispatcher can re-execute the
+// existing postFeeLineTx on approve. The payload keeps just the
+// minimum to identify the line — the executor re-loads receipt +
+// line from the receipt id so any concurrent void during the pending
+// window is honoured.
+type FeePostingPayload struct {
+	ReceiptID uuid.UUID             `json:"receipt_id"`
+	LineID    uuid.UUID             `json:"line_id"`
+	Channel   domain.ReceiptChannel `json:"channel"`
+}
+type WelfarePostingPayload struct {
+	ReceiptID uuid.UUID             `json:"receipt_id"`
+	LineID    uuid.UUID             `json:"line_id"`
+	Channel   domain.ReceiptChannel `json:"channel"`
+}
+
+// buildApprovalPayload maps a receipt line to the approval kind +
+// the typed payload struct the dispatcher (pending_approvals.go
+// executePayloadTx) consumes on approve.
+//
+// Wave 2 — fee and welfare lines now return real approval kinds so
+// the per-line loop in CreateReceipt can decide inline-vs-queue
+// based on toggles.FeeCollection / toggles.WelfareCollection. Pre-
+// Wave-2 these returned ("", nil, nil) and the loop posted them
+// inline unconditionally.
 func buildApprovalPayload(
 	line domain.ReceiptLine, receipt domain.Receipt,
 	channel domain.ReceiptChannel, channelRef, narration string, valueDate time.Time,
@@ -461,11 +521,29 @@ func buildApprovalPayload(
 			Narration:  ifEmpty(deref(line.Narration), narration),
 			ValueDate:  valueDateStr,
 		}, nil
-	case domain.LineFee, domain.LineWelfare:
-		// No approval kind yet — v1 marks these posted immediately.
-		return "", nil, nil
+	case domain.LineFee:
+		return domain.ApprovalKindFeePosting, FeePostingPayload{
+			ReceiptID: receipt.ID, LineID: line.ID, Channel: channel,
+		}, nil
+	case domain.LineWelfare:
+		return domain.ApprovalKindWelfarePosting, WelfarePostingPayload{
+			ReceiptID: receipt.ID, LineID: line.ID, Channel: channel,
+		}, nil
 	}
 	return "", nil, httpx.ErrBadRequest("unknown receipt line kind: " + string(line.Kind))
+}
+
+// kindToggleForReceiptLine returns the receipt-line approval kind's
+// toggle from the loaded ApprovalToggles bundle. Kept next to the
+// per-line loop so the toggle list stays one edit away from the
+// approval-kind list.
+func kindToggleForReceiptLine(t *store.ApprovalToggles, kind domain.ApprovalKind) bool {
+	if t == nil {
+		// Conservative: treat missing toggles as "gate on" so a
+		// degraded read can't accidentally relax the policy.
+		return true
+	}
+	return t.IsKindGated(kind)
 }
 
 // computeShares derives integer share count from amount/par. Falls

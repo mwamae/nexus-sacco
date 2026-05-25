@@ -238,6 +238,11 @@ func main() {
 		LoanCollect:           loanCollectH,
 		LoanReports:           loanReportsH,
 		Receipts:              receiptStore,
+		// Wave 2 — ApplicationFee dispatcher executor. Collection
+		// gets wired in below after collectionDeskH exists (the two
+		// handlers reference each other; we break the cycle with a
+		// post-construction assignment).
+		ApplicationFees:       &handler.ApplicationFeeExecutor{Posting: postingClient, Logger: logger},
 		WorkflowInternalToken: cfg.WorkflowInternalToken,
 		Logger:                logger,
 	}
@@ -258,6 +263,10 @@ func main() {
 		LoanRepay:      loanRepayH,
 		Logger:         logger,
 	}
+	// Cycle-breaker: the fee/welfare approval executor needs to
+	// call back into collectionDeskH.postFeeLineTx. Constructed
+	// after both handlers exist.
+	approvalsH.Collection = collectionDeskH
 	dividendH := &handler.DividendHandler{
 		DB:                  pool,
 		Tenants:             tenants,

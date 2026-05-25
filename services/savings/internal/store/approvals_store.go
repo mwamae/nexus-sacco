@@ -388,6 +388,12 @@ func (t *ApprovalToggles) IsKindGated(k domain.ApprovalKind) bool {
 		return t.LoanMoratorium
 	case domain.ApprovalKindLoanSettlementDiscount:
 		return t.LoanSettlementDiscount
+	case domain.ApprovalKindFeePosting:
+		return t.FeeCollection
+	case domain.ApprovalKindWelfarePosting:
+		return t.WelfareCollection
+	case domain.ApprovalKindApplicationFee:
+		return t.ApplicationFee
 	}
 	return false
 }

@@ -61,6 +61,7 @@ type PendingApprovalsHandler struct {
 	LoanRepay   *LoanRepaymentHandler
 	LoanCollect *LoanCollectionsHandler
 	LoanReports *LoanReportsHandler
+	Collection  *CollectionDeskHandler // Wave 2 — fee/welfare executor
 
 	// Receipts is optional. When wired, every approve/decline checks
 	// whether the approval was spawned by a Collection Desk receipt
@@ -70,6 +71,12 @@ type PendingApprovalsHandler struct {
 	// approvals coming from the legacy per-panel buttons (no receipt
 	// linkage to begin with).
 	Receipts *store.ReceiptStore
+
+	// Wave 2 — application-fee executor. Posts the GL on approve
+	// and stamps the application_fee_payments row in the shared DB.
+	// Optional: when nil, ApprovalKindApplicationFee approvals
+	// error out at execute time (rather than silently no-oping).
+	ApplicationFees *ApplicationFeeExecutor
 
 	// Shared secret the workflow service includes on its terminal-
 	// status callback POSTs. When empty (dev fallback) we rely on the
@@ -795,6 +802,79 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 			txnID = &id
 		}
 		return res, txnID, nil
+
+	case domain.ApprovalKindFeePosting, domain.ApprovalKindWelfarePosting:
+		// Wave 2 — fee + welfare receipt-line approvals share an
+		// executor since both kinds end at postFeeLineTx (the
+		// catalog-driven posting helper). The payload struct shape
+		// is identical between the two; we decode into the fee one
+		// either way.
+		if h.Collection == nil {
+			return nil, nil, errors.New("collection desk handler is not wired")
+		}
+		p, err := store.UnmarshalPayload[FeePostingPayload](pa.Payload)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Re-load the receipt + line so a void during the pending
+		// window short-circuits the post. tenant scoping is via
+		// RLS on the surrounding WithTenantTx call.
+		receipt, err := h.Receipts.GetByIDTx(ctx, tx, p.ReceiptID)
+		if err != nil {
+			return nil, nil, err
+		}
+		var line *domain.ReceiptLine
+		for i := range receipt.Lines {
+			if receipt.Lines[i].ID == p.LineID {
+				line = &receipt.Lines[i]
+				break
+			}
+		}
+		if line == nil {
+			return nil, nil, errors.New("receipt line not found on the receipt")
+		}
+		if line.VoidedAt != nil {
+			return nil, nil, errors.New("receipt line is voided")
+		}
+		txnID, err := h.Collection.postFeeLineTx(ctx, tx, pa.TenantID, *receipt, *line, p.Channel)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := h.Receipts.MarkLinePostedTx(ctx, tx, line.ID, txnID); err != nil {
+			return nil, nil, err
+		}
+		return map[string]any{
+			"receipt_id":    p.ReceiptID,
+			"line_id":       p.LineID,
+			"posted_txn_id": txnID,
+		}, &txnID, nil
+
+	case domain.ApprovalKindApplicationFee:
+		if h.ApplicationFees == nil {
+			return nil, nil, errors.New("application fee executor is not wired")
+		}
+		p, err := store.UnmarshalPayload[ApplicationFeePayload](pa.Payload)
+		if err != nil {
+			return nil, nil, err
+		}
+		jeID, err := h.ApplicationFees.PostApprovedTx(ctx, tx, pa.TenantID, p)
+		if err != nil {
+			return nil, nil, err
+		}
+		if jeID == uuid.Nil {
+			// Dev / disabled posting — caller stamps a synthetic id
+			// inside PostApprovedTx itself.
+			return map[string]any{
+				"application_id":     p.ApplicationID,
+				"payment_id":         p.PaymentID,
+				"journal_entry_id":   nil,
+			}, nil, nil
+		}
+		return map[string]any{
+			"application_id":   p.ApplicationID,
+			"payment_id":       p.PaymentID,
+			"journal_entry_id": jeID,
+		}, &jeID, nil
 	}
 	return nil, nil, domain.ErrApprovalKindUnknown
 }

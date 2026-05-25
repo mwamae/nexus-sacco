@@ -73,6 +73,11 @@ type ApplicationFeePayment struct {
 	// for un-materialised applications, voided payments without a
 	// receipt, or payments stamped before this PR's backfill ran.
 	ReceiptID *uuid.UUID `json:"receipt_id,omitempty"`
+	// Wave 2 — pending_approvals row id when approval_application_fee
+	// was ON at insert time. Stays set even after the approval
+	// lands; pair with JournalEntryID for the "pending vs posted"
+	// UI badge.
+	ApprovalID *uuid.UUID `json:"approval_id,omitempty"`
 }
 
 // Sentinel errors the handler maps to HTTP statuses.

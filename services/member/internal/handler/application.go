@@ -936,6 +936,27 @@ func (h *ApplicationHandler) approveAndActivateTx(
 		return nil, nil, err
 	}
 
+	// Wave 2 — refuse to materialise while any non-voided fee
+	// payment is still pending approval. The dispatcher will land
+	// the JE on approve; until that happens, fee_amount_paid
+	// includes the payment but no journal entry backs it, so a
+	// materialise here would (a) leave the GL one-sided and
+	// (b) leave the payment row in limbo. A 409 with the payment
+	// id is the right outcome — the approver clears the queue,
+	// then the officer retries.
+	if h.FeePayments != nil {
+		n, firstID, perr := h.FeePayments.CountPendingApprovalsForAppTx(ctx, tx, appID)
+		if perr != nil {
+			return nil, nil, perr
+		}
+		if n > 0 {
+			return nil, nil, httpx.ErrConflict(fmt.Sprintf(
+				"fee payment %s is pending approval — the checker must approve it before this application can be materialised",
+				firstID,
+			))
+		}
+	}
+
 	// Read membership + share-policy settings the activation needs.
 	var defaultDepositProductID *uuid.UUID
 	if err := tx.QueryRow(ctx,

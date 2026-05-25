@@ -42,6 +42,26 @@ const (
 	// approval just sits pending until a later PR ships the exit
 	// ledger posting.
 	ApprovalKindBOSAExit ApprovalKind = "member_bosa_exit"
+
+	// Wave 2 of the approval-coverage rollout. Three previously-
+	// uncovered posting paths now have dedicated approval kinds:
+	//
+	//   FeePosting       — a fee line on a Collection Desk receipt
+	//                       (any fee_code from the catalog).
+	//   WelfarePosting   — a welfare-contribution line on a
+	//                       Collection Desk receipt.
+	//   ApplicationFee   — a registration-fee payment captured
+	//                       against a membership application
+	//                       (the pre-counterparty path).
+	//
+	// All three executors live in the savings-side
+	// pending_approvals dispatcher. The ApplicationFee executor
+	// reaches across to application_fee_payments (shared DB,
+	// member-owned) directly — same pattern as the receipt-stamp
+	// cross-table write.
+	ApprovalKindFeePosting     ApprovalKind = "fee_posting"
+	ApprovalKindWelfarePosting ApprovalKind = "welfare_posting"
+	ApprovalKindApplicationFee ApprovalKind = "application_fee"
 )
 
 func (k ApprovalKind) Valid() bool {
@@ -50,7 +70,8 @@ func (k ApprovalKind) Valid() bool {
 		ApprovalKindSharePurchase, ApprovalKindShareTransfer, ApprovalKindShareBonus, ApprovalKindShareLien,
 		ApprovalKindLoanDisbursement, ApprovalKindLoanRepayment, ApprovalKindLoanSettle, ApprovalKindLoanReverse,
 		ApprovalKindLoanWriteoff, ApprovalKindLoanReschedule, ApprovalKindLoanMoratorium,
-		ApprovalKindLoanSettlementDiscount, ApprovalKindBOSAExit:
+		ApprovalKindLoanSettlementDiscount, ApprovalKindBOSAExit,
+		ApprovalKindFeePosting, ApprovalKindWelfarePosting, ApprovalKindApplicationFee:
 		return true
 	}
 	return false

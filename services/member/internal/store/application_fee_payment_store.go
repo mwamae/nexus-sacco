@@ -94,6 +94,97 @@ func (s *ApplicationFeePaymentStore) SetJournalEntryTx(ctx context.Context, tx p
 	return err
 }
 
+// SetApprovalIDTx stamps the pending_approvals row id on the
+// payment when the approval_application_fee toggle is on. Read by
+// the materialise pre-check to surface 409 when a non-voided
+// payment is still pending.
+func (s *ApplicationFeePaymentStore) SetApprovalIDTx(ctx context.Context, tx pgx.Tx, paymentID uuid.UUID, approvalID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE application_fee_payments
+		   SET approval_id = $2
+		 WHERE id = $1
+	`, paymentID, approvalID)
+	return err
+}
+
+// CountPendingApprovalsForAppTx returns the count of non-voided
+// payments on this application whose approval is still pending
+// (approval_id set + journal_entry_id NULL). Used by the
+// materialise step to block with 409 when the checker hasn't
+// approved yet. Returns the count of payment rows + the first
+// pending payment id so the 409 message can name it.
+func (s *ApplicationFeePaymentStore) CountPendingApprovalsForAppTx(ctx context.Context, tx pgx.Tx, appID uuid.UUID) (int, *uuid.UUID, error) {
+	var (
+		n         int
+		firstID   *uuid.UUID
+	)
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*),
+		       MIN(id)
+		  FROM application_fee_payments
+		 WHERE application_id = $1
+		   AND voided_at IS NULL
+		   AND approval_id IS NOT NULL
+		   AND journal_entry_id IS NULL
+	`, appID).Scan(&n, &firstID); err != nil {
+		return 0, nil, err
+	}
+	return n, firstID, nil
+}
+
+// ReadApprovalApplicationFeeToggleTx is a tiny shared-DB SELECT on
+// the savings-owned tenant_operations table. Member service uses
+// this rather than a cross-service RPC — same precedent as the
+// receipt-stamp + opening-contributions path. RLS scopes by the
+// surrounding WithTenantTx.
+//
+// Returns true when the toggle is ON (the safe default) so the
+// caller routes through the approvals queue. Returns false on any
+// read failure (defensive: keep the legacy inline path alive
+// rather than silently blocking onboarding).
+func ReadApprovalApplicationFeeToggleTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var enabled bool
+	err := tx.QueryRow(ctx,
+		`SELECT COALESCE(approval_application_fee, true) FROM tenant_operations LIMIT 1`,
+	).Scan(&enabled)
+	if err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
+// QueueApplicationFeeApprovalTx inserts a pending_approvals row of
+// kind 'application_fee' carrying the payload the savings-side
+// dispatcher's executor consumes on approve. Returns the new
+// approval id so the caller can stamp it on the payment row.
+//
+// Direct INSERT into pending_approvals (shared DB, savings-owned)
+// — same pattern as the receipt-stamper. The dispatcher already
+// knows how to validate Kind on approve, so we don't gate the
+// kind here.
+func QueueApplicationFeeApprovalTx(
+	ctx context.Context, tx pgx.Tx,
+	makerUserID uuid.UUID, subjectMemberID *uuid.UUID,
+	title string, amount decimal.Decimal, payload []byte,
+) (uuid.UUID, error) {
+	var id uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO pending_approvals (
+		  tenant_id, kind, status, title,
+		  subject_member_id, amount,
+		  payload, maker_user_id
+		) VALUES (
+		  current_tenant_id(), 'application_fee', 'pending', $1,
+		  $2, $3,
+		  $4::jsonb, $5
+		)
+		RETURNING id
+	`, title, subjectMemberID, amount, payload, makerUserID).Scan(&id); err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
+}
+
 // GetByIDTx returns one row by id.
 func (s *ApplicationFeePaymentStore) GetByIDTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*domain.ApplicationFeePayment, error) {
 	row := tx.QueryRow(ctx, `SELECT `+feePaymentCols+` FROM application_fee_payments WHERE id = $1`, id)
@@ -120,7 +211,8 @@ func (s *ApplicationFeePaymentStore) ListByApplicationTx(ctx context.Context, tx
 		  p.journal_entry_id, p.posted_at,
 		  p.voided_at, p.void_reason, p.voided_by,
 		  p.created_at, p.created_by,
-		  r.id AS receipt_id
+		  r.id AS receipt_id,
+		  p.approval_id
 		FROM application_fee_payments p
 		LEFT JOIN receipts r ON r.application_payment_id = p.id
 		WHERE p.application_id = $1
@@ -140,6 +232,7 @@ func (s *ApplicationFeePaymentStore) ListByApplicationTx(ctx context.Context, tx
 			&p.VoidedAt, &p.VoidReason, &p.VoidedBy,
 			&p.CreatedAt, &p.CreatedBy,
 			&p.ReceiptID,
+			&p.ApprovalID,
 		); err != nil {
 			return nil, err
 		}

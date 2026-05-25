@@ -127,6 +127,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		DB: pool, Approvals: approvalsStore,
 		Deposit: depositH, Share: shareH, LoanRepay: loanRepayH,
 		Receipts: receiptStore,
+		// ApplicationFees stays nil — these tests don't exercise
+		// the application_fee dispatcher path.
 	}
 	collectionH := &CollectionDeskHandler{
 		DB: pool, Receipts: receiptStore, VirtualTills: virtualTillStore,
@@ -135,6 +137,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		Fees: feeCatalogStore, Posting: postingClient,
 		Deposit: depositH, LoanRepay: loanRepayH,
 	}
+	// Wave 2 — the fee/welfare approval executor needs to call
+	// back into collectionH.postFeeLineTx. Same cycle-breaker as
+	// main.go.
+	approvalsH.Collection = collectionH
 
 	// ─── server ────────────────────────────────────────────────────
 	userID := uuid.New()
