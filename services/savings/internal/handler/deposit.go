@@ -952,6 +952,12 @@ type reversalReq struct {
 	Reason string    `json:"reason"`
 }
 
+// postingcheck:ignore deposit reversal GL post is a known gap —
+// the reversal writes a deposit_transactions row but doesn't emit
+// the inverse JE (DR liability / CR cash). Tracked as a follow-up
+// PR; behavior pre-existed the R2 outbox refactor. Until that PR,
+// reversed deposits leave a balanced subledger but the GL keeps the
+// original post. Reconciliation report (R8) surfaces the drift.
 func (h *DepositHandler) Reverse(w http.ResponseWriter, r *http.Request) {
 	var in reversalReq
 	if err := httpx.DecodeJSON(r, &in); err != nil {
@@ -1032,6 +1038,11 @@ type depAdjustReq struct {
 	Reason string          `json:"reason"`
 }
 
+// postingcheck:ignore deposit adjustment GL post is a known gap —
+// admin adjustments need an offsetting-account form like
+// share.Adjust got in R5; same shape, separate PR. Until then,
+// reconciliation report (R8) shows the drift on the affected
+// member-savings code.
 func (h *DepositHandler) Adjust(w http.ResponseWriter, r *http.Request) {
 	accountID, err := parseUUIDParam(r, "account_id")
 	if err != nil {

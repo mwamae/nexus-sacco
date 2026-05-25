@@ -90,6 +90,22 @@ tidy: ## go mod tidy across services
 	cd $(IDENTITY_DIR) && go mod tidy
 	cd $(MEMBER_DIR)   && go mod tidy
 
+# ───────── Lint ─────────
+# postingcheck — static analyzer that catches regressions where a
+# money-moving handler bypasses the GL outbox (R10 spec). Runs across
+# every service's handler/ package. Exits non-zero on any flag, so
+# CI / pre-push hooks can gate merges on it.
+.PHONY: lint
+lint: ## Run postingcheck analyzer across all services
+	cd tools/postingcheck && go build -o $(CURDIR)/bin/postingcheck ./cmd/postingcheck
+	@for svc in savings accounting member workflow notification identity; do \
+	  if [ -d "services/$$svc/internal/handler" ]; then \
+	    echo "→ postingcheck services/$$svc/internal/handler/..."; \
+	    (cd services/$$svc && $(CURDIR)/bin/postingcheck ./internal/handler/...) || exit 1; \
+	  fi; \
+	done
+	@echo "✓ postingcheck clean"
+
 # ───────── Web ─────────
 .PHONY: web-dev
 web-dev: ## Start admin web in dev mode

@@ -30,9 +30,10 @@ type Deps struct {
 	Collection  *CollectionDeskHandler
 	VirtualTill *VirtualTillHandler
 	BOSAExit    *BOSAExitHandler
-	Outbox      *PostingOutboxHandler
-	FeesSummary *FeesSummaryHandler
-	TenantStore *store.TenantStore
+	Outbox        *PostingOutboxHandler
+	FeesSummary   *FeesSummaryHandler
+	FinanceHealth *FinanceHealthHandler
+	TenantStore   *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
 	Logger      *slog.Logger
@@ -50,6 +51,14 @@ func Routes(d Deps) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	// /healthz/finance — config-integrity probe for the GL pipeline.
+	// 503 when any fee_catalog.gl_credit_code resolves to a missing
+	// or inactive chart_of_accounts row. Mounted ABOVE auth so
+	// deployment automation can gate rollouts on it without a token.
+	if d.FinanceHealth != nil {
+		r.Get("/healthz/finance", d.FinanceHealth.Handle)
+	}
 
 	// Service-to-service endpoints — no JWT auth. Each handler does
 	// its own token / source check. Lives under /internal so it can

@@ -672,8 +672,16 @@ function ActivityTab({ entity, canSeeAudit }: { entity: Entity; canSeeAudit: boo
 // /accounting/fees-summary report, scoped to this counterparty. Defaults
 // the window to the past 12 months because "all fees this member has
 // ever paid" is the natural ask from the support desk.
+//
+// Receipts join on counterparties.id, NOT members.id. ApiMemberDetail
+// has both — use the counterparty_id field. Falls back to .id only as
+// defensive belt-and-suspenders for pre-migration data; today's
+// receipts always carry the materialised counterparty_id.
 function FeesTab({ entity }: { entity: Entity }) {
-  const counterpartyID = entity.kind === 'individual' ? entity.m.id : entity.o.id;
+  const counterpartyID =
+    entity.kind === 'individual'
+      ? (entity.m.counterparty_id ?? entity.m.id)
+      : (entity.o.counterparty_id ?? entity.o.id);
   const today = new Date().toISOString().slice(0, 10);
   const yearAgo = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
   const [from, setFrom] = useState(yearAgo);

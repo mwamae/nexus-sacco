@@ -85,6 +85,12 @@ func (h *ProvisioningHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // ─────────── Post (commit GL movement) ───────────
 
+// postingcheck:ignore provisioning predates the R2 outbox refactor —
+// migrating to Posting.PostTx requires re-shaping this handler to run
+// inside WithTenantTx (the GL post is currently after-commit). Same
+// risk as the deposit handler before R2; tracked as a separate PR.
+// Until then, a brief accounting outage during a provisioning run
+// will silently lose the GL movement.
 func (h *ProvisioningHandler) Post(w http.ResponseWriter, r *http.Request) {
 	runID, err := uuid.Parse(chi.URLParam(r, "run_id"))
 	if err != nil {

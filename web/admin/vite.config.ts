@@ -343,6 +343,16 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        // More-specific first: fees-summary lives on savings (where
+        // receipts + fee_catalog are owned). The matching XLSX export
+        // at /api/v1/exports/fees-summary.xlsx is on accounting (see
+        // exports.go::buildFeesSummary) so downloadReport() still
+        // works via the existing accounting proxy below.
+        '/api/v1/reports/fees-summary': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/reports': {
           target: accountingTarget,
           changeOrigin: false,

@@ -358,13 +358,20 @@ func main() {
 		Collection:   collectionDeskH,
 		VirtualTill:  &handler.VirtualTillHandler{DB: pool, Tills: virtualTillStore},
 		BOSAExit:     &handler.BOSAExitHandler{DB: pool, Deposit: depositH, Approvals: approvalsStore},
-		Outbox:       &handler.PostingOutboxHandler{DB: pool, Outbox: store.NewPostingOutboxStore(pool.Pool)},
-		FeesSummary:  &handler.FeesSummaryHandler{DB: pool, Store: store.NewFeesSummaryStore(pool.Pool)},
+		Outbox:        &handler.PostingOutboxHandler{DB: pool, Outbox: store.NewPostingOutboxStore(pool.Pool)},
+		FeesSummary:   &handler.FeesSummaryHandler{DB: pool, Store: store.NewFeesSummaryStore(pool.Pool)},
+		FinanceHealth: &handler.FinanceHealthHandler{DB: pool, Logger: logger},
 		TenantStore:  tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,
 		Logger:      logger,
 	})
+
+	// Boot-time integrity probe: log ERROR for any broken fee_catalog
+	// → CoA mapping. Doesn't fail boot — /healthz/finance returns 503
+	// for deployment automation to gate on. Surfaces broken catalogs
+	// loudly in the startup log so on-call sees them without polling.
+	handler.LogFinanceConfigOnBoot(ctx, pool, logger)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
