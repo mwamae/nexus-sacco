@@ -18,6 +18,15 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 )
 
+// ErrUnknownGLCode is returned by CreateTx when the caller-supplied
+// gl_credit_code doesn't resolve against the tenant's chart_of_accounts.
+// Before this guard shipped, a typo silently produced a fee_catalog
+// row that crashed every receipt that picked it up (the cashier
+// hit ErrUnknownAccount inside posting.Post and the whole receipt
+// rolled back). The handler maps this to a 422 + a human-readable
+// "unknown GL account X" message.
+var ErrUnknownGLCode = errors.New("gl_credit_code does not resolve in the tenant's chart of accounts")
+
 type FeeCatalogStore struct {
 	pool *pgxpool.Pool
 }
@@ -108,8 +117,26 @@ type CreateFeeCatalogInput struct {
 
 func (s *FeeCatalogStore) CreateTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, in CreateFeeCatalogInput) (*domain.FeeCatalogEntry, error) {
 	in.Code = strings.TrimSpace(strings.ToLower(in.Code))
+	in.GLCreditCode = strings.TrimSpace(in.GLCreditCode)
 	if in.Code == "" || in.Label == "" || in.GLCreditCode == "" {
 		return nil, fmt.Errorf("fee_catalog: code, label, gl_credit_code are required")
+	}
+	// Verify the GL code exists in the tenant's chart_of_accounts
+	// BEFORE inserting so a typo can never produce a catalog row
+	// that crashes downstream postings. SELECT 1 with RLS is enough
+	// — the chart_of_accounts table is per-tenant + tenant-scoped
+	// by policy.
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM chart_of_accounts
+		   WHERE tenant_id = $1 AND code = $2 AND is_active = true
+		)
+	`, tenantID, in.GLCreditCode).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("fee_catalog: verify gl_credit_code: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownGLCode, in.GLCreditCode)
 	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO fee_catalog (

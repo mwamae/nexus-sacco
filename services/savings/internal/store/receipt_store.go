@@ -550,6 +550,49 @@ func (s *ReceiptStore) MarkLinePostedTx(ctx context.Context, tx pgx.Tx, lineID, 
 	return s.RecomputeStatusForLineTx(ctx, tx, lineID)
 }
 
+// UnpostedFeeLine is one row returned by ListUnpostedFeeLinesTx —
+// the replay endpoint loops over these to re-attempt postFeeLineTx
+// for receipts that previously crashed (typically because the fee
+// catalog pointed at a non-existent GL code; see migration
+// accounting 0012 + savings 0031 for the underlying fix).
+type UnpostedFeeLine struct {
+	ReceiptID uuid.UUID
+	LineID    uuid.UUID
+	Kind      string
+}
+
+// ListUnpostedFeeLinesTx returns every receipt_line where:
+//
+//	kind IN ('fee', 'welfare')
+//	posted_txn_id IS NULL
+//	voided_at IS NULL
+//
+// Caller is responsible for loading the receipt header + the
+// matching line before calling postFeeLineTx. RLS scopes by tenant.
+func (s *ReceiptStore) ListUnpostedFeeLinesTx(ctx context.Context, tx pgx.Tx) ([]UnpostedFeeLine, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT receipt_id, id, kind::text
+		  FROM receipt_lines
+		 WHERE kind IN ('fee', 'welfare')
+		   AND posted_txn_id IS NULL
+		   AND voided_at IS NULL
+		 ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []UnpostedFeeLine{}
+	for rows.Next() {
+		var r UnpostedFeeLine
+		if err := rows.Scan(&r.ReceiptID, &r.LineID, &r.Kind); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // MarkLineDeclinedTx mirrors MarkLinePostedTx for the rejected path.
 func (s *ReceiptStore) MarkLineDeclinedTx(ctx context.Context, tx pgx.Tx, lineID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `

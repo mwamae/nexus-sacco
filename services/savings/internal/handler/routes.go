@@ -269,6 +269,12 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("savings:transact")).Post("/receipts/{id}/pdf", d.Collection.RenderPDF)
 			r.With(middleware.RequirePermission("savings:view")).Get("/fees", d.Collection.ListFees)
 			r.With(middleware.RequirePermission("tenant:settings:edit")).Post("/fees", d.Collection.CreateFee)
+			// PR fee-coa — admin recovery for receipts whose
+			// fee/welfare lines crashed at posting (most commonly
+			// because the fee_catalog GL code didn't resolve in
+			// the CoA; accounting 0012 + savings 0031 fixed the
+			// underlying mapping).
+			r.With(middleware.RequirePermission("tenant:settings:edit")).Post("/fees/replay-failed", d.Collection.ReplayFailedFeeLines)
 
 			// ─────────── Maker-checker (Phase 7b) ───────────
 			r.With(middleware.RequirePermission("approvals:view")).Get("/pending-approvals", d.Approvals.List)

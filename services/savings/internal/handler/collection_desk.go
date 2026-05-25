@@ -955,10 +955,125 @@ func (h *CollectionDeskHandler) CreateFee(w http.ResponseWriter, r *http.Request
 		return nil
 	})
 	if err != nil {
+		// PR fee-coa: an unknown gl_credit_code is the most common
+		// admin error here — the store guard catches it before the
+		// INSERT, but the dispatcher needs to surface a 422 with a
+		// human-readable account code so the form can render it
+		// inline rather than as a generic 500.
+		if errors.Is(err, store.ErrUnknownGLCode) {
+			httpx.WriteErr(w, r, httpx.E(http.StatusUnprocessableEntity, "unknown_gl_code",
+				fmt.Sprintf("unknown GL account %q", in.GLCreditCode)))
+			return
+		}
 		httpx.WriteErr(w, r, err)
 		return
 	}
 	httpx.Created(w, out)
+}
+
+// ─────────── POST /v1/fees/replay-failed (admin) ───────────
+//
+// One-off recovery endpoint for receipts whose fee/welfare lines
+// crashed at posting time (most commonly because the fee_catalog
+// pointed at a non-existent GL code — fixed by accounting 0012 +
+// savings 0031). Walks every receipt_line where:
+//
+//	kind IN ('fee','welfare') AND posted_txn_id IS NULL AND voided_at IS NULL
+//
+// and re-runs postFeeLineTx on each. Each line runs in its own
+// sub-tx so a single still-broken row doesn't roll back the rest.
+// Returns counts + the per-line error payload for any line that
+// still fails so the admin can surface a remaining gap.
+//
+// Permission: spec asked for the 'finance_admin' role but the
+// codebase doesn't expose role names directly — using the same
+// permission as the approval-settings PUT + CreateFee endpoint
+// (tenant:settings:edit). Swap to a dedicated permission later
+// if the roles system grows one.
+
+type replayLineFailure struct {
+	ReceiptID uuid.UUID `json:"receipt_id"`
+	LineID    uuid.UUID `json:"line_id"`
+	Kind      string    `json:"kind"`
+	Payload   string    `json:"payload"` // underlying engine error
+}
+
+type replayFailedResponse struct {
+	Replayed    int                 `json:"replayed"`
+	Skipped     int                 `json:"skipped"`
+	StillFailed []replayLineFailure `json:"still_failed"`
+}
+
+func (h *CollectionDeskHandler) ReplayFailedFeeLines(w http.ResponseWriter, r *http.Request) {
+	if h.Receipts == nil {
+		httpx.WriteErr(w, r, fmt.Errorf("receipt store not wired"))
+		return
+	}
+	tenantID, _ := middleware.TenantIDFrom(r)
+
+	// Step 1 — pull the list of unposted lines. Read-only tx; the
+	// per-line re-posts each open their own write tx below so a
+	// long replay can't hold a single transaction open across the
+	// whole batch.
+	var unposted []store.UnpostedFeeLine
+	if err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		var err error
+		unposted, err = h.Receipts.ListUnpostedFeeLinesTx(r.Context(), tx)
+		return err
+	}); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+
+	resp := replayFailedResponse{StillFailed: []replayLineFailure{}}
+
+	for _, u := range unposted {
+		perr := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+			receipt, err := h.Receipts.GetByIDTx(r.Context(), tx, u.ReceiptID)
+			if err != nil {
+				return err
+			}
+			// Re-check the line state in the fresh tx — voids /
+			// posts may have raced in between.
+			var line *domain.ReceiptLine
+			for i := range receipt.Lines {
+				if receipt.Lines[i].ID == u.LineID {
+					line = &receipt.Lines[i]
+					break
+				}
+			}
+			if line == nil || line.VoidedAt != nil || line.PostedTxnID != nil {
+				resp.Skipped++
+				return nil
+			}
+			txnID, ferr := h.postFeeLineTx(r.Context(), tx, tenantID, *receipt, *line, receipt.Channel)
+			if ferr != nil {
+				return ferr
+			}
+			if merr := h.Receipts.MarkLinePostedTx(r.Context(), tx, line.ID, txnID); merr != nil {
+				return merr
+			}
+			resp.Replayed++
+			return nil
+		})
+		if perr != nil {
+			resp.StillFailed = append(resp.StillFailed, replayLineFailure{
+				ReceiptID: u.ReceiptID,
+				LineID:    u.LineID,
+				Kind:      u.Kind,
+				Payload:   perr.Error(),
+			})
+		}
+	}
+
+	if h.Logger != nil {
+		h.Logger.Info("fee replay completed",
+			"tenant", tenantID,
+			"replayed", resp.Replayed,
+			"skipped", resp.Skipped,
+			"still_failed", len(resp.StillFailed))
+	}
+	httpx.OK(w, resp)
 }
 
 // ─────────── POST /v1/receipts/{id}/pdf ───────────
