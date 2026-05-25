@@ -359,6 +359,7 @@ func main() {
 		VirtualTill:  &handler.VirtualTillHandler{DB: pool, Tills: virtualTillStore},
 		BOSAExit:     &handler.BOSAExitHandler{DB: pool, Deposit: depositH, Approvals: approvalsStore},
 		Outbox:       &handler.PostingOutboxHandler{DB: pool, Outbox: store.NewPostingOutboxStore(pool.Pool)},
+		FeesSummary:  &handler.FeesSummaryHandler{DB: pool, Store: store.NewFeesSummaryStore(pool.Pool)},
 		TenantStore:  tenants,
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,

@@ -78,6 +78,8 @@ func (h *ExportHandler) Export(w http.ResponseWriter, r *http.Request) {
 		err = h.buildChangesInEquity(r.Context(), f, tid, tenantName, r)
 	case "sasra-return":
 		err = h.buildSASRAReturn(r.Context(), f, tid, tenantName, r)
+	case "fees-summary":
+		err = h.buildFeesSummary(r.Context(), f, tid, tenantName, r)
 	default:
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("unknown report: "+report))
 		return
@@ -685,6 +687,210 @@ func writeSection(f *excelize.File, sheet string, row int, st sheetStyles, title
 		row++
 	}
 	return row + 1
+}
+
+// ─────────── Fees & Collections Summary ───────────
+//
+// XLSX twin of services/savings/internal/handler/fees_summary.go::Summary.
+// Same SQL aggregation, written here so the existing
+// /v1/exports/{report}.xlsx surface keeps working from the
+// downloadReport() frontend helper. The query joins savings-owned
+// tables (receipts, receipt_lines, fee_catalog) — shared-DB pattern,
+// already done by buildSASRAReturn et al.
+func (h *ExportHandler) buildFeesSummary(ctx context.Context, f *excelize.File, tid [16]byte, tenantName string, r *http.Request) error {
+	from, to, ok := parseDateRangeFromQuery(r)
+	if !ok {
+		return httpx.ErrBadRequest("from and to are required (YYYY-MM-DD)")
+	}
+	channel := r.URL.Query().Get("channel")
+	feeCode := r.URL.Query().Get("fee_code")
+	counterpartyID := r.URL.Query().Get("counterparty_id")
+
+	type feeCodeRow struct {
+		FeeCode      string
+		FeeLabel     string
+		GLCreditCode string
+		Count        int
+		Total        decimal.Decimal
+		Voided       decimal.Decimal
+	}
+	type channelRow struct {
+		Channel string
+		Count   int
+		Total   decimal.Decimal
+		Voided  decimal.Decimal
+	}
+	var (
+		totalAmt, totalVoid decimal.Decimal
+		feeRows             []feeCodeRow
+		chRows              []channelRow
+	)
+
+	if err := h.DB.WithTenantTx(ctx, tid, func(tx pgx.Tx) error {
+		conds := []string{
+			"rl.kind IN ('fee','welfare')",
+			"r.status = 'posted'",
+			"r.value_date BETWEEN $1 AND $2",
+		}
+		args := []any{from, to}
+		idx := 3
+		if channel != "" {
+			conds = append(conds, fmt.Sprintf("r.channel = $%d", idx))
+			args = append(args, channel)
+			idx++
+		}
+		if feeCode != "" {
+			conds = append(conds, fmt.Sprintf("rl.fee_code = $%d", idx))
+			args = append(args, feeCode)
+			idx++
+		}
+		if counterpartyID != "" {
+			conds = append(conds, fmt.Sprintf("r.counterparty_id = $%d", idx))
+			args = append(args, counterpartyID)
+			idx++
+		}
+		where := strings.Join(conds, " AND ")
+
+		// Totals
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(rl.amount), 0),
+			       COALESCE(SUM(CASE WHEN rl.voided_at IS NOT NULL THEN rl.amount ELSE 0 END), 0)
+			  FROM receipts r
+			  JOIN receipt_lines rl ON rl.receipt_id = r.id
+			 WHERE `+where, args...).Scan(&totalAmt, &totalVoid); err != nil {
+			return fmt.Errorf("fees totals: %w", err)
+		}
+		// By fee code
+		fr, err := tx.Query(ctx, `
+			SELECT COALESCE(rl.fee_code, ''),
+			       COALESCE(fc.label, rl.fee_code, ''),
+			       COALESCE(fc.gl_credit_code, ''),
+			       COUNT(*),
+			       COALESCE(SUM(rl.amount), 0),
+			       COALESCE(SUM(CASE WHEN rl.voided_at IS NOT NULL THEN rl.amount ELSE 0 END), 0)
+			  FROM receipts r
+			  JOIN receipt_lines rl    ON rl.receipt_id = r.id
+			  LEFT JOIN fee_catalog fc ON fc.tenant_id = r.tenant_id AND fc.code = rl.fee_code
+			 WHERE `+where+`
+			 GROUP BY rl.fee_code, COALESCE(fc.label, rl.fee_code, ''), COALESCE(fc.gl_credit_code, '')
+			 ORDER BY 5 DESC
+		`, args...)
+		if err != nil {
+			return err
+		}
+		for fr.Next() {
+			var row feeCodeRow
+			if err := fr.Scan(&row.FeeCode, &row.FeeLabel, &row.GLCreditCode, &row.Count, &row.Total, &row.Voided); err != nil {
+				fr.Close()
+				return err
+			}
+			feeRows = append(feeRows, row)
+		}
+		fr.Close()
+		// By channel
+		cr, err := tx.Query(ctx, `
+			SELECT r.channel::text,
+			       COUNT(*),
+			       COALESCE(SUM(rl.amount), 0),
+			       COALESCE(SUM(CASE WHEN rl.voided_at IS NOT NULL THEN rl.amount ELSE 0 END), 0)
+			  FROM receipts r
+			  JOIN receipt_lines rl ON rl.receipt_id = r.id
+			 WHERE `+where+`
+			 GROUP BY r.channel
+			 ORDER BY 3 DESC
+		`, args...)
+		if err != nil {
+			return err
+		}
+		for cr.Next() {
+			var row channelRow
+			if err := cr.Scan(&row.Channel, &row.Count, &row.Total, &row.Voided); err != nil {
+				cr.Close()
+				return err
+			}
+			chRows = append(chRows, row)
+		}
+		cr.Close()
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	sheet := "Fees Summary"
+	_, _ = f.NewSheet(sheet)
+	_ = f.DeleteSheet("Sheet1")
+	st := styles(f)
+	subtitle := fmt.Sprintf("%s · %s → %s", tenantName,
+		from.Format("2006-01-02"), to.Format("2006-01-02"))
+	row := writeHeader(f, sheet, "Fees & Collections Summary", subtitle, st, 6)
+
+	// ── Totals block ──
+	_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", row), "TOTALS")
+	_ = f.SetCellStyle(sheet, fmt.Sprintf("A%d", row), fmt.Sprintf("F%d", row), st.Subtotal)
+	row++
+	for _, kv := range [][2]any{
+		{"Total amount", decStr(totalAmt)},
+		{"Voided amount", decStr(totalVoid)},
+		{"Net amount", decStr(totalAmt.Sub(totalVoid))},
+	} {
+		_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", row), kv[0])
+		_ = f.SetCellValue(sheet, fmt.Sprintf("B%d", row), kv[1])
+		_ = f.SetCellStyle(sheet, fmt.Sprintf("B%d", row), fmt.Sprintf("B%d", row), st.Money)
+		row++
+	}
+	row++
+
+	// ── By fee code ──
+	_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", row), "BY FEE CODE")
+	_ = f.SetCellStyle(sheet, fmt.Sprintf("A%d", row), fmt.Sprintf("F%d", row), st.Subtotal)
+	row++
+	feeHeaders := []string{"Code", "Label", "GL credit", "Count", "Total", "Net"}
+	for i, h := range feeHeaders {
+		cell, _ := excelize.CoordinatesToCellName(i+1, row)
+		_ = f.SetCellValue(sheet, cell, h)
+	}
+	_ = f.SetCellStyle(sheet, fmt.Sprintf("A%d", row), fmt.Sprintf("F%d", row), st.Header)
+	row++
+	for _, fr := range feeRows {
+		net := fr.Total.Sub(fr.Voided)
+		_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", row), fr.FeeCode)
+		_ = f.SetCellValue(sheet, fmt.Sprintf("B%d", row), fr.FeeLabel)
+		_ = f.SetCellValue(sheet, fmt.Sprintf("C%d", row), fr.GLCreditCode)
+		_ = f.SetCellValue(sheet, fmt.Sprintf("D%d", row), fr.Count)
+		_ = f.SetCellValue(sheet, fmt.Sprintf("E%d", row), decStr(fr.Total))
+		_ = f.SetCellValue(sheet, fmt.Sprintf("F%d", row), decStr(net))
+		_ = f.SetCellStyle(sheet, fmt.Sprintf("E%d", row), fmt.Sprintf("F%d", row), st.Money)
+		row++
+	}
+	row++
+
+	// ── By channel ──
+	_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", row), "BY CHANNEL")
+	_ = f.SetCellStyle(sheet, fmt.Sprintf("A%d", row), fmt.Sprintf("F%d", row), st.Subtotal)
+	row++
+	chHeaders := []string{"Channel", "Count", "Total", "Voided", "Net"}
+	for i, h := range chHeaders {
+		cell, _ := excelize.CoordinatesToCellName(i+1, row)
+		_ = f.SetCellValue(sheet, cell, h)
+	}
+	_ = f.SetCellStyle(sheet, fmt.Sprintf("A%d", row), fmt.Sprintf("E%d", row), st.Header)
+	row++
+	for _, cr := range chRows {
+		net := cr.Total.Sub(cr.Voided)
+		_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", row), cr.Channel)
+		_ = f.SetCellValue(sheet, fmt.Sprintf("B%d", row), cr.Count)
+		_ = f.SetCellValue(sheet, fmt.Sprintf("C%d", row), decStr(cr.Total))
+		_ = f.SetCellValue(sheet, fmt.Sprintf("D%d", row), decStr(cr.Voided))
+		_ = f.SetCellValue(sheet, fmt.Sprintf("E%d", row), decStr(net))
+		_ = f.SetCellStyle(sheet, fmt.Sprintf("C%d", row), fmt.Sprintf("E%d", row), st.Money)
+		row++
+	}
+
+	// Reasonable column widths so labels read at a glance.
+	_ = f.SetColWidth(sheet, "A", "A", 22)
+	_ = f.SetColWidth(sheet, "B", "B", 32)
+	_ = f.SetColWidth(sheet, "C", "F", 14)
+	return nil
 }
 
 // parseDateRangeFromQuery is the standalone version of the existing

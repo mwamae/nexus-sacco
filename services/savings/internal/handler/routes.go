@@ -31,6 +31,7 @@ type Deps struct {
 	VirtualTill *VirtualTillHandler
 	BOSAExit    *BOSAExitHandler
 	Outbox      *PostingOutboxHandler
+	FeesSummary *FeesSummaryHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -281,6 +282,12 @@ func Routes(d Deps) http.Handler {
 			// Same trust level as the fee-catalog admin paths.
 			r.With(middleware.RequirePermission("tenant:settings:edit")).Get("/finance/posting-outbox", d.Outbox.ListStuck)
 			r.With(middleware.RequirePermission("tenant:settings:edit")).Post("/finance/posting-outbox/{id}/replay", d.Outbox.Replay)
+
+			// ─────────── Fees & Collections summary report ───────────
+			// JSON; the matching XLSX export lives on the accounting
+			// service at /v1/exports/fees-summary.xlsx so it can ride
+			// the existing downloadReport() helper.
+			r.With(middleware.RequirePermission("tenant:settings:view")).Get("/reports/fees-summary", d.FeesSummary.Summary)
 
 			// ─────────── Maker-checker (Phase 7b) ───────────
 			r.With(middleware.RequirePermission("approvals:view")).Get("/pending-approvals", d.Approvals.List)

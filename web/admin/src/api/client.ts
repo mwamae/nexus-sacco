@@ -5300,6 +5300,71 @@ export async function cashFlow(from: string, to: string): Promise<{
   return r.data.data;
 }
 
+// ─────────── Fees & Collections Summary ───────────
+//
+// Lives on the savings service (where receipts/receipt_lines/fee_catalog
+// are owned). The matching XLSX export lives on accounting (under the
+// existing /v1/exports/{report}.xlsx surface) so downloadReport()
+// continues to work uniformly.
+
+export type FeeCodeRow = {
+  fee_code: string;
+  fee_label: string;
+  gl_credit_code: string;
+  count: number;
+  total_amount: string;
+  voided_amount: string;
+  net_amount: string;
+};
+
+export type ChannelRow = {
+  channel: string;
+  count: number;
+  total_amount: string;
+  voided_amount: string;
+  net_amount: string;
+};
+
+export type UnpostedRow = {
+  receipt_id: string;
+  receipt_serial: string;
+  line_id: string;
+  fee_code: string;
+  channel: string;
+  amount: string;
+  age_minutes: number;
+};
+
+export type FeesSummary = {
+  from: string;
+  to: string;
+  total_amount: string;
+  total_voided: string;
+  net_amount: string;
+  by_fee_code: FeeCodeRow[];
+  by_channel: ChannelRow[];
+  unposted: UnpostedRow[];
+};
+
+export type FeesSummaryFilter = {
+  from: string;        // YYYY-MM-DD
+  to: string;          // YYYY-MM-DD
+  channel?: string;
+  fee_code?: string;
+  counterparty_id?: string;
+};
+
+export async function feesSummary(f: FeesSummaryFilter): Promise<FeesSummary> {
+  const qs = new URLSearchParams();
+  qs.set('from', f.from);
+  qs.set('to', f.to);
+  if (f.channel) qs.set('channel', f.channel);
+  if (f.fee_code) qs.set('fee_code', f.fee_code);
+  if (f.counterparty_id) qs.set('counterparty_id', f.counterparty_id);
+  const r = await api.get(`/v1/reports/fees-summary?${qs.toString()}`);
+  return r.data.data;
+}
+
 // ─────────── Fiscal year close ───────────
 
 export type FiscalYearClose = {

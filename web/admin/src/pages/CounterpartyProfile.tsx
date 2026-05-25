@@ -46,9 +46,10 @@ import { MemberLedgerPanel } from '../components/MemberLedgerPanel';
 import { MemberStatusCard } from '../components/MemberStatusCard';
 import { usePageCrumb } from '../lib/pageCrumb';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
+import { FeesSummaryView } from './Accounting/FeesSummary';
 
 // One tab strip — spec-defined, identical for both kinds.
-type TabId = 'overview' | 'profile' | 'accounts' | 'people' | 'banking' | 'documents' | 'activity';
+type TabId = 'overview' | 'profile' | 'accounts' | 'people' | 'banking' | 'documents' | 'activity' | 'fees';
 const TABS: { id: TabId; label: string }[] = [
   { id: 'overview',  label: 'Overview' },
   { id: 'profile',   label: 'Profile' },
@@ -56,6 +57,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'people',    label: 'People' },
   { id: 'banking',   label: 'Banking' },
   { id: 'documents', label: 'Documents & KYC' },
+  { id: 'fees',      label: 'Fees' },       // per-member Fees & Collections
   { id: 'activity',  label: 'Activity' },
 ];
 
@@ -208,6 +210,7 @@ function CounterpartyShell({
               {activeId === 'people'    && <PeopleTab entity={entity} />}
               {activeId === 'banking'   && <BankingTab entity={entity} />}
               {activeId === 'documents' && <DocumentsTab entity={entity} />}
+              {activeId === 'fees'      && <FeesTab entity={entity} />}
               {activeId === 'activity'  && <ActivityTab entity={entity} canSeeAudit={canSeeAudit} />}
             </>
           )}
@@ -662,6 +665,56 @@ function ActivityTab({ entity, canSeeAudit }: { entity: Entity; canSeeAudit: boo
           : <span className="muted tiny">You don't have audit:view permission.</span>}
       </div>
     </div>
+  );
+}
+
+// FeesTab calls the same Fees & Collections endpoint as the standalone
+// /accounting/fees-summary report, scoped to this counterparty. Defaults
+// the window to the past 12 months because "all fees this member has
+// ever paid" is the natural ask from the support desk.
+function FeesTab({ entity }: { entity: Entity }) {
+  const counterpartyID = entity.kind === 'individual' ? entity.m.id : entity.o.id;
+  const today = new Date().toISOString().slice(0, 10);
+  const yearAgo = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const [from, setFrom] = useState(yearAgo);
+  const [to, setTo] = useState(today);
+  const [data, setData] = useState<import('../api/client').FeesSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    setErr(null); setBusy(true);
+    try {
+      const { feesSummary } = await import('../api/client');
+      setData(await feesSummary({ from, to, counterparty_id: counterpartyID }));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'failed to load');
+    } finally {
+      setBusy(false);
+    }
+  }
+  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [counterpartyID]);
+
+  return (
+    <>
+      <div className="card">
+        <div className="card-body" style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
+          <label>
+            <div className="muted tiny">From</div>
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </label>
+          <label>
+            <div className="muted tiny">To</div>
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          </label>
+          <button className="btn btn-primary" disabled={busy} onClick={() => void load()}>
+            {busy ? 'Loading…' : 'Refresh'}
+          </button>
+        </div>
+      </div>
+      {err && <div className="alert alert-error" style={{ marginTop: 12 }}>{err}</div>}
+      {data && <FeesSummaryView data={data} />}
+    </>
   );
 }
 
