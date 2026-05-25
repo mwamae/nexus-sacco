@@ -838,7 +838,12 @@ func (h *CollectionDeskHandler) postFeeLineTx(
 		return uuid.New(), nil
 	}
 	sourceRef := uuid.New()
-	if err := h.Posting.Post(ctx, posting.PostInput{
+	// Post-after-commit refactor — write into the GL outbox INSIDE
+	// the caller's tx. The dispatcher drains the outbox; failure
+	// here is wrapped in ErrOutboxInsert and surfaced as 502 by the
+	// caller (the approval dispatcher already runs inside a tx and
+	// the per-line CreateReceipt loop fans through this same path).
+	if err := h.Posting.PostTx(ctx, tx, posting.PostInput{
 		TenantID:     tenantID,
 		EntryDate:    receipt.ValueDate,
 		ValueDate:    receipt.ValueDate,
@@ -1280,6 +1285,8 @@ func writeDeskErr(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteErr(w, r, httpx.ErrNotFound("not found"))
 	case errors.Is(err, store.ErrDuplicateReceipt):
 		httpx.WriteErr(w, r, httpx.ErrConflict(err.Error()))
+	case errors.Is(err, posting.ErrOutboxInsert):
+		httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
 	default:
 		httpx.WriteErr(w, r, err)
 	}

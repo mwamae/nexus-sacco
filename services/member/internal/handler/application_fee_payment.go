@@ -236,8 +236,10 @@ func (h *ApplicationHandler) RecordFeePayment(w http.ResponseWriter, r *http.Req
 			}
 			pendingApprovalID = &approvalID
 		} else {
-			// Toggle off — original inline path.
-			jeID, postErr := h.postFeePaymentToGL(r.Context(), tenantID, app, ins, false)
+			// Toggle off — inline path. Outbox write happens INSIDE
+			// the same tx as the payment row, so a failure here
+			// rolls the payment back too.
+			jeID, postErr := h.postFeePaymentToGLTx(r.Context(), tx, tenantID, app, ins, false)
 			if postErr != nil {
 				return postErr
 			}
@@ -342,9 +344,10 @@ func (h *ApplicationHandler) VoidFeePayment(w http.ResponseWriter, r *http.Reque
 		}
 
 		// Post the reversal JE only if the original had one (no point
-		// reversing a never-posted entry).
+		// reversing a never-posted entry). Outbox-insert refactor:
+		// runs inside the same tx as the void; failure rolls back.
 		if existing.JournalEntryID != nil {
-			jeID, perr := h.postFeePaymentToGL(r.Context(), tenantID, app, existing, true)
+			jeID, perr := h.postFeePaymentToGLTx(r.Context(), tx, tenantID, app, existing, true)
 			if perr != nil {
 				return perr
 			}
@@ -439,19 +442,23 @@ func (h *ApplicationHandler) ListFeePayments(w http.ResponseWriter, r *http.Requ
 	httpx.OK(w, map[string]any{"payments": out})
 }
 
-// postFeePaymentToGL fires a journal entry for one fee payment row.
-// Mirrors postFeeToGL's structure but keyed on the payment id (so
-// the accounting service's (source_module, source_ref) dedup catches
-// retries on the same payment).
+// postFeePaymentToGLTx queues the fee-payment GL entry into the
+// shared posting_outbox INSIDE the caller's tx. The dispatcher
+// drains the outbox and posts the JE to the accounting service.
 //
 //	forward (refund=false): DR channel-cash / CR 4080 Registration Fee Income
 //	reversal (refund=true): DR 4080 / CR channel-cash
 //
-// Returns uuid.Nil when posting is disabled (dev); the caller still
-// stamps the row using a synthetic id mirroring the Collection
-// Desk's behaviour.
-func (h *ApplicationHandler) postFeePaymentToGL(
-	ctx context.Context, tenantID uuid.UUID,
+// Source ref doubles as the synthetic JE handle stamped on the
+// payment row — accounting dedupes on (source_module, source_ref)
+// so dispatcher retries won't double-post. Returns the stamped id +
+// any outbox-insert error (wrapped in accounting.ErrOutboxInsert).
+//
+// When Disabled (dev / test) this is a no-op and the caller
+// stamps a synthetic id so the row's posted_at fires — same
+// behaviour as the legacy postFeePaymentToGL.
+func (h *ApplicationHandler) postFeePaymentToGLTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
 	app *domain.MembershipApplication, payment *domain.ApplicationFeePayment,
 	refund bool,
 ) (uuid.UUID, error) {
@@ -474,34 +481,42 @@ func (h *ApplicationHandler) postFeePaymentToGL(
 			{AccountCode: "4080", Credit: payment.Amount, Narration: "Registration fee income"},
 		}
 	}
-	res, err := h.Accounting.Post(ctx, accounting.PostInput{
+	if h.Accounting == nil || h.Accounting.Disabled {
+		// Dev fallback — stamp a synthetic id so the payment's
+		// posted_at fires. The outbox is intentionally empty in
+		// this mode (no dispatcher work). Matches the legacy
+		// behaviour the test fixtures rely on.
+		if h.Logger != nil {
+			h.Logger.Warn("fee payment GL post disabled — stamping synthetic JE id",
+				"application", app.ID, "payment", payment.ID,
+				"amount", payment.Amount.StringFixed(2))
+		}
+		return uuid.New(), nil
+	}
+	// Generate the source_ref-and-JE handle upfront. The dispatcher
+	// will use the same value as source_ref against accounting so
+	// the eventual real JE id stays consistent with what's stamped
+	// on the payment row.
+	jeID := uuid.New()
+	if err := h.Accounting.PostTx(ctx, tx, accounting.PostInput{
 		TenantID:     tenantID,
 		EntryDate:    time.Now(),
 		ValueDate:    payment.ValueDate,
 		SourceModule: module,
-		SourceRef:    sourceRef,
-		Narration:    narration,
-		Lines:        lines,
-	})
-	if err != nil {
-		if errors.Is(err, accounting.ErrDisabled) {
-			// Dev / disabled. Stamp a synthetic id so the row's
-			// posted_at fires; mirrors the Collection Desk's
-			// postFeeLineTx behaviour.
-			if h.Logger != nil {
-				h.Logger.Warn("fee payment GL post disabled — stamping synthetic JE id",
-					"application", app.ID, "payment", payment.ID,
-					"amount", payment.Amount.StringFixed(2))
-			}
-			return uuid.New(), nil
-		}
+		// Override the source_ref with the synthetic id we stamp
+		// on the payment row, so the dispatcher's HTTP post and
+		// the payment row reference the same handle.
+		SourceRef: jeID.String() + ":" + sourceRef,
+		Narration: narration,
+		Lines:     lines,
+	}); err != nil {
 		if h.Logger != nil {
-			h.Logger.Error("post fee payment to GL",
+			h.Logger.Error("post fee payment to GL — outbox insert failed",
 				"application", app.ID, "payment", payment.ID, "refund", refund, "err", err)
 		}
 		return uuid.Nil, err
 	}
-	return res.EntryID, nil
+	return jeID, nil
 }
 
 // writeFeePaymentErr maps the typed sentinel errors to HTTP. The
@@ -525,6 +540,8 @@ func writeFeePaymentErr(w http.ResponseWriter, r *http.Request, err error, dup *
 		httpx.WriteErr(w, r, httpx.ErrConflict("fee payment is already voided"))
 	case errors.Is(err, domain.ErrFeePaymentNotFound):
 		httpx.WriteErr(w, r, httpx.ErrNotFound("fee payment not found"))
+	case errors.Is(err, accounting.ErrOutboxInsert):
+		httpx.WriteErr(w, r, httpx.E(http.StatusBadGateway, "gl_post_failed", err.Error()))
 	default:
 		httpx.WriteErr(w, r, err)
 	}

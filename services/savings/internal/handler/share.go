@@ -423,10 +423,20 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// In-tx outbox post:
+		//   Debit  Cash / M-Pesa / Bank / Savings  (per payment channel)
+		//   Credit Member Share Capital (equity)
+		if perr := h.postSharePurchaseToGLTx(r.Context(), tx, tid, res, in.PaymentChannel); perr != nil {
+			return perr
+		}
 		result = res
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, posting.ErrOutboxInsert) {
+			httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
+			return
+		}
 		writeBusinessErr(w, r, err)
 		return
 	}
@@ -434,10 +444,6 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
-	// Auto-post the GL entry:
-	//   Debit  Cash / M-Pesa / Bank / Savings  (per payment channel)
-	//   Credit Member Share Capital (equity)
-	h.postSharePurchaseToGL(r, tid, result, in.PaymentChannel)
 	h.emitSharePurchase(r, tid, userID, result)
 	httpx.Created(w, result)
 }
@@ -461,18 +467,22 @@ func shareChannelCashAccount(ch domain.PaymentChannel) string {
 	}
 }
 
-func (h *ShareHandler) postSharePurchaseToGL(r *http.Request, tenantID uuid.UUID, result *SharePostResult, ch domain.PaymentChannel) {
+// postSharePurchaseToGLTx — outbox-insert variant called inside the
+// share-purchase tx. Failure here rolls back the share write +
+// surfaces 502 to the caller. See deposit.go::postDepositToGLTx for
+// the full rationale on the post-after-commit refactor.
+func (h *ShareHandler) postSharePurchaseToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *SharePostResult, ch domain.PaymentChannel) error {
 	if h.Posting == nil || result == nil {
-		return
+		return nil
 	}
 	amount := result.Transaction.Amount
 	if amount.IsZero() {
-		return
+		return nil
 	}
 	cashAcct := shareChannelCashAccount(ch)
 	narration := fmt.Sprintf("Share purchase %d shares · %s",
 		result.Transaction.SharesDelta, result.Account.AccountNo)
-	err := h.Posting.Post(r.Context(), posting.PostInput{
+	return h.Posting.PostTx(ctx, tx, posting.PostInput{
 		TenantID:     tenantID,
 		EntryDate:    time.Now(),
 		SourceModule: "savings.shares.purchase",
@@ -483,10 +493,6 @@ func (h *ShareHandler) postSharePurchaseToGL(r *http.Request, tenantID uuid.UUID
 			{AccountCode: "3000", Credit: amount, Narration: "Member share capital"},
 		},
 	})
-	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
-		h.Logger.Error("auto-post share purchase failed",
-			"tenant", tenantID, "tx", result.Transaction.ID, "err", err)
-	}
 }
 
 // ─────────── Transfer ───────────

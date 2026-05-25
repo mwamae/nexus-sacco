@@ -137,10 +137,22 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// In-tx outbox post — the repayment splits across principal /
+		// interest / penalty / fees per the allocation; each non-zero
+		// piece becomes a credit line against the matching income or
+		// receivable account, balanced by a single cash-side debit.
+		// Failure here rolls back the repayment + surfaces 502.
+		if perr := h.postRepaymentToGLTx(r.Context(), tx, tid, res, in.Channel); perr != nil {
+			return perr
+		}
 		result = res
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, posting.ErrOutboxInsert) {
+			httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
+			return
+		}
 		writeLoanRepayErr(w, r, err)
 		return
 	}
@@ -148,12 +160,6 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
-	// Auto-post the GL entry for the repayment. A repayment splits
-	// across principal / interest / penalty / fees per the allocation
-	// — each non-zero piece becomes a credit line against the
-	// matching income or receivable account, balanced by a single
-	// cash-side debit.
-	h.postRepaymentToGL(r, tid, result, in.Channel)
 	h.emitRepayment(r, tid, userID, result)
 	httpx.Created(w, result)
 }
@@ -168,9 +174,11 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 //
 // We only emit the credit lines that are non-zero so the journal entry
 // stays clean.
-func (h *LoanRepaymentHandler) postRepaymentToGL(r *http.Request, tenantID uuid.UUID, result *LoanRepayResult, channel string) {
+// postRepaymentToGLTx — outbox-insert variant of the repayment post.
+// Failure here rolls back the repayment. See deposit.go for context.
+func (h *LoanRepaymentHandler) postRepaymentToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *LoanRepayResult, channel string) error {
 	if h.Posting == nil || result == nil {
-		return
+		return nil
 	}
 	cashAcct := repaymentCashAccount(channel)
 	lines := []posting.Line{
@@ -198,7 +206,7 @@ func (h *LoanRepaymentHandler) postRepaymentToGL(r *http.Request, tenantID uuid.
 		})
 	}
 	narration := fmt.Sprintf("Repayment on loan %s", result.Loan.LoanNo)
-	err := h.Posting.Post(r.Context(), posting.PostInput{
+	return h.Posting.PostTx(ctx, tx, posting.PostInput{
 		TenantID:     tenantID,
 		EntryDate:    time.Now(),
 		SourceModule: "savings.loans.repayment",
@@ -206,10 +214,6 @@ func (h *LoanRepaymentHandler) postRepaymentToGL(r *http.Request, tenantID uuid.
 		Narration:    narration,
 		Lines:        lines,
 	})
-	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
-		h.Logger.Error("auto-post loan repayment failed",
-			"tenant", tenantID, "loan", result.Loan.ID, "err", err)
-	}
 }
 
 func repaymentCashAccount(channel string) string {

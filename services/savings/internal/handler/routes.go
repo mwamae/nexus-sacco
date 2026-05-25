@@ -30,6 +30,7 @@ type Deps struct {
 	Collection  *CollectionDeskHandler
 	VirtualTill *VirtualTillHandler
 	BOSAExit    *BOSAExitHandler
+	Outbox      *PostingOutboxHandler
 	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -275,6 +276,11 @@ func Routes(d Deps) http.Handler {
 			// the CoA; accounting 0012 + savings 0031 fixed the
 			// underlying mapping).
 			r.With(middleware.RequirePermission("tenant:settings:edit")).Post("/fees/replay-failed", d.Collection.ReplayFailedFeeLines)
+
+			// Posting outbox — stuck-row viewer + per-row replay.
+			// Same trust level as the fee-catalog admin paths.
+			r.With(middleware.RequirePermission("tenant:settings:edit")).Get("/finance/posting-outbox", d.Outbox.ListStuck)
+			r.With(middleware.RequirePermission("tenant:settings:edit")).Post("/finance/posting-outbox/{id}/replay", d.Outbox.Replay)
 
 			// ─────────── Maker-checker (Phase 7b) ───────────
 			r.With(middleware.RequirePermission("approvals:view")).Get("/pending-approvals", d.Approvals.List)

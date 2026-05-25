@@ -444,10 +444,21 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// Post-after-commit refactor — queue the GL entry into the
+		// outbox INSIDE the same tx as the business write. The
+		// dispatcher drains the outbox asynchronously; failures here
+		// roll back the deposit.
+		if perr := h.postDepositToGLTx(r.Context(), tx, tid, res, in.Channel); perr != nil {
+			return perr
+		}
 		result = res
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, posting.ErrOutboxInsert) {
+			httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
+			return
+		}
 		writeDepositErr(w, r, err)
 		return
 	}
@@ -455,7 +466,6 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
-	h.postDepositToGL(r, tid, result, in.Channel)
 	h.emitDeposit(r, tid, userID, result, "DEPOSIT_RECEIVED")
 	httpx.Created(w, result)
 }
@@ -545,10 +555,19 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// In-tx GL outbox — see Deposit handler above for the
+		// rationale. Failure here rolls back the withdrawal.
+		if perr := h.postWithdrawalToGLTx(r.Context(), tx, tid, res, in.Channel); perr != nil {
+			return perr
+		}
 		result = res
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, posting.ErrOutboxInsert) {
+			httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
+			return
+		}
 		writeDepositErr(w, r, err)
 		return
 	}
@@ -556,7 +575,6 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
-	h.postWithdrawalToGL(r, tid, result, in.Channel)
 	h.emitWithdrawal(r, tid, userID, result, "WITHDRAWAL_PROCESSED", "")
 	httpx.Created(w, result)
 }
@@ -594,13 +612,22 @@ func channelCashAccount(ch domain.DepositChannel) string {
 func (h *DepositHandler) resolveLiabilityAcct(r *http.Request, tenantID uuid.UUID, productID uuid.UUID) string {
 	liab := "2000"
 	_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
-		p, err := h.Products.GetTx(r.Context(), tx, productID)
-		if err == nil && p != nil {
-			liab = depositLiabilityCode(p.Segment, p.ProductType)
-		}
+		liab = h.resolveLiabilityAcctTx(r.Context(), tx, productID)
 		return nil
 	})
 	return liab
+}
+
+// resolveLiabilityAcctTx is the tx-aware variant — the post-after-
+// commit refactor moved GL posting INSIDE WithTenantTx, so the
+// helper that picks the liability account had to stop opening its
+// own tx. Same fallback semantics as the original.
+func (h *DepositHandler) resolveLiabilityAcctTx(ctx context.Context, tx pgx.Tx, productID uuid.UUID) string {
+	p, err := h.Products.GetTx(ctx, tx, productID)
+	if err == nil && p != nil {
+		return depositLiabilityCode(p.Segment, p.ProductType)
+	}
+	return "2000"
 }
 
 // depositLiabilityCode resolves the CoA liability account for a
@@ -649,18 +676,26 @@ func depositLiabilityCode(segment domain.DepositSegment, productType domain.Depo
 	return "2000"
 }
 
-func (h *DepositHandler) postDepositToGL(r *http.Request, tenantID uuid.UUID, result *DepositResult, ch domain.DepositChannel) {
+// postDepositToGLTx queues the deposit's GL entry into posting_outbox
+// inside the caller's tx. Atomic with the business write — if this
+// returns an error wrapping ErrOutboxInsert, the handler surfaces
+// 502 + rolls the deposit row back. The dispatcher
+// (cmd/posting-dispatcher) drains the outbox and HTTP-posts the
+// entry to the accounting service.
+//
+// The legacy postDepositToGL function (post-after-commit, swallow
+// errors) is removed — the post-after-commit pattern was the bug
+// the refactor closes.
+func (h *DepositHandler) postDepositToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *DepositResult, ch domain.DepositChannel) error {
 	if h.Posting == nil || result == nil {
-		return
+		return nil
 	}
 	amount := result.Transaction.Amount
 	cashAcct := channelCashAccount(ch)
-	// Resolve the product so we credit the right liability account
-	// (e.g. fixed deposits go to 2100, not 2000).
-	liabAcct := h.resolveLiabilityAcct(r, tenantID, result.Account.ProductID)
+	liabAcct := h.resolveLiabilityAcctTx(ctx, tx, result.Account.ProductID)
 	narration := fmt.Sprintf("Deposit %s to a/c %s",
 		amount.StringFixed(2), result.Account.AccountNo)
-	err := h.Posting.Post(r.Context(), posting.PostInput{
+	return h.Posting.PostTx(ctx, tx, posting.PostInput{
 		TenantID:     tenantID,
 		EntryDate:    time.Now(),
 		SourceModule: "savings.deposits",
@@ -671,25 +706,20 @@ func (h *DepositHandler) postDepositToGL(r *http.Request, tenantID uuid.UUID, re
 			{AccountCode: liabAcct, Credit: amount, Narration: "Member savings credited"},
 		},
 	})
-	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
-		h.Logger.Error("auto-post deposit failed",
-			"tenant", tenantID, "tx", result.Transaction.ID, "err", err)
-	}
 }
 
-// postWithdrawalToGL fires the auto-post for a withdrawal. Spec rule:
-//     Debit  member savings   (product-specific liability)
-//     Credit cash/m-pesa      (per channel)
-func (h *DepositHandler) postWithdrawalToGL(r *http.Request, tenantID uuid.UUID, result *WithdrawalResult, ch domain.DepositChannel) {
+// postWithdrawalToGLTx — outbox-insert variant of the withdrawal post.
+// See postDepositToGLTx for the contract.
+func (h *DepositHandler) postWithdrawalToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *WithdrawalResult, ch domain.DepositChannel) error {
 	if h.Posting == nil || result == nil {
-		return
+		return nil
 	}
 	amount := result.Transaction.Amount
 	cashAcct := channelCashAccount(ch)
-	liabAcct := h.resolveLiabilityAcct(r, tenantID, result.Account.ProductID)
+	liabAcct := h.resolveLiabilityAcctTx(ctx, tx, result.Account.ProductID)
 	narration := fmt.Sprintf("Withdrawal %s from a/c %s",
 		amount.StringFixed(2), result.Account.AccountNo)
-	err := h.Posting.Post(r.Context(), posting.PostInput{
+	return h.Posting.PostTx(ctx, tx, posting.PostInput{
 		TenantID:     tenantID,
 		EntryDate:    time.Now(),
 		SourceModule: "savings.deposits",
@@ -700,10 +730,6 @@ func (h *DepositHandler) postWithdrawalToGL(r *http.Request, tenantID uuid.UUID,
 			{AccountCode: cashAcct, Credit: amount, Narration: "Cash paid out"},
 		},
 	})
-	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
-		h.Logger.Error("auto-post withdrawal failed",
-			"tenant", tenantID, "tx", result.Transaction.ID, "err", err)
-	}
 }
 
 // emitDeposit / emitWithdrawal — fire notifications post-commit. We

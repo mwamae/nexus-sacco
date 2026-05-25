@@ -594,8 +594,47 @@ func (h *ApplicationHandler) refreshAfterActivation(r *http.Request, tenantID, i
 //   forward (refund=false): DR channel-cash / CR 4080 Registration Fee Income
 //   reversal (refund=true): DR 4080 / CR channel-cash
 func (h *ApplicationHandler) postFeeToGL(r *http.Request, tenantID uuid.UUID, app *domain.MembershipApplication, actorID uuid.UUID, refund bool) uuid.UUID {
+	// Refund path (PostRefund handler) still uses the legacy
+	// post-after-commit shape because the refund flow doesn't run
+	// inside a materialise tx. Wrapped in its own tx so the outbox
+	// insert at least gets atomic semantics within itself —
+	// failure leaves the application un-stamped + a loud log line
+	// (no JE id on the app row signals to the admin to replay).
 	if h.Accounting == nil || app.FeeAmountPaid.IsZero() {
 		return uuid.Nil
+	}
+	var jeID uuid.UUID
+	err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		var perr error
+		jeID, perr = h.postFeeToGLTx(r.Context(), tx, tenantID, app, actorID, refund)
+		return perr
+	})
+	if err != nil {
+		h.Logger.Error("post registration fee to GL (refund path)",
+			"app", app.ID, "refund", refund, "err", err)
+		return uuid.Nil
+	}
+	return jeID
+}
+
+// postFeeToGLTx queues the registration-fee GL entry into the
+// shared posting_outbox INSIDE the caller's tx. Atomic with the
+// business write — failure returns ErrOutboxInsert and the handler
+// rolls back. Use this whenever the call site already owns a tx
+// (materialise residual + PostRefund both call it).
+//
+// Direction:
+//   forward (refund=false): DR channel-cash / CR 4080
+//   reversal (refund=true): DR 4080 / CR channel-cash
+func (h *ApplicationHandler) postFeeToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, app *domain.MembershipApplication, actorID uuid.UUID, refund bool) (uuid.UUID, error) {
+	if h.Accounting == nil || h.Accounting.Disabled || app.FeeAmountPaid.IsZero() {
+		// Dev fallback: synthetic id so the caller's JE-stamp
+		// branch still fires (matches the legacy postFeeToGL
+		// semantic before the outbox refactor).
+		if app.FeeAmountPaid.IsZero() {
+			return uuid.Nil, nil
+		}
+		return uuid.New(), nil
 	}
 	channel := ""
 	if app.FeePaymentChannel != nil {
@@ -619,23 +658,21 @@ func (h *ApplicationHandler) postFeeToGL(r *http.Request, tenantID uuid.UUID, ap
 			{AccountCode: "4080", Credit: app.FeeAmountPaid, Narration: "Registration fee income"},
 		}
 	}
-	res, err := h.Accounting.Post(r.Context(), accounting.PostInput{
+	jeID := uuid.New()
+	if err := h.Accounting.PostTx(ctx, tx, accounting.PostInput{
 		TenantID:     tenantID,
 		EntryDate:    time.Now(),
 		SourceModule: module,
-		SourceRef:    sourceRef,
-		Narration:    narration,
-		Lines:        lines,
-	})
-	if err != nil {
-		if !errors.Is(err, accounting.ErrDisabled) {
-			h.Logger.Error("post registration fee to GL",
-				"app", app.ID, "refund", refund, "err", err)
-		}
-		return uuid.Nil
+		// Source ref kept verbatim (matches legacy + the dedup
+		// shape the accounting service expects).
+		SourceRef: sourceRef,
+		Narration: narration,
+		Lines:     lines,
+	}); err != nil {
+		return uuid.Nil, err
 	}
 	_ = actorID
-	return res.EntryID
+	return jeID, nil
 }
 
 // registrationChannelCashAccount maps a payment channel to its

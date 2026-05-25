@@ -281,10 +281,21 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// In-tx outbox post:
+		//   Debit  Member Loans Receivable
+		//   Credit Cash / M-Pesa / Bank   (per channel)
+		// Failure here rolls back the disbursement.
+		if perr := h.postLoanDisbursementToGLTx(r.Context(), tx, tid, res, in.Channel); perr != nil {
+			return perr
+		}
 		result = res
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, posting.ErrOutboxInsert) {
+			httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
+			return
+		}
 		writeLoanAppErr(w, r, err)
 		return
 	}
@@ -292,11 +303,6 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 		writePendingResponse(w, r, pending)
 		return
 	}
-	// Auto-post the GL entry for the disbursement before notifying
-	// the member — same spec rule used by deposits/withdrawals:
-	//     Debit  Member Loans Receivable
-	//     Credit Cash / M-Pesa / Bank   (per channel)
-	h.postLoanDisbursementToGL(r, tid, result, in.Channel)
 	// Notify borrower that the loan was disbursed.
 	if h.Notifier != nil && result != nil {
 		var member *store.CounterpartyView
@@ -464,9 +470,12 @@ var _ = errors.New
 // account is the canonical 1100 Member Loans Receivable; finer-
 // grained per-product accounts can be wired in once posting_rules
 // gain product scope.
-func (h *LoanHandler) postLoanDisbursementToGL(r *http.Request, tenantID uuid.UUID, result *LoanDisbursementResult, channel string) {
+// postLoanDisbursementToGLTx — outbox-insert variant of the
+// disbursement post. Failure here rolls back the disbursement +
+// surfaces 502. See deposit.go::postDepositToGLTx for the rationale.
+func (h *LoanHandler) postLoanDisbursementToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *LoanDisbursementResult, channel string) error {
 	if h.Posting == nil || result == nil {
-		return
+		return nil
 	}
 	cashAcct := loanDisbursementCashAccount(channel)
 	amount := result.Disbursement.Amount
@@ -475,7 +484,7 @@ func (h *LoanHandler) postLoanDisbursementToGL(r *http.Request, tenantID uuid.UU
 	}
 	narration := fmt.Sprintf("Loan %s disbursement via %s",
 		result.Loan.LoanNo, channel)
-	err := h.Posting.Post(r.Context(), posting.PostInput{
+	return h.Posting.PostTx(ctx, tx, posting.PostInput{
 		TenantID:     tenantID,
 		EntryDate:    time.Now(),
 		SourceModule: "savings.loans.disbursement",
@@ -486,10 +495,6 @@ func (h *LoanHandler) postLoanDisbursementToGL(r *http.Request, tenantID uuid.UU
 			{AccountCode: cashAcct, Credit: amount, Narration: "Cash disbursed"},
 		},
 	})
-	if err != nil && !errors.Is(err, posting.ErrPostingDisabled) {
-		h.Logger.Error("auto-post loan disbursement failed",
-			"tenant", tenantID, "loan", result.Loan.ID, "err", err)
-	}
 }
 
 // loanDisbursementCashAccount maps the free-text channel string used

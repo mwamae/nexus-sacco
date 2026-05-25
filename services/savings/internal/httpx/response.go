@@ -21,7 +21,23 @@ const (
 	CodeNotFound       ErrorCode = "not_found"
 	CodeConflict       ErrorCode = "conflict"
 	CodeInternal       ErrorCode = "internal_error"
+	// CodeGLPostFailed — the in-tx posting_outbox INSERT failed
+	// (disk full / constraint violation / etc.). Mapped to 502
+	// because the upstream the caller cares about (the
+	// accounting service via the outbox) is the dependency that
+	// effectively failed.
+	CodeGLPostFailed ErrorCode = "gl_post_failed"
 )
+
+// ErrGLPostFailed wraps the detail from the underlying posting
+// failure (typically an outbox INSERT error) into the standard
+// 502 + gl_post_failed envelope.
+func ErrGLPostFailed(detail string) *APIError {
+	if detail == "" {
+		detail = "could not record the GL post — please retry"
+	}
+	return E(http.StatusBadGateway, CodeGLPostFailed, detail)
+}
 
 type APIError struct {
 	Status  int       `json:"-"`

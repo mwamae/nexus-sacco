@@ -101,14 +101,19 @@ func (e *ApplicationFeeExecutor) PostApprovedTx(
 	cashAcct := registrationChannelCashAccountSavings(p.Channel)
 	narration := fmt.Sprintf("Application fee · %s · %s",
 		p.ApplicationNo, liveAmount.StringFixed(2))
-	// Savings's posting client doesn't return the JE id; the
-	// accounting service dedupes on (source_module, source_ref) so
-	// we generate the source_ref upfront and stamp it on the
-	// payment as the journal_entry_id handle (matches the pattern
-	// in postFeeLineTx + provisioning.go).
+	// Post-after-commit refactor — the GL post goes into the
+	// posting_outbox inside the same tx as the journal_entry_id
+	// stamp on the payment row. The dispatcher drains the outbox;
+	// failure here propagates ErrOutboxInsert which the dispatcher
+	// frame (Approve handler) surfaces as 502.
+	//
+	// Source ref doubles as the synthetic JE handle stamped on the
+	// payment row — the accounting service dedupes on
+	// (source_module, source_ref) so retries from the dispatcher
+	// won't double-post.
 	jeID := uuid.New()
 	if e.Posting != nil && !e.Posting.Disabled {
-		if perr := e.Posting.Post(ctx, posting.PostInput{
+		if perr := e.Posting.PostTx(ctx, tx, posting.PostInput{
 			TenantID:     tenantID,
 			EntryDate:    time.Now(),
 			ValueDate:    p.ValueDate,
@@ -120,14 +125,11 @@ func (e *ApplicationFeeExecutor) PostApprovedTx(
 				{AccountCode: "4080", Credit: liveAmount, Narration: "Registration fee income"},
 			},
 		}); perr != nil {
-			if !errors.Is(perr, posting.ErrPostingDisabled) {
-				if e.Logger != nil {
-					e.Logger.Error("application fee approval — GL post failed",
-						"payment", p.PaymentID, "err", perr)
-				}
-				return uuid.Nil, perr
+			if e.Logger != nil {
+				e.Logger.Error("application fee approval — outbox insert failed",
+					"payment", p.PaymentID, "err", perr)
 			}
-			// Posting disabled — fall through with the synthetic id.
+			return uuid.Nil, perr
 		}
 	}
 
