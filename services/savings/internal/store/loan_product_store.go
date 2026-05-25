@@ -243,13 +243,13 @@ func (s *LoanProductStore) DeleteTx(ctx context.Context, tx pgx.Tx, id uuid.UUID
 // ─────────── Fee sub-table ───────────
 
 const loanProductFeeCols = `
-	id, product_id, name, amount, is_pct, timing, display_order, created_at, updated_at
+	id, product_id, name, amount, is_pct, timing, display_order, gl_credit_code, created_at, updated_at
 `
 
 func scanLoanProductFee(row pgx.Row) (*domain.LoanProductFee, error) {
 	var f domain.LoanProductFee
 	err := row.Scan(
-		&f.ID, &f.ProductID, &f.Name, &f.Amount, &f.IsPct, &f.Timing, &f.DisplayOrder,
+		&f.ID, &f.ProductID, &f.Name, &f.Amount, &f.IsPct, &f.Timing, &f.DisplayOrder, &f.GLCreditCode,
 		&f.CreatedAt, &f.UpdatedAt,
 	)
 	if err != nil {
@@ -313,11 +313,17 @@ func (s *LoanProductStore) ReplaceFeesTx(ctx context.Context, tx pgx.Tx, product
 		if f.Timing == "" {
 			f.Timing = domain.FeeUpfront
 		}
+		if f.GLCreditCode == "" {
+			// Same fallback as the migration 0034 default — keeps API
+			// callers that haven't been updated to send the code from
+			// blocking the insert.
+			f.GLCreditCode = "4010"
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO loan_product_fees (
-				tenant_id, product_id, name, amount, is_pct, timing, display_order
-			) VALUES (current_tenant_id(), $1, $2, $3, $4, $5, $6)
-		`, productID, f.Name, f.Amount, f.IsPct, string(f.Timing), i+1); err != nil {
+				tenant_id, product_id, name, amount, is_pct, timing, display_order, gl_credit_code
+			) VALUES (current_tenant_id(), $1, $2, $3, $4, $5, $6, $7)
+		`, productID, f.Name, f.Amount, f.IsPct, string(f.Timing), i+1, f.GLCreditCode); err != nil {
 			return err
 		}
 	}

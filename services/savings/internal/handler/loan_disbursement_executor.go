@@ -5,6 +5,7 @@ package handler
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -30,6 +32,13 @@ type LoanDisbursementResult struct {
 	NetDisbursed decimal.Decimal          `json:"net_disbursed"`
 	Fees         []domain.LoanTransaction `json:"fees"`
 	Disbursement domain.LoanTransaction   `json:"disbursement"`
+	// FeeGLLines is the per-CoA-code aggregation of upfront fees,
+	// ready for the disbursement GL post to credit directly.
+	// Aggregated by gl_credit_code so two product fees mapped to the
+	// same income code collapse into one journal line. Not serialised
+	// over the HTTP response — internal handoff between the executor
+	// and postLoanDisbursementToGLTx.
+	FeeGLLines   []posting.Line           `json:"-"`
 }
 
 func (h *LoanHandler) ExecuteDisbursementTx(
@@ -68,7 +77,14 @@ func (h *LoanHandler) ExecuteDisbursementTx(
 	// at_each_installment fees are not posted at disbursement time
 	// (Phase 6d covers the deferred-fee plumbing); for now we treat
 	// only upfront fees as cash-out at disbursement.
+	//
+	// Each fee row carries gl_credit_code (migration 0034). Aggregate
+	// fee amounts by GL code so the eventual disbursement JE has one
+	// CR line per income account, not per fee — keeps the journal
+	// readable and matches how 4010/4020/4190 land on the Income
+	// Statement.
 	var upfrontFees decimal.Decimal
+	feeByGLCode := map[string]decimal.Decimal{}
 	out := &LoanDisbursementResult{Fees: []domain.LoanTransaction{}}
 	for _, f := range product.Fees {
 		if f.Timing != domain.FeeUpfront {
@@ -79,6 +95,11 @@ func (h *LoanHandler) ExecuteDisbursementTx(
 			continue
 		}
 		upfrontFees = upfrontFees.Add(amt)
+		code := f.GLCreditCode
+		if code == "" {
+			code = "4010" // defensive — store ReplaceFeesTx already defaults
+		}
+		feeByGLCode[code] = feeByGLCode[code].Add(amt)
 		ch := "internal"
 		narration := f.Name + " · " + loan.LoanNo
 		feeTxn, err := h.Loans.PostTxnTx(ctx, tx, store.PostLoanInput{
@@ -94,6 +115,22 @@ func (h *LoanHandler) ExecuteDisbursementTx(
 			return nil, err
 		}
 		out.Fees = append(out.Fees, *feeTxn)
+	}
+	// Materialise the FeeGLLines slice in deterministic code order so
+	// the JE payload is stable across runs (helps test assertions and
+	// audit reads).
+	codes := make([]string, 0, len(feeByGLCode))
+	for c := range feeByGLCode {
+		codes = append(codes, c)
+	}
+	sort.Strings(codes)
+	out.FeeGLLines = make([]posting.Line, 0, len(codes))
+	for _, c := range codes {
+		out.FeeGLLines = append(out.FeeGLLines, posting.Line{
+			AccountCode: c,
+			Credit:      feeByGLCode[c],
+			Narration:   "Loan fee income (" + c + ")",
+		})
 	}
 	netDisbursed := loan.Principal.Sub(upfrontFees)
 	if netDisbursed.LessThan(decimal.Zero) {

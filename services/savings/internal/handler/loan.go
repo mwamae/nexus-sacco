@@ -41,6 +41,10 @@ type LoanHandler struct {
 	Guarantees     *store.LoanGuaranteeStore
 	Loans          *store.LoanStore
 	Deposits       *store.DepositStore
+	// DepositProducts resolves the savings liability code when a loan
+	// disburses to an internal target account (depositLiabilityCode
+	// needs segment + product_type from the target's product).
+	DepositProducts *store.DepositProductStore
 	Approvals      *store.ApprovalsStore
 	Notifier       *notifier.Client
 	Posting        *posting.Client
@@ -464,52 +468,95 @@ func loadLoanTxnsTx(ctx context.Context, tx pgx.Tx, loanID uuid.UUID) ([]domain.
 
 var _ = errors.New
 
-// postLoanDisbursementToGL — auto-post the GL entry for a successful
-// disbursement. The cash-side account follows the disbursement
-// channel ("mpesa", "bank", "internal", …). The receivable-side
-// account is the canonical 1100 Member Loans Receivable; finer-
-// grained per-product accounts can be wired in once posting_rules
-// gain product scope.
-// postLoanDisbursementToGLTx — outbox-insert variant of the
-// disbursement post. Failure here rolls back the disbursement +
-// surfaces 502. See deposit.go::postDepositToGLTx for the rationale.
+// postLoanDisbursementToGLTx queues the batched disbursement GL entry
+// onto the outbox INSIDE the caller's tx.
+//
+// Aggregation:
+//
+//   DR 1100 Member Loans Receivable        = principal
+//   CR cash leg                            = net disbursed (= principal − upfront fees)
+//   CR per-fee gl_credit_code (aggregated) = each fee bucket
+//
+// Cash leg resolves by channel:
+//   • mpesa/bank/cash channels   → channel cash account (1030/1020/1000)
+//   • internal channel            → segment-aware member savings liability
+//                                  (depositLiabilityCode of the target
+//                                  account's product) — credits the
+//                                  right BOSA/FOSA code instead of
+//                                  hardcoding 2000.
+//
+// Balance: DR(principal) = CR(net) + Σ CR(fees) = (principal − F) + F = principal.
+//
+// Failure (outbox INSERT error) rolls back the whole disbursement
+// tx — schedule, loan_transactions, MarkDisbursedTx, application
+// status flip all unwind. Handler surfaces 502 + gl_post_failed.
 func (h *LoanHandler) postLoanDisbursementToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *LoanDisbursementResult, channel string) error {
 	if h.Posting == nil || result == nil {
 		return nil
 	}
-	cashAcct := loanDisbursementCashAccount(channel)
-	amount := result.Disbursement.Amount
-	if amount.IsZero() {
-		amount = result.Loan.Principal
+	principal := result.Loan.Principal
+	net := result.NetDisbursed
+	if net.IsZero() && len(result.FeeGLLines) == 0 {
+		// No fees deducted — net falls back to principal so the
+		// cash leg still balances the DR.
+		net = principal
 	}
+
+	cashAcct := h.resolveDisbursementCashAcctTx(ctx, tx, channel, result.Loan)
 	narration := fmt.Sprintf("Loan %s disbursement via %s",
 		result.Loan.LoanNo, channel)
+	cashNarration := "Cash disbursed"
+	if strings.ToLower(channel) == "internal" || strings.ToLower(channel) == "savings" {
+		cashNarration = "Credited to member savings (" + cashAcct + ")"
+	}
+
+	lines := []posting.Line{
+		{AccountCode: "1100", Debit: principal, Narration: "Loan receivable created"},
+		{AccountCode: cashAcct, Credit: net, Narration: cashNarration},
+	}
+	// FeeGLLines is already aggregated by gl_credit_code and sorted by
+	// code (see the executor), so we can append verbatim.
+	lines = append(lines, result.FeeGLLines...)
+
 	return h.Posting.PostTx(ctx, tx, posting.PostInput{
 		TenantID:     tenantID,
 		EntryDate:    time.Now(),
 		SourceModule: "savings.loans.disbursement",
 		SourceRef:    result.Disbursement.ID.String(),
 		Narration:    narration,
-		Lines: []posting.Line{
-			{AccountCode: "1100", Debit: amount, Narration: "Loan receivable created"},
-			{AccountCode: cashAcct, Credit: amount, Narration: "Cash disbursed"},
-		},
+		Lines:        lines,
 	})
 }
 
-// loanDisbursementCashAccount maps the free-text channel string used
-// by the disbursement payload to a CoA code. "internal" means the
-// proceeds landed in the member's savings account (no cash actually
-// moved); we credit the savings liability rather than a cash account.
-func loanDisbursementCashAccount(channel string) string {
-	switch strings.ToLower(channel) {
-	case "mpesa":
-		return "1030"
-	case "bank", "bank_transfer":
-		return "1020"
-	case "internal", "savings":
-		return "2000" // Ordinary Savings Deposits — the loan lands in the member's savings
-	default:
-		return "1000"
+// resolveDisbursementCashAcctTx picks the credit-side account for the
+// cash leg. Non-internal channels map to the channel cash account
+// (1030 M-Pesa, 1020 Bank, 1000 Cash). Internal channels look up the
+// target deposit account's product and use depositLiabilityCode so a
+// BOSA target hits 2050 instead of the legacy 2000 default. Falls
+// back to 2000 if the lookup fails so the GL post still commits.
+func (h *LoanHandler) resolveDisbursementCashAcctTx(ctx context.Context, tx pgx.Tx, channel string, loan domain.Loan) string {
+	ch := strings.ToLower(channel)
+	if ch != "internal" && ch != "savings" {
+		switch ch {
+		case "mpesa":
+			return "1030"
+		case "bank", "bank_transfer":
+			return "1020"
+		default:
+			return "1000"
+		}
 	}
+	// Internal channel: resolve the target deposit account's product.
+	if loan.DisbursementTargetAccountID == nil || h.Deposits == nil || h.DepositProducts == nil {
+		return "2000"
+	}
+	acct, err := h.Deposits.GetAccountTx(ctx, tx, *loan.DisbursementTargetAccountID)
+	if err != nil || acct == nil {
+		return "2000"
+	}
+	p, err := h.DepositProducts.GetTx(ctx, tx, acct.ProductID)
+	if err != nil || p == nil {
+		return "2000"
+	}
+	return depositLiabilityCode(p.Segment, p.ProductType)
 }

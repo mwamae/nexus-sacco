@@ -220,6 +220,10 @@ type LoanProductFee struct {
 	IsPct        bool            `json:"is_pct"`
 	Timing       LoanFeeTiming   `json:"timing"`
 	DisplayOrder int             `json:"display_order"`
+	// GLCreditCode is the CoA code credited when this fee is recognised
+	// as income at disbursement (default 4010 — Loan Processing Fee
+	// Income). Insurance-style fees set 4020; ad-hoc set 4190.
+	GLCreditCode string          `json:"gl_credit_code"`
 	CreatedAt    time.Time       `json:"created_at,omitempty"`
 	UpdatedAt    time.Time       `json:"updated_at,omitempty"`
 }
