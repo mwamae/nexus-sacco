@@ -6,6 +6,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -759,6 +760,12 @@ type SASRARatio struct {
 type SASRAReturn struct {
 	AsOf              time.Time            `json:"as_of"`
 	FiscalYear        int                  `json:"fiscal_year"`
+	// FiscalYearStart is the most-recent FY start at or before AsOf,
+	// computed from tenant_operations.fy_start_month / fy_start_day.
+	// Surface this so the UI can display the actual income-statement
+	// window (e.g. "01 Jul 2025 → 25 May 2026") rather than implying
+	// a calendar year.
+	FiscalYearStart   time.Time            `json:"fiscal_year_start"`
 	Position          PositionSummary      `json:"position"`
 	IncomeStatement   ISSummary            `json:"income_statement"`
 	Capital           CapitalSummary       `json:"capital"`
@@ -835,6 +842,36 @@ type DepositSummary struct {
 	MemberSavingsFOSA  decimal.Decimal `json:"member_savings_fosa"`
 	MemberDepositsBOSA decimal.Decimal `json:"member_deposits_bosa"`
 	Total              decimal.Decimal `json:"total"`
+}
+
+// fiscalYearStartTx returns the most-recent fiscal-year start at or
+// before asOf, honouring the tenant's configured fy_start_month /
+// fy_start_day. Defaults to (1, 1) if tenant_operations is missing
+// (pre-tenant-onboarding state).
+//
+// Example: tenant on July-start (fy_start_month=7, fy_start_day=1)
+// with asOf=2026-05-25 returns 2025-07-01 (the FY in progress).
+// With asOf=2026-08-15 returns 2026-07-01 (the new FY just started).
+//
+// The interest engine + year-end close workflow both read these
+// columns; SASRA must agree or its income-statement window will
+// silently disagree with the GL.
+func (s *ReportStore) fiscalYearStartTx(ctx context.Context, tx pgx.Tx, asOf time.Time) (time.Time, error) {
+	month := 1
+	day := 1
+	err := tx.QueryRow(ctx, `
+		SELECT fy_start_month, fy_start_day FROM tenant_operations
+	`).Scan(&month, &day)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, err
+	}
+	candidate := time.Date(asOf.Year(), time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	if candidate.After(asOf) {
+		// Configured FY start hasn't happened yet this calendar year —
+		// the prior FY is still in progress.
+		candidate = time.Date(asOf.Year()-1, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	}
+	return candidate, nil
 }
 
 // SASRAReturnTx — read every CoA account's projected balance, bucket
@@ -915,8 +952,14 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 		}
 	}
 
-	// Income / expense window: fiscal year start (Jan 1) through asOf.
-	fyStart := time.Date(asOf.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+	// Income / expense window: tenant-configured FY start through asOf.
+	// Reads tenant_operations.fy_start_month/day; defaults (1,1) so a
+	// tenant without that config keeps the original calendar-year
+	// behaviour.
+	fyStart, err := s.fiscalYearStartTx(ctx, tx, asOf)
+	if err != nil {
+		return nil, err
+	}
 	netSurplus, err := s.NetSurplusInWindowTx(ctx, tx, fyStart, asOf)
 	if err != nil {
 		return nil, err
@@ -1135,8 +1178,9 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 	}
 
 	return &SASRAReturn{
-		AsOf:       asOf,
-		FiscalYear: asOf.Year(),
+		AsOf:             asOf,
+		FiscalYear:       asOf.Year(),
+		FiscalYearStart:  fyStart,
 		Position: PositionSummary{
 			TotalAssets: totalAssets, TotalLiabilities: totalLiab, TotalEquity: totalEquity,
 		},
@@ -1255,7 +1299,12 @@ func (s *ReportStore) DashboardTx(ctx context.Context, tx pgx.Tx, asOf time.Time
 	}
 
 	// ─── YTD income statement ───
-	fyStart := time.Date(asOf.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+	// Tenant-configured FY start (mirrors SASRAReturnTx); calendar-year
+	// hard-code is incorrect for SACCOs not on January-start.
+	fyStart, err := s.fiscalYearStartTx(ctx, tx, asOf)
+	if err != nil {
+		return nil, err
+	}
 	var totalIncome, totalExpense decimal.Decimal
 	if err := tx.QueryRow(ctx, `
 		SELECT

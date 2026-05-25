@@ -130,6 +130,77 @@ func hasWarning(ws []SASRAWarning, code string) bool {
 	return false
 }
 
+// TestSASRAReturnRespectsConfiguredFiscalYearStart asserts that the
+// income-statement window honours tenant_operations.fy_start_month /
+// fy_start_day instead of hard-coding January 1.
+//
+// Runs entirely inside a rolled-back tx so the temporary UPDATE on
+// tenant_operations never persists — the existing BOSA test uses the
+// same pattern so per-test mutations don't leak across runs.
+func TestSASRAReturnRespectsConfiguredFiscalYearStart(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set — skipping integration test")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer pool.Close()
+
+	var tenantID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM tenants WHERE slug='tujenge' LIMIT 1`).Scan(&tenantID); err != nil {
+		t.Skipf("no tujenge tenant: %v", err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1::text, true)`, tenantID.String()); err != nil {
+		t.Fatalf("set tenant: %v", err)
+	}
+
+	// Flip the tenant onto a July-start fiscal year for the duration of
+	// this tx. Rollback in the defer above restores the original config.
+	if _, err := tx.Exec(ctx, `
+		UPDATE tenant_operations SET fy_start_month=7, fy_start_day=1
+	`); err != nil {
+		t.Fatalf("flip fy_start: %v", err)
+	}
+
+	// Fixed asOf so the assertion is deterministic. 2026-05-25 falls
+	// BEFORE July 1 2026, so the current FY started on July 1 2025.
+	asOf := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
+	wantFYStart := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	rs := NewReportStore(pool)
+	rep, err := rs.SASRAReturnTx(ctx, tx, asOf)
+	if err != nil {
+		t.Fatalf("SASRAReturnTx: %v", err)
+	}
+	if !rep.FiscalYearStart.Equal(wantFYStart) {
+		t.Errorf("SASRAReturn.FiscalYearStart = %s, want %s",
+			rep.FiscalYearStart.Format("2006-01-02"),
+			wantFYStart.Format("2006-01-02"))
+	}
+	if !rep.IncomeStatement.FromDate.Equal(wantFYStart) {
+		t.Errorf("IncomeStatement.FromDate = %s, want %s (FY start, not Jan 1)",
+			rep.IncomeStatement.FromDate.Format("2006-01-02"),
+			wantFYStart.Format("2006-01-02"))
+	}
+	// The window's right edge should match asOf — defensive check that
+	// only the left edge moved.
+	if !rep.IncomeStatement.ToDate.Equal(asOf) {
+		t.Errorf("IncomeStatement.ToDate = %s, want %s",
+			rep.IncomeStatement.ToDate.Format("2006-01-02"),
+			asOf.Format("2006-01-02"))
+	}
+}
+
 // Silence unused-import warning when the test is skipped at the top.
 var _ = pgx.ErrNoRows
 var _ = decimal.Zero
