@@ -12,6 +12,13 @@ coverage.out
 coverage.html
 vendor/
 
+# Compiled service binaries — `go build` from inside services/<name>/
+# drops the binary in the service root (e.g. services/member/server).
+# These slipped in once (commit 4ebfe91); ignore the well-known names
+# at the service-root level so it can't recur.
+services/*/server
+services/*/posting-dispatcher
+
 # IDE
 .idea/
 .vscode/
