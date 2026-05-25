@@ -245,6 +245,21 @@ func (s *InterestStore) UpdateWorkflowIDTx(ctx context.Context, tx pgx.Tx, runID
 	return err
 }
 
+// UpdateJournalEntryIDTx stamps the batched-JE handle onto the run
+// row inside the posting tx. Called once per run, when the run
+// flips from 'posting' to 'posted' and the outbox row has been
+// queued. The handle is the same uuid passed as source_ref on the
+// outbox payload — recoverable from journal_entries via
+// (source_module='savings.interest', source_ref=jeID).
+func (s *InterestStore) UpdateJournalEntryIDTx(ctx context.Context, tx pgx.Tx, runID, jeID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE interest_runs
+		   SET journal_entry_id = $2
+		 WHERE id = $1
+	`, runID, jeID)
+	return err
+}
+
 func joinFields(fs []string) string {
 	out := ""
 	for i, f := range fs {

@@ -138,6 +138,7 @@ func main() {
 		Shares:              shareStore,
 		Interest:            interestStore,
 		Notifier:            notifyClient,
+		Posting:             postingClient,
 		Logger:              logger,
 		WorkflowURL:         cfg.WorkflowURL,
 		SavingsSelfURL:      cfg.SavingsURL,

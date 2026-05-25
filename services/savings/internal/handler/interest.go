@@ -28,6 +28,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,7 @@ import (
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -55,6 +57,7 @@ type InterestHandler struct {
 	Shares         *store.ShareStore
 	Interest       *store.InterestStore
 	Notifier       *notifier.Client
+	Posting        *posting.Client
 	Logger         *slog.Logger
 
 	// Workflow integration
@@ -564,6 +567,18 @@ func (h *InterestHandler) Post(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
+		// Batched GL journal entry for the whole run. One JE per AGM
+		// declaration keeps journal_entries readable for runs with
+		// thousands of members; the (source_module='savings.interest',
+		// source_ref=run.id) join recovers the per-line audit chain
+		// through deposit_transactions / share_transactions.
+		//
+		// In-tx outbox INSERT — failure rolls back every postLine
+		// write above, the 'posting' status flip, and the run stays
+		// at 'approved'. Safe to retry /post.
+		if err := h.postBatchedRunGLTx(r.Context(), tx, tid, run, lines, policy); err != nil {
+			return err
+		}
 		// Promote to 'posted'.
 		final, err := h.Interest.UpdateStatusTx(r.Context(), tx, id, store.StatusTransition{
 			To: domain.RunPosted, By: userID,
@@ -579,10 +594,152 @@ func (h *InterestHandler) Post(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, posting.ErrOutboxInsert) {
+			httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
+			return
+		}
 		writeInterestErr(w, r, err)
 		return
 	}
 	httpx.OK(w, out)
+}
+
+// postBatchedRunGLTx aggregates the run's posted lines into one
+// journal entry and queues it on the outbox.
+//
+// Aggregation:
+//
+//   DR 5000 Interest on Member Deposits  = Σ gross_interest
+//   CR 2200 Withholding Tax Payable      = Σ wht_amount
+//   CR per-product liability code        = Σ net amounts credited
+//                                          back to savings (the
+//                                          credit_savings path and
+//                                          the buy_shares residual)
+//   CR 3000 Member Share Capital         = Σ shares_purchased * par
+//                                          on buy_shares lines
+//   CR 2230 Other Payables               = Σ net_interest on
+//                                          external lines
+//
+// Zero-net lines are skipped from the JE so the aggregation matches
+// what postLine actually wrote — those lines also skip the
+// tax_payable_ledger row, so including their gross / WHT here would
+// double-count vs. the WHT ledger.
+//
+// Suppresses the post entirely when there is no expense to record
+// (every line zero-net) or when the Posting client is disabled
+// (dev). The run.ID doubles as the synthetic JE handle stamped on
+// interest_runs.journal_entry_id — recover the actual
+// journal_entries row via (source_module='savings.interest',
+// source_ref=run.id).
+func (h *InterestHandler) postBatchedRunGLTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	run *domain.InterestRun, lines []domain.InterestRunLine,
+	policy *store.SharePolicy,
+) error {
+	if h.Posting == nil || h.Posting.Disabled {
+		return nil
+	}
+
+	var (
+		drInterestExpense decimal.Decimal
+		crWHT             decimal.Decimal
+		crSharesCapital   decimal.Decimal
+		crOtherPayables   decimal.Decimal
+	)
+	crLiabilityByCode := map[string]decimal.Decimal{}
+
+	// Resolve product → liability code once per distinct product so a
+	// run with thousands of members doesn't fan into a N-row product
+	// lookup.
+	liabByProduct := map[uuid.UUID]string{}
+	for _, l := range lines {
+		if _, ok := liabByProduct[l.ProductID]; ok {
+			continue
+		}
+		p, err := h.Products.GetTx(ctx, tx, l.ProductID)
+		if err != nil {
+			return fmt.Errorf("load product %s for GL aggregation: %w", l.ProductID, err)
+		}
+		liabByProduct[l.ProductID] = depositLiabilityCode(p.Segment, p.ProductType)
+	}
+
+	par := decimal.Zero
+	if policy != nil {
+		par = policy.ParValue
+	}
+
+	for _, line := range lines {
+		if line.NetInterest.LessThanOrEqual(decimal.Zero) {
+			continue
+		}
+		drInterestExpense = drInterestExpense.Add(line.GrossInterest)
+		crWHT = crWHT.Add(line.WHTAmount)
+
+		switch line.PayoutMethod {
+		case domain.PayoutCreditSavings:
+			code := liabByProduct[line.ProductID]
+			crLiabilityByCode[code] = crLiabilityByCode[code].Add(line.NetInterest)
+		case domain.PayoutBuyShares:
+			sharesPortion := decimal.Zero
+			residual := line.NetInterest
+			if par.GreaterThan(decimal.Zero) {
+				qty := line.NetInterest.Div(par).Floor()
+				sharesPortion = par.Mul(qty)
+				residual = line.NetInterest.Sub(sharesPortion)
+			}
+			if sharesPortion.GreaterThan(decimal.Zero) {
+				crSharesCapital = crSharesCapital.Add(sharesPortion)
+			}
+			if residual.GreaterThan(decimal.Zero) {
+				code := liabByProduct[line.ProductID]
+				crLiabilityByCode[code] = crLiabilityByCode[code].Add(residual)
+			}
+		case domain.PayoutExternal:
+			crOtherPayables = crOtherPayables.Add(line.NetInterest)
+		}
+	}
+
+	if drInterestExpense.LessThanOrEqual(decimal.Zero) {
+		return nil
+	}
+
+	jeLines := []posting.Line{
+		{AccountCode: "5000", Debit: drInterestExpense, Narration: "Interest expense · " + run.RunNo},
+	}
+	if crWHT.GreaterThan(decimal.Zero) {
+		jeLines = append(jeLines, posting.Line{AccountCode: "2200", Credit: crWHT, Narration: "Withholding tax payable"})
+	}
+	if crSharesCapital.GreaterThan(decimal.Zero) {
+		jeLines = append(jeLines, posting.Line{AccountCode: "3000", Credit: crSharesCapital, Narration: "Interest applied to shares"})
+	}
+	if crOtherPayables.GreaterThan(decimal.Zero) {
+		jeLines = append(jeLines, posting.Line{AccountCode: "2230", Credit: crOtherPayables, Narration: "External payout owed to members"})
+	}
+	// Deterministic per-product liability order — keeps test assertions and
+	// audit reads stable across runs.
+	codes := make([]string, 0, len(crLiabilityByCode))
+	for c := range crLiabilityByCode {
+		codes = append(codes, c)
+	}
+	sort.Strings(codes)
+	for _, c := range codes {
+		jeLines = append(jeLines, posting.Line{
+			AccountCode: c, Credit: crLiabilityByCode[c],
+			Narration: "Interest credited to member savings (" + c + ")",
+		})
+	}
+
+	if err := h.Posting.PostTx(ctx, tx, posting.PostInput{
+		TenantID:     tenantID,
+		EntryDate:    time.Now(),
+		SourceModule: "savings.interest",
+		SourceRef:    run.ID.String(),
+		Narration:    "Interest run " + run.RunNo + " · " + run.FinancialYearLabel,
+		Lines:        jeLines,
+	}); err != nil {
+		return err
+	}
+	return h.Interest.UpdateJournalEntryIDTx(ctx, tx, run.ID, run.ID)
 }
 
 // postLine executes the per-line money movement, writes the
