@@ -8,6 +8,7 @@ import {
   fetchTenantLogo,
   getTenantSettings,
   listDepositProducts,
+  listApprovalSettingsChanges,
   updateBranding,
   updateMembership,
   updateOperations,
@@ -18,6 +19,7 @@ import {
   getOTPSettings,
   updateApprovalSettings,
   updateOTPSettings,
+  type ApprovalToggleChange,
   type ApprovalToggles,
   type OTPSettings,
   type NotificationChannel,
@@ -32,6 +34,7 @@ import {
 import { Badge } from '../components/Badge';
 import { Icon } from '../components/Icon';
 import { Tabs } from '../components/Tabs';
+import { UserName } from '../components/refs';
 
 type Tab = 'branding' | 'region' | 'operations' | 'membership' | 'approvals' | 'notifications';
 const TABS: { id: Tab; label: string; hint: string }[] = [
@@ -129,7 +132,10 @@ function ToggleRow({
   k: { key: keyof ApprovalToggles; label: string; hint: string };
   t: ApprovalToggles;
   disabled: boolean;
-  onFlip: (field: keyof ApprovalToggles, next: boolean) => void;
+  // The label is forwarded so the off-flip confirmation modal can
+  // headline the field by its human name without re-deriving from
+  // the field key.
+  onFlip: (field: keyof ApprovalToggles, next: boolean, label: string) => void;
 }) {
   return (
     <div className="row" style={{ alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
@@ -138,7 +144,7 @@ function ToggleRow({
           type="checkbox"
           checked={!!t[k.key]}
           disabled={disabled}
-          onChange={(e) => onFlip(k.key, e.target.checked)}
+          onChange={(e) => onFlip(k.key, e.target.checked, k.label)}
         />
         <strong>{k.label}</strong>
       </label>
@@ -151,19 +157,70 @@ function ApprovalsTab({ canEdit }: { canEdit: boolean }) {
   const [t, setT] = useState<ApprovalToggles | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Recent-changes feed (last 10) — populated alongside the toggle
+  // load. Refetched after every successful flip so the Recent
+  // changes panel always reflects the latest state.
+  const [changes, setChanges] = useState<ApprovalToggleChange[]>([]);
+  // Off-flip confirmation modal state. Open with the field + label
+  // when the user un-checks a currently-true toggle; cancel reverts
+  // the checkbox (we drive the checkbox off local state, so cancel
+  // is a no-op — the toggle never actually flips client-side until
+  // confirm).
+  const [confirmFlip, setConfirmFlip] = useState<{
+    field: keyof ApprovalToggles;
+    label: string;
+  } | null>(null);
+  const [confirmReason, setConfirmReason] = useState('');
 
   async function load() {
     setErr(null);
-    try { setT(await getApprovalSettings()); }
+    try {
+      const [toggles, hist] = await Promise.all([
+        getApprovalSettings(),
+        listApprovalSettingsChanges(10).catch(() => [] as ApprovalToggleChange[]),
+      ]);
+      setT(toggles);
+      setChanges(hist);
+    }
     catch (e) { setErr(extractError(e)); }
   }
   useEffect(() => { void load(); }, []);
 
-  async function flip(field: keyof ApprovalToggles, next: boolean) {
+  // Flip semantics:
+  //   - OFF → ON (tightening): patches immediately, no prompt.
+  //   - ON → OFF (relaxing): opens the confirmation modal demanding
+  //     a non-empty reason of ≥ 8 chars. Mirrors the backend's
+  //     reason_required_for_opt_out guard.
+  async function flip(field: keyof ApprovalToggles, next: boolean, label: string) {
+    if (!t) return;
+    const currentlyOn = !!t[field];
+    if (currentlyOn && !next) {
+      // Open the modal; checkbox stays visually checked until confirm.
+      setConfirmReason('');
+      setConfirmFlip({ field, label });
+      return;
+    }
     setBusy(true); setErr(null);
     try {
       const updated = await updateApprovalSettings({ [field]: next } as Partial<ApprovalToggles>);
       setT(updated);
+      // Refresh the changelog so the new tighten-flip row appears.
+      void listApprovalSettingsChanges(10).then(setChanges).catch(() => {});
+    } catch (e) { setErr(extractError(e)); }
+    finally { setBusy(false); }
+  }
+
+  async function confirmOffFlip() {
+    if (!confirmFlip) return;
+    const reason = confirmReason.trim();
+    if (reason.length < 8) return; // disabled-button safety net
+    setBusy(true); setErr(null);
+    try {
+      const updated = await updateApprovalSettings({ [confirmFlip.field]: false, reason } as Partial<ApprovalToggles> & { reason: string });
+      setT(updated);
+      void listApprovalSettingsChanges(10).then(setChanges).catch(() => {});
+      setConfirmFlip(null);
+      setConfirmReason('');
     } catch (e) { setErr(extractError(e)); }
     finally { setBusy(false); }
   }
@@ -192,9 +249,26 @@ function ApprovalsTab({ canEdit }: { canEdit: boolean }) {
     { key: 'loan_moratorium',          label: 'Moratoriums',               hint: 'Payment holidays — pushes unpaid installments forward.' },
     { key: 'loan_settlement_discount', label: 'Settlement discounts',      hint: 'Accepting less than the full balance as full payment.' },
   ];
+  // PR-fee-late + PR-fee-stamp gaps surfaced as toggles. Three new
+  // fields landing in Wave 1 of the approval-coverage PR; the
+  // handler-side enforcement is wired in Wave 2.
+  const FEES_KINDS: Array<{ key: keyof ApprovalToggles; label: string; hint: string }> = [
+    { key: 'fee_collection',     label: 'Fees (Collection Desk)',   hint: 'Fee-payment lines posted at the cashier’s counter (statement fee, account closure, ad-hoc, etc.).' },
+    { key: 'welfare_collection', label: 'Welfare contributions',    hint: 'Member-welfare-scheme contributions posted from the Collection Desk.' },
+    { key: 'application_fee',    label: 'Application fees',         hint: 'Registration-fee payments captured against a membership application (pre-counterparty).' },
+  ];
 
   return (
     <>
+      {/* Policy banner — calls out the safe-by-default posture and
+          the audit trail that follows every off-flip. */}
+      <div className="alert alert-warn" style={{ marginBottom: 14 }}>
+        <strong>All toggles default to ON for new tenants.</strong>{' '}
+        Turning a toggle <strong>OFF</strong> lets the matching cash action post to the GL
+        immediately with no second-party check. A SACCO admin can do this, but a written
+        reason is recorded against the change and shown in the Recent changes panel below.
+      </div>
+
       <p className="muted" style={{ marginTop: 0 }}>
         When a toggle is on, the action requires a second user to approve before it posts to
         the ledger. The original submitter shows up in the Cash approvals queue under their own
@@ -231,7 +305,20 @@ function ApprovalsTab({ canEdit }: { canEdit: boolean }) {
         </div>
       </div>
 
-      <div className="card">
+      {/* New section — fees + onboarding. Wave-1 surfaces the
+          toggles in the UI; the handler-side enforcement lands in
+          Wave 2. */}
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-hd">
+          <h3>Fees &amp; onboarding</h3>
+          <span className="card-sub">Cashier fees, welfare, and application-fee payments</span>
+        </div>
+        <div className="card-body">
+          {FEES_KINDS.map((k) => <ToggleRow key={k.key} k={k} t={t} disabled={!canEdit || busy} onFlip={flip} />)}
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-hd">
           <h3>Self-approval</h3>
           <span className="card-sub">Segregation of duties</span>
@@ -242,7 +329,7 @@ function ApprovalsTab({ canEdit }: { canEdit: boolean }) {
               type="checkbox"
               checked={t.allow_self}
               disabled={!canEdit || busy}
-              onChange={(e) => void flip('allow_self', e.target.checked)}
+              onChange={(e) => void flip('allow_self', e.target.checked, 'Allow self-approval')}
             />
             <span>Allow the same user to be both maker and checker</span>
           </label>
@@ -252,6 +339,104 @@ function ApprovalsTab({ canEdit }: { canEdit: boolean }) {
           </p>
         </div>
       </div>
+
+      {/* Recent changes panel — last 10 audit rows from
+          tenant_approval_changes. UserName renders 'system' for
+          migration-written rows (null changed_by_user_id). */}
+      {changes.length > 0 && (
+        <div className="card">
+          <div className="card-hd">
+            <h3>Recent changes</h3>
+            <span className="card-sub">Last 10 toggle flips</span>
+          </div>
+          <div className="card-body" style={{ padding: 0 }}>
+            <table className="table" style={{ width: '100%' }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', padding: '8px 12px' }}>When</th>
+                  <th style={{ textAlign: 'left', padding: '8px 12px' }}>Who</th>
+                  <th style={{ textAlign: 'left', padding: '8px 12px' }}>Field</th>
+                  <th style={{ textAlign: 'left', padding: '8px 12px' }}>Old → New</th>
+                  <th style={{ textAlign: 'left', padding: '8px 12px' }}>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {changes.map((c) => (
+                  <tr key={c.id} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td className="tiny mono" style={{ padding: '8px 12px' }}>{new Date(c.changed_at).toLocaleString()}</td>
+                    <td className="tiny" style={{ padding: '8px 12px' }}>
+                      {c.changed_by_user_id
+                        ? <UserName userId={c.changed_by_user_id} />
+                        : <span className="muted">system</span>}
+                    </td>
+                    <td className="tiny mono" style={{ padding: '8px 12px' }}>{c.field}</td>
+                    <td className="tiny mono" style={{ padding: '8px 12px' }}>
+                      {c.old_value ?? '∅'} → <strong>{c.new_value}</strong>
+                    </td>
+                    <td className="tiny" style={{ padding: '8px 12px', maxWidth: 320 }}>
+                      {c.reason ?? <span className="muted">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Off-flip confirmation modal. Open when the user un-checks
+          a currently-true toggle; demands ≥ 8-char reason; Cancel
+          closes without flipping. */}
+      {confirmFlip && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+          }}
+          onClick={() => !busy && setConfirmFlip(null)}
+        >
+          <div
+            className="card"
+            style={{ width: 'min(560px, 90vw)', margin: 0 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="card-hd">
+              <h3>Turn off "{confirmFlip.label}"?</h3>
+            </div>
+            <div className="card-body">
+              <p>
+                With this toggle off, the action will post to the GL immediately, with no second-party
+                approval. The reason below is recorded permanently against the change.
+              </p>
+              <label style={{ display: 'block', marginTop: 12 }}>
+                <div className="muted tiny" style={{ marginBottom: 4 }}>
+                  Reason (minimum 8 characters)
+                </div>
+                <textarea
+                  rows={3}
+                  style={{ width: '100%' }}
+                  value={confirmReason}
+                  onChange={(e) => setConfirmReason(e.target.value)}
+                  placeholder="e.g. single-cashier pilot branch — see ticket #42"
+                  autoFocus
+                />
+              </label>
+            </div>
+            <div className="card-body" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', paddingTop: 0 }}>
+              <button className="btn" disabled={busy} onClick={() => setConfirmFlip(null)}>Cancel</button>
+              <button
+                className="btn btn-danger"
+                disabled={busy || confirmReason.trim().length < 8}
+                onClick={() => void confirmOffFlip()}
+              >
+                Turn off
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -278,6 +278,11 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("savings:transact")).Post("/pending-approvals/{approval_id}/cancel", d.Approvals.Cancel)
 			r.With(middleware.RequirePermission("approvals:view")).Get("/approval-settings", d.Approvals.GetSettings)
 			r.With(middleware.RequirePermission("tenant:settings:edit")).Put("/approval-settings", d.Approvals.UpdateSettings)
+			// Recent-changes audit feed for the Settings → Approvals
+			// → Recent changes panel. Same edit permission as the
+			// toggle PUT — readers of the changelog hold the same
+			// trust level as editors.
+			r.With(middleware.RequirePermission("tenant:settings:edit")).Get("/approval-settings/changes", d.Approvals.ListSettingsChanges)
 		})
 
 		// Workflow callbacks — public-ish (no auth) since the workflow

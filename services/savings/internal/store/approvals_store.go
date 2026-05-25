@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -21,6 +22,12 @@ import (
 
 	"github.com/nexussacco/savings/internal/domain"
 )
+
+// ErrToggleChangeReasonRequired is returned by AppendToggleChangeTx
+// when a flip-to-false (or any "opt-out" / relaxation) is attempted
+// without a non-empty reason. The handler maps this to a typed 400
+// so the UI can render an inline error on the modal's reason field.
+var ErrToggleChangeReasonRequired = errors.New("a non-empty reason is required when relaxing an approval toggle")
 
 type ApprovalsStore struct {
 	pool *pgxpool.Pool
@@ -252,7 +259,14 @@ type ApprovalToggles struct {
 	LoanReschedule          bool `json:"loan_reschedule"`
 	LoanMoratorium          bool `json:"loan_moratorium"`
 	LoanSettlementDiscount  bool `json:"loan_settlement_discount"`
-	AllowSelf               bool `json:"allow_self"`
+	// PR — approval coverage completion. Three previously-uncovered
+	// posting paths now consult dedicated toggles. Defaults are TRUE
+	// so a fresh tenant is safe-by-default; existing tenants were
+	// flipped on by migration 0030 with an audit row per flip.
+	FeeCollection     bool `json:"fee_collection"`
+	WelfareCollection bool `json:"welfare_collection"`
+	ApplicationFee    bool `json:"application_fee"`
+	AllowSelf         bool `json:"allow_self"`
 }
 
 func (s *ApprovalsStore) GetTogglesTx(ctx context.Context, tx pgx.Tx) (*ApprovalToggles, error) {
@@ -265,6 +279,7 @@ func (s *ApprovalsStore) GetTogglesTx(ctx context.Context, tx pgx.Tx) (*Approval
 			approval_loan_disbursement, approval_loan_repayment, approval_loan_settle,
 			approval_loan_reverse, approval_loan_writeoff,
 			approval_loan_reschedule, approval_loan_moratorium, approval_loan_settlement_discount,
+			approval_fee_collection, approval_welfare_collection, approval_application_fee,
 			approval_allow_self
 		FROM tenant_operations
 	`).Scan(
@@ -274,6 +289,7 @@ func (s *ApprovalsStore) GetTogglesTx(ctx context.Context, tx pgx.Tx) (*Approval
 		&t.LoanDisbursement, &t.LoanRepayment, &t.LoanSettle,
 		&t.LoanReverse, &t.LoanWriteoff,
 		&t.LoanReschedule, &t.LoanMoratorium, &t.LoanSettlementDiscount,
+		&t.FeeCollection, &t.WelfareCollection, &t.ApplicationFee,
 		&t.AllowSelf,
 	)
 	return &t, err
@@ -295,6 +311,9 @@ type UpdateTogglesInput struct {
 	LoanReschedule         *bool
 	LoanMoratorium         *bool
 	LoanSettlementDiscount *bool
+	FeeCollection          *bool
+	WelfareCollection      *bool
+	ApplicationFee         *bool
 	AllowSelf              *bool
 }
 
@@ -316,7 +335,10 @@ func (s *ApprovalsStore) UpdateTogglesTx(ctx context.Context, tx pgx.Tx, in Upda
 			approval_loan_reschedule          = COALESCE($13, approval_loan_reschedule),
 			approval_loan_moratorium          = COALESCE($14, approval_loan_moratorium),
 			approval_loan_settlement_discount = COALESCE($15, approval_loan_settlement_discount),
-			approval_allow_self               = COALESCE($16, approval_allow_self)
+			approval_fee_collection           = COALESCE($16, approval_fee_collection),
+			approval_welfare_collection       = COALESCE($17, approval_welfare_collection),
+			approval_application_fee          = COALESCE($18, approval_application_fee),
+			approval_allow_self               = COALESCE($19, approval_allow_self)
 	`,
 		in.Deposit, in.Withdrawal, in.DepositTransfer,
 		in.SharePurchase, in.ShareTransfer,
@@ -324,6 +346,7 @@ func (s *ApprovalsStore) UpdateTogglesTx(ctx context.Context, tx pgx.Tx, in Upda
 		in.LoanDisbursement, in.LoanRepayment, in.LoanSettle,
 		in.LoanReverse, in.LoanWriteoff,
 		in.LoanReschedule, in.LoanMoratorium, in.LoanSettlementDiscount,
+		in.FeeCollection, in.WelfareCollection, in.ApplicationFee,
 		in.AllowSelf,
 	)
 	if err != nil {
@@ -379,3 +402,104 @@ func UnmarshalPayload[T any](raw []byte) (T, error) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// ─────────── Toggle-change audit (tenant_approval_changes) ───────────
+
+// ToggleChange — one row of the audit history surfaced to the
+// Settings → Recent changes panel. ChangedByUserID may be NULL when
+// the row was written by a migration / system path; the UI renders
+// "system" in that case.
+type ToggleChange struct {
+	ID               uuid.UUID  `json:"id"`
+	TenantID         uuid.UUID  `json:"tenant_id"`
+	ChangedByUserID  *uuid.UUID `json:"changed_by_user_id,omitempty"`
+	Field            string     `json:"field"`
+	OldValue         *string    `json:"old_value,omitempty"`
+	NewValue         string     `json:"new_value"`
+	Reason           *string    `json:"reason,omitempty"`
+	ChangedAt        time.Time  `json:"changed_at"`
+}
+
+// AppendToggleChangeInput — one (field, old, new) tuple to audit.
+// The handler builds one of these per field changed and calls
+// AppendToggleChangeTx once per tuple in the same tx as
+// UpdateTogglesTx.
+type AppendToggleChangeInput struct {
+	ChangedByUserID uuid.UUID
+	Field           string // 'approval_deposit', etc.
+	OldValue        bool
+	NewValue        bool
+	Reason          string // empty = no reason supplied; required when relaxing
+}
+
+// AppendToggleChangeTx inserts one audit row. Refuses (without
+// inserting) when the change relaxes a gate (new=false) and no
+// reason was supplied — the handler maps the typed error to a 400.
+//
+// Idempotency note: callers must skip the call entirely when old ==
+// new (no actual flip happened). This method does NOT filter
+// no-op changes; that's by design — the only caller is the
+// handler's PATCH path which already iterates the diff.
+func (s *ApprovalsStore) AppendToggleChangeTx(ctx context.Context, tx pgx.Tx, in AppendToggleChangeInput) error {
+	if !in.NewValue && in.Reason == "" {
+		return ErrToggleChangeReasonRequired
+	}
+	var changedBy *uuid.UUID
+	if in.ChangedByUserID != uuid.Nil {
+		id := in.ChangedByUserID
+		changedBy = &id
+	}
+	old := boolStr(in.OldValue)
+	newv := boolStr(in.NewValue)
+	var reason *string
+	if in.Reason != "" {
+		r := in.Reason
+		reason = &r
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO tenant_approval_changes (
+		  tenant_id, changed_by_user_id, field, old_value, new_value, reason
+		) VALUES (
+		  current_tenant_id(), $1, $2, $3, $4, $5
+		)
+	`, changedBy, in.Field, old, newv, reason)
+	return err
+}
+
+// ListToggleChangesTx returns the most-recent N audit rows for the
+// current tenant. Backs the Settings → Recent changes panel.
+func (s *ApprovalsStore) ListToggleChangesTx(ctx context.Context, tx pgx.Tx, limit int) ([]ToggleChange, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 10
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT id, tenant_id, changed_by_user_id, field, old_value, new_value, reason, changed_at
+		  FROM tenant_approval_changes
+		 ORDER BY changed_at DESC
+		 LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ToggleChange{}
+	for rows.Next() {
+		var c ToggleChange
+		if err := rows.Scan(
+			&c.ID, &c.TenantID, &c.ChangedByUserID,
+			&c.Field, &c.OldValue, &c.NewValue, &c.Reason,
+			&c.ChangedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}

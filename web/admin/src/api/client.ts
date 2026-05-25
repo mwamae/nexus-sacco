@@ -4200,7 +4200,29 @@ export type ApprovalToggles = {
   loan_reschedule: boolean;
   loan_moratorium: boolean;
   loan_settlement_discount: boolean;
+  // Three toggles added in the approval-coverage PR. All default
+  // TRUE (a fresh tenant ships safe). The handlers themselves are
+  // wired in Wave 2 of the rollout — until then these are surfaced
+  // in the UI but inert.
+  fee_collection: boolean;
+  welfare_collection: boolean;
+  application_fee: boolean;
   allow_self: boolean;
+};
+
+// One row from the tenant_approval_changes audit feed (see
+// migration 0030 + the Recent changes panel). NewValue is always
+// the string 'true' / 'false'; OldValue is the same plus a NULL
+// case for fields that didn't exist before the row was written.
+export type ApprovalToggleChange = {
+  id: string;
+  tenant_id: string;
+  changed_by_user_id?: string | null;
+  field: string;
+  old_value?: string | null;
+  new_value: string;
+  reason?: string | null;
+  changed_at: string;
 };
 
 export async function listPendingApprovals(opts: {
@@ -4249,9 +4271,17 @@ export async function getApprovalSettings(): Promise<ApprovalToggles> {
   return r.data.data;
 }
 
-export async function updateApprovalSettings(input: Partial<ApprovalToggles>): Promise<ApprovalToggles> {
+export async function updateApprovalSettings(
+  input: Partial<ApprovalToggles> & { reason?: string },
+): Promise<ApprovalToggles> {
   const r = await api.put('/v1/approval-settings', input);
   return r.data.data;
+}
+
+// Recent-changes feed for the Settings → Approvals panel.
+export async function listApprovalSettingsChanges(limit = 10): Promise<ApprovalToggleChange[]> {
+  const r = await api.get(`/v1/approval-settings/changes?limit=${limit}`);
+  return r.data.data.changes ?? [];
 }
 
 // ───────────────────────────── Notifications (Stage 1) ─────────────────────────────

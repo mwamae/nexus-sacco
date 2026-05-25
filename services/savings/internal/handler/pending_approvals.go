@@ -387,7 +387,25 @@ type updateTogglesReq struct {
 	LoanReschedule         *bool `json:"loan_reschedule,omitempty"`
 	LoanMoratorium         *bool `json:"loan_moratorium,omitempty"`
 	LoanSettlementDiscount *bool `json:"loan_settlement_discount,omitempty"`
+	FeeCollection          *bool `json:"fee_collection,omitempty"`
+	WelfareCollection      *bool `json:"welfare_collection,omitempty"`
+	ApplicationFee         *bool `json:"application_fee,omitempty"`
 	AllowSelf              *bool `json:"allow_self,omitempty"`
+	// Top-level reason — required when ANY field is flipped from
+	// true → false (relaxing a gate). Optional otherwise; we still
+	// audit it for tightening flips.
+	Reason string `json:"reason,omitempty"`
+}
+
+// togglePair holds the JSON field name + a pointer to the requested
+// new value + a pointer to the column on the current ApprovalToggles
+// struct. The per-field audit loop iterates this list — keeping the
+// mapping explicit (vs reflection) so adding a new toggle is a
+// 4-line change in one spot.
+type togglePair struct {
+	Field    string
+	Want     *bool
+	Current  *bool
 }
 
 func (h *PendingApprovalsHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -396,11 +414,41 @@ func (h *PendingApprovalsHandler) UpdateSettings(w http.ResponseWriter, r *http.
 		httpx.WriteErr(w, r, err)
 		return
 	}
+	actorID, _ := middleware.UserIDFrom(r)
 	tid, _ := middleware.TenantIDFrom(r)
-	var out *store.ApprovalToggles
+
+	var (
+		out       *store.ApprovalToggles
+		flippedOff []string // fields actually flipped true→false this call
+	)
 	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		var err error
-		out, err = h.Approvals.UpdateTogglesTx(r.Context(), tx, store.UpdateTogglesInput{
+		// Pull current toggles first so we can diff per-field.
+		current, gerr := h.Approvals.GetTogglesTx(r.Context(), tx)
+		if gerr != nil {
+			return gerr
+		}
+
+		// Pre-flight reason check across every field that would
+		// flip true→false. Bail with the typed code before touching
+		// the DB so the UI can render an inline error on the
+		// reason field.
+		pairs := togglePairsFromReq(&in, current)
+		for _, p := range pairs {
+			if p.Want == nil || *p.Want == *p.Current {
+				continue
+			}
+			if !*p.Want && strings.TrimSpace(in.Reason) == "" {
+				flippedOff = append(flippedOff, p.Field)
+			}
+		}
+		if len(flippedOff) > 0 {
+			return httpx.E(http.StatusBadRequest, "reason_required_for_opt_out",
+				"a non-empty reason is required when relaxing: "+strings.Join(flippedOff, ", "))
+		}
+		// Reset for the actual flip pass.
+		flippedOff = flippedOff[:0]
+
+		updated, uerr := h.Approvals.UpdateTogglesTx(r.Context(), tx, store.UpdateTogglesInput{
 			Deposit:                in.Deposit,
 			Withdrawal:             in.Withdrawal,
 			DepositTransfer:        in.DepositTransfer,
@@ -416,15 +464,94 @@ func (h *PendingApprovalsHandler) UpdateSettings(w http.ResponseWriter, r *http.
 			LoanReschedule:         in.LoanReschedule,
 			LoanMoratorium:         in.LoanMoratorium,
 			LoanSettlementDiscount: in.LoanSettlementDiscount,
+			FeeCollection:          in.FeeCollection,
+			WelfareCollection:      in.WelfareCollection,
+			ApplicationFee:         in.ApplicationFee,
 			AllowSelf:              in.AllowSelf,
 		})
-		return err
+		if uerr != nil {
+			return uerr
+		}
+
+		// One audit row per actual flip. No-op fields are skipped
+		// so we don't pollute the Recent-changes panel with noise.
+		for _, p := range pairs {
+			if p.Want == nil || *p.Want == *p.Current {
+				continue
+			}
+			if aerr := h.Approvals.AppendToggleChangeTx(r.Context(), tx, store.AppendToggleChangeInput{
+				ChangedByUserID: actorID,
+				Field:           p.Field,
+				OldValue:        *p.Current,
+				NewValue:        *p.Want,
+				Reason:          strings.TrimSpace(in.Reason),
+			}); aerr != nil {
+				return aerr
+			}
+		}
+		out = updated
+		return nil
 	})
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
 	}
 	httpx.OK(w, out)
+}
+
+// togglePairsFromReq builds the diff-iterable list of field name +
+// requested value + current value. Order matches the column order on
+// tenant_operations so audit rows land in a predictable sequence.
+func togglePairsFromReq(in *updateTogglesReq, cur *store.ApprovalToggles) []togglePair {
+	return []togglePair{
+		{"approval_deposit", in.Deposit, &cur.Deposit},
+		{"approval_withdrawal", in.Withdrawal, &cur.Withdrawal},
+		{"approval_deposit_transfer", in.DepositTransfer, &cur.DepositTransfer},
+		{"approval_share_purchase", in.SharePurchase, &cur.SharePurchase},
+		{"approval_share_transfer", in.ShareTransfer, &cur.ShareTransfer},
+		{"approval_share_bonus", in.ShareBonus, &cur.ShareBonus},
+		{"approval_share_lien", in.ShareLien, &cur.ShareLien},
+		{"approval_loan_disbursement", in.LoanDisbursement, &cur.LoanDisbursement},
+		{"approval_loan_repayment", in.LoanRepayment, &cur.LoanRepayment},
+		{"approval_loan_settle", in.LoanSettle, &cur.LoanSettle},
+		{"approval_loan_reverse", in.LoanReverse, &cur.LoanReverse},
+		{"approval_loan_writeoff", in.LoanWriteoff, &cur.LoanWriteoff},
+		{"approval_loan_reschedule", in.LoanReschedule, &cur.LoanReschedule},
+		{"approval_loan_moratorium", in.LoanMoratorium, &cur.LoanMoratorium},
+		{"approval_loan_settlement_discount", in.LoanSettlementDiscount, &cur.LoanSettlementDiscount},
+		{"approval_fee_collection", in.FeeCollection, &cur.FeeCollection},
+		{"approval_welfare_collection", in.WelfareCollection, &cur.WelfareCollection},
+		{"approval_application_fee", in.ApplicationFee, &cur.ApplicationFee},
+		{"approval_allow_self", in.AllowSelf, &cur.AllowSelf},
+	}
+}
+
+// ListSettingsChanges handles GET /v1/approval-settings/changes?limit=N.
+// Used by the Settings → Recent changes panel. Gated on
+// tenant:settings:edit so anyone who can read the changelog has the
+// same trust level as someone who can edit the toggles.
+func (h *PendingApprovalsHandler) ListSettingsChanges(w http.ResponseWriter, r *http.Request) {
+	limit := 10
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var out []store.ToggleChange
+	err := h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		var err error
+		out, err = h.Approvals.ListToggleChangesTx(r.Context(), tx, limit)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if out == nil {
+		out = []store.ToggleChange{}
+	}
+	httpx.OK(w, map[string]any{"changes": out})
 }
 
 // ─────────── Dispatcher ───────────
