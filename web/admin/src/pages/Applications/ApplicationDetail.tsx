@@ -344,6 +344,12 @@ export default function ApplicationDetailPage() {
                           <th>Reference</th>
                           <th style={{ textAlign: 'right' }}>Amount</th>
                           <th>Status</th>
+                          {/* Receipt column appears once the
+                              materialise-time stamper has run
+                              (post-PR-fee-stamp). Pre-stamp / pre-
+                              materialise payments leave this column
+                              showing —. */}
+                          <th>Receipt</th>
                           <th style={{ width: 1 }}></th>
                         </tr>
                       </thead>
@@ -361,6 +367,11 @@ export default function ApplicationDetailPage() {
                                   ? <span style={{ color: 'var(--pos)' }}>posted</span>
                                   : <span className="muted">pending</span>}
                               {p.void_reason && <div className="muted tiny">{p.void_reason}</div>}
+                            </td>
+                            <td className="tiny-mono">
+                              {p.receipt_id
+                                ? <a className="tbl-link" href={`/collect/receipts/${p.receipt_id}`}>Open →</a>
+                                : <span className="muted">—</span>}
                             </td>
                             <td>
                               {canVoid && !p.voided_at && (

@@ -66,6 +66,13 @@ type ApplicationFeePayment struct {
 	VoidedBy         *uuid.UUID       `json:"voided_by,omitempty"`
 	CreatedAt        time.Time        `json:"created_at"`
 	CreatedBy        uuid.UUID        `json:"created_by"`
+	// Populated only on the List endpoint (LEFT JOIN onto receipts
+	// via application_payment_id). Lets the UI deep-link from the
+	// payment-history row straight into /collect/receipts/<id>
+	// once the application has been materialised + stamped. Null
+	// for un-materialised applications, voided payments without a
+	// receipt, or payments stamped before this PR's backfill ran.
+	ReceiptID *uuid.UUID `json:"receipt_id,omitempty"`
 }
 
 // Sentinel errors the handler maps to HTTP statuses.

@@ -905,6 +905,11 @@ export type ApplicationFeePayment = {
   voided_by?: string | null;
   created_at: string;
   created_by: string;
+  // Populated only on the List endpoint via a LEFT JOIN onto
+  // receipts (set after the materialise-time stamper or the
+  // backfill produces a synthetic receipt for this payment).
+  // Null for un-materialised applications.
+  receipt_id?: string | null;
 };
 
 export async function listApplicationFeePayments(applicationId: string): Promise<ApplicationFeePayment[]> {

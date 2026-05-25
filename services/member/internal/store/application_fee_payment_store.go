@@ -107,12 +107,24 @@ func (s *ApplicationFeePaymentStore) GetByIDTx(ctx context.Context, tx pgx.Tx, i
 // ListByApplicationTx returns every payment for an application,
 // newest first. Voided rows included so the UI can surface the void
 // state alongside the live history.
+//
+// LEFT JOIN onto receipts to expose receipt_id when the payment has
+// been stamped onto the materialised counterparty's ledger
+// (post-PR-fee-stamp). Pre-stamp payments and voided payments leave
+// receipt_id null.
 func (s *ApplicationFeePaymentStore) ListByApplicationTx(ctx context.Context, tx pgx.Tx, appID uuid.UUID) ([]domain.ApplicationFeePayment, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT `+feePaymentCols+`
-		  FROM application_fee_payments
-		 WHERE application_id = $1
-		 ORDER BY COALESCE(posted_at, created_at) DESC, created_at DESC
+		SELECT
+		  p.id, p.tenant_id, p.application_id, p.amount, p.channel, p.channel_reference,
+		  p.value_date, p.proof_doc_path, p.note,
+		  p.journal_entry_id, p.posted_at,
+		  p.voided_at, p.void_reason, p.voided_by,
+		  p.created_at, p.created_by,
+		  r.id AS receipt_id
+		FROM application_fee_payments p
+		LEFT JOIN receipts r ON r.application_payment_id = p.id
+		WHERE p.application_id = $1
+		ORDER BY COALESCE(p.posted_at, p.created_at) DESC, p.created_at DESC
 	`, appID)
 	if err != nil {
 		return nil, err
@@ -120,11 +132,18 @@ func (s *ApplicationFeePaymentStore) ListByApplicationTx(ctx context.Context, tx
 	defer rows.Close()
 	out := []domain.ApplicationFeePayment{}
 	for rows.Next() {
-		p, err := scanFeePayment(rows)
-		if err != nil {
+		var p domain.ApplicationFeePayment
+		if err := rows.Scan(
+			&p.ID, &p.TenantID, &p.ApplicationID, &p.Amount, &p.Channel, &p.ChannelReference,
+			&p.ValueDate, &p.ProofDocPath, &p.Note,
+			&p.JournalEntryID, &p.PostedAt,
+			&p.VoidedAt, &p.VoidReason, &p.VoidedBy,
+			&p.CreatedAt, &p.CreatedBy,
+			&p.ReceiptID,
+		); err != nil {
 			return nil, err
 		}
-		out = append(out, *p)
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }

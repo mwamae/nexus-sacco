@@ -139,6 +139,12 @@ func Routes(d Deps) http.Handler {
 				Post("/applications/{id}/fee-payments", d.Applications.RecordFeePayment)
 			r.With(middleware.RequirePermission("members:approve")).
 				Post("/applications/{id}/fee-payments/{paymentId}/void", d.Applications.VoidFeePayment)
+			// Admin re-run of the materialise-time receipt stamper.
+			// Idempotent. Used to recover applications that materialised
+			// before this PR shipped, or when the best-effort stamp
+			// inside materialise hit a transient error.
+			r.With(middleware.RequirePermission("members:approve")).
+				Post("/applications/{id}/restamp-receipts", d.Applications.RestampReceipts)
 		})
 
 		// Workflow callback — public-ish (no auth) but constrained: only

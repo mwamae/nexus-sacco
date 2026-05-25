@@ -49,6 +49,7 @@ type ApplicationHandler struct {
 	DB             *db.Pool
 	Applications   *store.ApplicationStore
 	FeePayments    *store.ApplicationFeePaymentStore
+	ReceiptStamper *store.ApplicationFeeReceiptStamper
 	Members        *store.MemberStore
 	Orgs           *store.OrgMemberStore   // required for institutional materialisation
 	Counterparties *store.CounterpartyStore // Phase A dual-target mirror
@@ -502,6 +503,39 @@ func (h *ApplicationHandler) Approve(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// 3b. Stamp fee receipts onto the new counterparty's ledger.
+	// Pure derived data: one synthetic receipt per
+	// application_fee_payments row, attached to the existing journal
+	// entry. No new GL posting happens here. Best-effort — a
+	// failure is logged but doesn't roll back the materialise (the
+	// application + JE are already on the books, and the admin
+	// restamp endpoint can recover any miss).
+	if updated.MaterializedCounterpartyID != nil && h.ReceiptStamper != nil {
+		_ = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+			res, serr := h.ReceiptStamper.StampTx(r.Context(), tx, store.FeeReceiptStampInput{
+				TenantID:                   tenantID,
+				ApplicationID:              updated.ID,
+				ApplicationNo:              updated.ApplicationNo,
+				MaterializedCounterpartyID: *updated.MaterializedCounterpartyID,
+			})
+			if serr != nil {
+				if h.Logger != nil {
+					h.Logger.Warn("materialise: failed to stamp fee receipts on counterparty ledger",
+						"application", updated.ID, "err", serr.Error())
+				}
+				// Swallow — caller is best-effort.
+				return nil
+			}
+			if h.Logger != nil && (res.Created > 0 || res.AlreadyExists > 0) {
+				h.Logger.Info("materialise: stamped fee receipts",
+					"application", updated.ApplicationNo,
+					"counterparty", updated.MaterializedCounterpartyID,
+					"created", res.Created, "already_existed", res.AlreadyExists)
+			}
+			return nil
+		})
 	}
 
 	// 4. Welcome notification (best-effort).

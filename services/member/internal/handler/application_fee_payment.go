@@ -318,6 +318,49 @@ func (h *ApplicationHandler) VoidFeePayment(w http.ResponseWriter, r *http.Reque
 	httpx.OK(w, map[string]any{"payment": voided, "application": application})
 }
 
+// RestampReceipts handles POST /v1/applications/{id}/restamp-receipts.
+//
+// Re-runs the materialise-time receipt stamper for ops use — useful
+// when a previous materialise hit the best-effort warn-and-continue
+// branch, or when a backfill is needed against an application that
+// was materialised before this PR shipped. Idempotent: the
+// underlying stamper SELECT-checks then INSERTs, so re-running it
+// either creates the missing rows or returns the existing ids.
+func (h *ApplicationHandler) RestampReceipts(w http.ResponseWriter, r *http.Request) {
+	appID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid application id"))
+		return
+	}
+	tenantID, _ := middleware.TenantIDFrom(r)
+	var result *store.FeeReceiptStampResult
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		app, gerr := h.Applications.GetTx(r.Context(), tx, appID)
+		if gerr != nil {
+			return gerr
+		}
+		if app.MaterializedCounterpartyID == nil {
+			return httpx.ErrConflict("application is not materialised — nothing to stamp")
+		}
+		res, serr := h.ReceiptStamper.StampTx(r.Context(), tx, store.FeeReceiptStampInput{
+			TenantID:                   tenantID,
+			ApplicationID:              app.ID,
+			ApplicationNo:              app.ApplicationNo,
+			MaterializedCounterpartyID: *app.MaterializedCounterpartyID,
+		})
+		if serr != nil {
+			return serr
+		}
+		result = res
+		return nil
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, result)
+}
+
 // ListFeePayments handles GET /v1/applications/{id}/fee-payments.
 func (h *ApplicationHandler) ListFeePayments(w http.ResponseWriter, r *http.Request) {
 	appID, err := uuid.Parse(chi.URLParam(r, "id"))
