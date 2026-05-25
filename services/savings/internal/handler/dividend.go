@@ -24,6 +24,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -45,10 +47,12 @@ type DividendHandler struct {
 	Tenants        *store.TenantStore
 	Members        *store.MemberStore
 	Counterparties *store.CounterpartyStore
+	Products       *store.DepositProductStore
 	Deposits       *store.DepositStore
 	Shares         *store.ShareStore
 	Dividends      *store.DividendStore
 	Notifier       *notifier.Client
+	Posting        *posting.Client
 	Logger         *slog.Logger
 
 	WorkflowURL         string
@@ -467,6 +471,14 @@ func (h *DividendHandler) Post(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
+		// Batched GL appropriation entry for the whole run. Dividends
+		// are an equity transfer (DR Retained Earnings) — NOT a P&L
+		// expense (5010 was deactivated by accounting migration 0007).
+		// Failure rolls back every postDivLine write + the 'posting'
+		// status flip; run stays at 'approved' for safe retry.
+		if err := h.postBatchedDivRunGLTx(r.Context(), tx, tid, run, lines, policy); err != nil {
+			return err
+		}
 		final, err := h.Dividends.UpdateStatusTx(r.Context(), tx, id, store.DivStatusTransition{To: domain.DivPosted, By: userID})
 		if err != nil {
 			return err
@@ -479,10 +491,178 @@ func (h *DividendHandler) Post(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, posting.ErrOutboxInsert) {
+			httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
+			return
+		}
 		writeDivErr(w, r, err)
 		return
 	}
 	httpx.OK(w, out)
+}
+
+// postBatchedDivRunGLTx aggregates the run's posted lines into one
+// appropriation journal entry and queues it on the outbox.
+//
+// Dividends are an APPROPRIATION OF SURPLUS, not a P&L expense — the
+// migration in services/accounting/internal/db/migrations/
+// 0007_dividend_appropriation.up.sql deactivated the seed-CoA
+// 'Dividend Expense' account (5010) precisely to prevent this. The
+// canonical shape is:
+//
+//   DR 3010 Retained Earnings        = Σ gross_dividend (equity transfer)
+//   CR 2200 Withholding Tax Payable  = Σ wht_amount
+//   CR per-product savings liability = Σ net amounts credited to savings
+//                                      (credit_savings + buy_shares
+//                                      residual), grouped by
+//                                      depositLiabilityCode of each
+//                                      line's target account
+//   CR 3000 Member Share Capital     = Σ shares-purchased portion on
+//                                      buy_shares lines (= floor(net/par) × par)
+//   CR 2230 Other Payables           = Σ net on external lines
+//
+// Balance: DR(Σ gross) = CR(Σ net + Σ wht) = Σ gross. ✓
+//
+// Zero-net lines are skipped (mirrors postDivLine's behaviour — those
+// lines also skip the tax_payable_ledger row, so including their gross
+// here would double-count vs. the WHT ledger).
+//
+// Suppressed when nothing to record or when the Posting client is
+// disabled (dev). The run.ID doubles as the synthetic JE handle stamped
+// on dividend_runs.journal_entry_id; recover the real journal_entries
+// row via (source_module='savings.dividend', source_ref=run.id).
+func (h *DividendHandler) postBatchedDivRunGLTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	run *domain.DividendRun, lines []domain.DividendRunLine,
+	policy *store.SharePolicy,
+) error {
+	if h.Posting == nil || h.Posting.Disabled {
+		return nil
+	}
+
+	var (
+		drRetainedEarnings decimal.Decimal
+		crWHT              decimal.Decimal
+		crSharesCapital    decimal.Decimal
+		crOtherPayables    decimal.Decimal
+	)
+	crLiabilityByCode := map[string]decimal.Decimal{}
+
+	par := decimal.Zero
+	if policy != nil {
+		par = policy.ParValue
+	}
+
+	// Resolve target account → liability code on demand. Cached per
+	// account so a run with N lines targeting the same product only
+	// looks up once.
+	liabByAcct := map[uuid.UUID]string{}
+	resolveLiab := func(acctID uuid.UUID) string {
+		if code, ok := liabByAcct[acctID]; ok {
+			return code
+		}
+		code := "2000" // safe fallback if lookup fails — matches the
+		// historical hardcode the segment-aware refactor is replacing.
+		if h.Deposits != nil && h.Products != nil {
+			if acct, err := h.Deposits.GetAccountTx(ctx, tx, acctID); err == nil && acct != nil {
+				if p, perr := h.Products.GetTx(ctx, tx, acct.ProductID); perr == nil && p != nil {
+					code = depositLiabilityCode(p.Segment, p.ProductType)
+				}
+			}
+		}
+		liabByAcct[acctID] = code
+		return code
+	}
+
+	for _, line := range lines {
+		if line.NetDividend.LessThanOrEqual(decimal.Zero) {
+			continue
+		}
+		drRetainedEarnings = drRetainedEarnings.Add(line.GrossDividend)
+		crWHT = crWHT.Add(line.WHTAmount)
+
+		switch line.PayoutMethod {
+		case domain.PayoutCreditSavings:
+			if line.PayoutTargetAccountID == nil {
+				// Shouldn't happen — postDivLine fallback-resolved it.
+				// If it did, fall back to 2000 to keep the JE balanced.
+				crLiabilityByCode["2000"] = crLiabilityByCode["2000"].Add(line.NetDividend)
+			} else {
+				code := resolveLiab(*line.PayoutTargetAccountID)
+				crLiabilityByCode[code] = crLiabilityByCode[code].Add(line.NetDividend)
+			}
+		case domain.PayoutBuyShares:
+			sharesPortion := decimal.Zero
+			residual := line.NetDividend
+			if par.GreaterThan(decimal.Zero) {
+				qty := line.NetDividend.Div(par).Floor()
+				sharesPortion = par.Mul(qty)
+				residual = line.NetDividend.Sub(sharesPortion)
+			}
+			if sharesPortion.GreaterThan(decimal.Zero) {
+				crSharesCapital = crSharesCapital.Add(sharesPortion)
+			}
+			if residual.GreaterThan(decimal.Zero) {
+				// postDivLine stamps the residual's fallback target on
+				// the line — see the buy_shares residual block.
+				if line.PayoutTargetAccountID != nil {
+					code := resolveLiab(*line.PayoutTargetAccountID)
+					crLiabilityByCode[code] = crLiabilityByCode[code].Add(residual)
+				} else {
+					crLiabilityByCode["2000"] = crLiabilityByCode["2000"].Add(residual)
+				}
+			}
+		case domain.PayoutExternal:
+			crOtherPayables = crOtherPayables.Add(line.NetDividend)
+		}
+	}
+
+	if drRetainedEarnings.LessThanOrEqual(decimal.Zero) {
+		return nil
+	}
+
+	jeLines := []posting.Line{
+		{AccountCode: "3010", Debit: drRetainedEarnings,
+			Narration: "Dividend appropriation · " + run.RunNo},
+	}
+	if crWHT.GreaterThan(decimal.Zero) {
+		jeLines = append(jeLines, posting.Line{
+			AccountCode: "2200", Credit: crWHT, Narration: "Withholding tax payable",
+		})
+	}
+	if crSharesCapital.GreaterThan(decimal.Zero) {
+		jeLines = append(jeLines, posting.Line{
+			AccountCode: "3000", Credit: crSharesCapital, Narration: "Dividend re-invested in shares",
+		})
+	}
+	if crOtherPayables.GreaterThan(decimal.Zero) {
+		jeLines = append(jeLines, posting.Line{
+			AccountCode: "2230", Credit: crOtherPayables, Narration: "External dividend payout owed to members",
+		})
+	}
+	codes := make([]string, 0, len(crLiabilityByCode))
+	for c := range crLiabilityByCode {
+		codes = append(codes, c)
+	}
+	sort.Strings(codes)
+	for _, c := range codes {
+		jeLines = append(jeLines, posting.Line{
+			AccountCode: c, Credit: crLiabilityByCode[c],
+			Narration: "Dividend credited to member savings (" + c + ")",
+		})
+	}
+
+	if err := h.Posting.PostTx(ctx, tx, posting.PostInput{
+		TenantID:     tenantID,
+		EntryDate:    time.Now(),
+		SourceModule: "savings.dividend",
+		SourceRef:    run.ID.String(),
+		Narration:    "Dividend run " + run.RunNo + " · " + run.FinancialYearLabel,
+		Lines:        jeLines,
+	}); err != nil {
+		return err
+	}
+	return h.Dividends.UpdateJournalEntryIDTx(ctx, tx, run.ID, run.ID)
 }
 
 // newInterestSubset is a closure facade so postDivLine can write to
@@ -615,6 +795,13 @@ func (h *DividendHandler) postDivLine(
 					return err
 				}
 				depositTxnID = &txn.ID
+				// Stamp the residual's target account on the line so the
+				// post-loop GL aggregator can resolve the savings
+				// liability code for this residual via the same lookup
+				// path it uses for credit_savings lines. No-op when the
+				// credit_savings path didn't run (this is buy_shares).
+				fallbackID := fallback.ID
+				line.PayoutTargetAccountID = &fallbackID
 			}
 		}
 

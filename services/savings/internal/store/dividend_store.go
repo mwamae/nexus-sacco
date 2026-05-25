@@ -236,6 +236,20 @@ func (s *DividendStore) UpdateWorkflowIDTx(ctx context.Context, tx pgx.Tx, runID
 	return err
 }
 
+// UpdateJournalEntryIDTx stamps the batched-JE handle onto the run row
+// inside the posting tx. Called once per run when it flips to 'posted'
+// and the outbox row has been queued. The handle is the same uuid
+// passed as source_ref on the outbox payload — recoverable from
+// journal_entries via (source_module='savings.dividend', source_ref=jeID).
+func (s *DividendStore) UpdateJournalEntryIDTx(ctx context.Context, tx pgx.Tx, runID, jeID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE dividend_runs
+		   SET journal_entry_id = $2
+		 WHERE id = $1
+	`, runID, jeID)
+	return err
+}
+
 // ─────────── Compute (per method) ───────────
 
 // AccountBasis is the per-account intermediate output the calculator
