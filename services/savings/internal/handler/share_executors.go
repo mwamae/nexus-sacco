@@ -72,6 +72,14 @@ type ShareBonusResult struct {
 	IssuedToCount    int             `json:"issued_to_count"`
 	TotalBonusShares int             `json:"total_bonus_shares"`
 	PctApplied       decimal.Decimal `json:"pct_applied"`
+	ParValue         decimal.Decimal `json:"par_value"`
+	// TxnIDs is the list of share_transactions IDs produced by this
+	// bonus run, one per member who held > 0 shares. Used by the
+	// handler-level GL helper to stamp the same synthetic journal_entry_id
+	// on each row so reconciliation by JE handle returns the full
+	// per-member breakdown. Not serialised over the HTTP response —
+	// internal handoff.
+	TxnIDs           []uuid.UUID     `json:"-"`
 }
 
 // ─────────── Executors ───────────
@@ -259,7 +267,7 @@ func (h *ShareHandler) ExecuteShareBonusTx(
 		return nil, err
 	}
 	internal := domain.ChannelInternal
-	resp := &ShareBonusResult{PctApplied: p.PctOfHolding}
+	resp := &ShareBonusResult{PctApplied: p.PctOfHolding, ParValue: policy.ParValue}
 	for i := range accounts {
 		a := accounts[i]
 		bonus := p.PctOfHolding.
@@ -271,7 +279,7 @@ func (h *ShareHandler) ExecuteShareBonusTx(
 			continue
 		}
 		reason := p.Reason
-		if _, err := h.Shares.PostTxnTx(ctx, tx, store.PostInput{
+		txn, err := h.Shares.PostTxnTx(ctx, tx, store.PostInput{
 			Account:             &a,
 			TxnType:             domain.TxnBonusIssue,
 			SharesDelta:         n,
@@ -281,9 +289,11 @@ func (h *ShareHandler) ExecuteShareBonusTx(
 			InitiatedBy:         makerID,
 			AuthorizedBy:        &makerID,
 			AuthorizationReason: &reason,
-		}); err != nil {
+		})
+		if err != nil {
 			return nil, err
 		}
+		resp.TxnIDs = append(resp.TxnIDs, txn.ID)
 		updated, err := h.Shares.GetAccountTx(ctx, tx, a.ID)
 		if err != nil {
 			return nil, err

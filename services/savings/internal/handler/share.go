@@ -482,7 +482,7 @@ func (h *ShareHandler) postSharePurchaseToGLTx(ctx context.Context, tx pgx.Tx, t
 	cashAcct := shareChannelCashAccount(ch)
 	narration := fmt.Sprintf("Share purchase %d shares · %s",
 		result.Transaction.SharesDelta, result.Account.AccountNo)
-	return h.Posting.PostTx(ctx, tx, posting.PostInput{
+	if err := h.Posting.PostTx(ctx, tx, posting.PostInput{
 		TenantID:     tenantID,
 		EntryDate:    time.Now(),
 		SourceModule: "savings.shares.purchase",
@@ -492,7 +492,23 @@ func (h *ShareHandler) postSharePurchaseToGLTx(ctx context.Context, tx pgx.Tx, t
 			{AccountCode: cashAcct, Debit: amount, Narration: "Payment received"},
 			{AccountCode: "3000", Credit: amount, Narration: "Member share capital"},
 		},
-	})
+	}); err != nil {
+		return err
+	}
+	// Stamp the share_transactions row with its own ID as the JE handle
+	// (single-txn-per-JE pattern — source_ref IS the txn ID). Makes the
+	// reconciliation query "WHERE journal_entry_id IS NULL" cleanly
+	// identify the by-design no-GL cases (transfer) without false
+	// positives.
+	if h.Posting.Disabled {
+		return nil
+	}
+	if err := h.Shares.UpdateJournalEntryIDTx(ctx, tx, result.Transaction.ID, result.Transaction.ID); err != nil {
+		return err
+	}
+	jeID := result.Transaction.ID
+	result.Transaction.JournalEntryID = &jeID
+	return nil
 }
 
 // ─────────── Transfer ───────────
@@ -715,8 +731,9 @@ func (h *ShareHandler) emitShareTransfer(r *http.Request, tenantID, actorID uuid
 // ─────────── Adjustment ───────────
 
 type adjustReq struct {
-	SharesDelta int    `json:"shares_delta"` // signed
-	Reason      string `json:"reason"`
+	SharesDelta           int    `json:"shares_delta"`            // signed
+	Reason                string `json:"reason"`                  // adjustment_reason — required
+	OffsettingAccountCode string `json:"offsetting_account_code"` // CoA code; must be equity or expense
 }
 
 func (h *ShareHandler) Adjust(w http.ResponseWriter, r *http.Request) {
@@ -738,6 +755,10 @@ func (h *ShareHandler) Adjust(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("reason is required for adjustment"))
 		return
 	}
+	if in.OffsettingAccountCode == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("offsetting_account_code is required (must be an equity or expense CoA code, e.g. 3010 Retained Earnings)"))
+		return
+	}
 	userID, _ := middleware.UserIDFrom(r)
 	if userID == uuid.Nil {
 		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
@@ -747,6 +768,11 @@ func (h *ShareHandler) Adjust(w http.ResponseWriter, r *http.Request) {
 
 	var resp postResp
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		// Validate offsetting account BEFORE the share-side write so a
+		// bad account fails fast without a wasted PostTxnTx.
+		if _, verr := h.validateOffsettingAccountTx(r.Context(), tx, in.OffsettingAccountCode); verr != nil {
+			return verr
+		}
 		policy, _, acct, err := h.loadContext(r.Context(), tx, memberID, true)
 		if err != nil {
 			return err
@@ -789,6 +815,12 @@ func (h *ShareHandler) Adjust(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// In-tx GL post — DR/CR polarity driven by the shares_delta
+		// sign (increase = capital up, decrease = capital down).
+		// Failure rolls back the share-side write + certificate.
+		if perr := h.postShareAdjustmentToGLTx(r.Context(), tx, tid, txn, in.OffsettingAccountCode, reason); perr != nil {
+			return perr
+		}
 		updated, err := h.Shares.GetAccountTx(r.Context(), tx, acct.ID)
 		if err != nil {
 			return err
@@ -802,6 +834,10 @@ func (h *ShareHandler) Adjust(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, posting.ErrOutboxInsert) {
+			httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
+			return
+		}
 		writeBusinessErr(w, r, err)
 		return
 	}
@@ -986,12 +1022,25 @@ func (h *ShareHandler) BonusIssue(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// Bonus issue is a stock dividend — same shape as the
+		// buy_shares branch of the dividend run (R4) but issued
+		// without first declaring cash. One batched JE for the
+		// whole run; per-member share_transactions rows are
+		// stamped with the same JE handle for audit. Failure
+		// rolls back every PostTxnTx + certificate issued above.
+		if perr := h.postBonusIssueToGLTx(r.Context(), tx, tid, out, payload.Reason); perr != nil {
+			return perr
+		}
 		resp.IssuedToCount = out.IssuedToCount
 		resp.TotalBonusShares = out.TotalBonusShares
 		resp.PctApplied = out.PctApplied
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, posting.ErrOutboxInsert) {
+			httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
+			return
+		}
 		writeBusinessErr(w, r, err)
 		return
 	}
@@ -1062,6 +1111,148 @@ func (h *ShareHandler) Summary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.OK(w, sum)
+}
+
+// ─────────── GL helpers (bonus + adjust) ───────────
+
+// postBonusIssueToGLTx queues one batched appropriation JE for a
+// bonus issue. Bonus shares are a stock dividend — equity transfer
+// from Retained Earnings into Member Share Capital, NO cash leg:
+//
+//   DR 3010 Retained Earnings    = total_bonus_shares × par
+//   CR 3000 Member Share Capital = same
+//
+// One JE per bonus run regardless of the per-member share_transactions
+// count — keeps journal_entries readable for runs with thousands of
+// members. The generated jeID is stamped on every share_transactions
+// row produced by the run so reconciliation by JE handle returns the
+// full per-member breakdown.
+//
+// Suppressed when nothing to record (no holders → no bonus shares
+// issued) or when the Posting client is disabled (dev). Failure
+// (outbox INSERT error) rolls back every PostTxnTx + certificate
+// issued by the executor.
+func (h *ShareHandler) postBonusIssueToGLTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	result *ShareBonusResult, reason string,
+) error {
+	if h.Posting == nil || h.Posting.Disabled || result == nil {
+		return nil
+	}
+	if result.TotalBonusShares <= 0 {
+		return nil
+	}
+	amount := result.ParValue.Mul(decimal.NewFromInt(int64(result.TotalBonusShares)))
+	if amount.LessThanOrEqual(decimal.Zero) {
+		return nil
+	}
+	jeID := uuid.New()
+	narration := fmt.Sprintf("Bonus issue · %s%% · %d shares · %s",
+		result.PctApplied.String(), result.TotalBonusShares, reason)
+	if err := h.Posting.PostTx(ctx, tx, posting.PostInput{
+		TenantID:     tenantID,
+		EntryDate:    time.Now(),
+		SourceModule: "savings.shares.bonus",
+		SourceRef:    jeID.String(),
+		Narration:    narration,
+		Lines: []posting.Line{
+			{AccountCode: "3010", Debit: amount, Narration: "Bonus issue appropriation"},
+			{AccountCode: "3000", Credit: amount, Narration: "Member share capital - bonus shares"},
+		},
+	}); err != nil {
+		return err
+	}
+	// Stamp the same JE handle on every per-member txn so on-call can
+	// SELECT * FROM share_transactions WHERE journal_entry_id = $jeID
+	// to recover the per-member breakdown that this batched JE rolls
+	// up.
+	for _, txnID := range result.TxnIDs {
+		if err := h.Shares.UpdateJournalEntryIDTx(ctx, tx, txnID, jeID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateOffsettingAccountTx confirms the operator-provided
+// offsetting account exists, is active, and has a class compatible
+// with a share-equity adjustment. Spec rule: must be 'equity' or
+// 'expense'. Returns the account class so the caller can include it
+// in the JE narration for audit clarity.
+func (h *ShareHandler) validateOffsettingAccountTx(ctx context.Context, tx pgx.Tx, code string) (string, error) {
+	if code == "" {
+		return "", httpx.ErrBadRequest("offsetting_account_code is required for share adjustment")
+	}
+	var class string
+	err := tx.QueryRow(ctx, `
+		SELECT class FROM chart_of_accounts
+		 WHERE tenant_id = current_tenant_id()
+		   AND code = $1 AND is_active = true
+	`, code).Scan(&class)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", httpx.E(http.StatusBadRequest, "unknown_account",
+				"offsetting_account_code does not exist on this tenant: "+code)
+		}
+		return "", err
+	}
+	if class != "equity" && class != "expense" {
+		return "", httpx.E(http.StatusBadRequest, "invalid_offsetting_account_class",
+			fmt.Sprintf("offsetting account %s has class %q; must be 'equity' or 'expense'", code, class))
+	}
+	return class, nil
+}
+
+// postShareAdjustmentToGLTx queues the JE for an admin share-count
+// correction. Polarity follows the shares_delta sign:
+//
+//   shares_delta > 0 (increase): DR <offsetting> / CR 3000  ← share capital up
+//   shares_delta < 0 (decrease): DR 3000 / CR <offsetting>  ← share capital down
+//
+// The offsetting account is operator-chosen (validated upstream via
+// validateOffsettingAccountTx — must be equity or expense). Amount =
+// par × |shares_delta|. Source_ref = txn.ID so the share_transactions
+// row's journal_entry_id == its own ID (single-txn-per-JE pattern,
+// matches Purchase). Failure rolls back the share-side write.
+func (h *ShareHandler) postShareAdjustmentToGLTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	txn *domain.ShareTransaction, offsettingCode, reason string,
+) error {
+	if h.Posting == nil || h.Posting.Disabled || txn == nil {
+		return nil
+	}
+	amount := txn.Amount.Abs()
+	if amount.LessThanOrEqual(decimal.Zero) {
+		return nil
+	}
+	var debitCode, creditCode string
+	if txn.SharesDelta > 0 {
+		debitCode, creditCode = offsettingCode, "3000"
+	} else {
+		debitCode, creditCode = "3000", offsettingCode
+	}
+	narration := fmt.Sprintf("Share adjustment · %s · %d shares · %s",
+		txn.TxnNo, txn.SharesDelta, reason)
+	if err := h.Posting.PostTx(ctx, tx, posting.PostInput{
+		TenantID:     tenantID,
+		EntryDate:    time.Now(),
+		SourceModule: "savings.shares.adjust",
+		SourceRef:    txn.ID.String(),
+		Narration:    narration,
+		Lines: []posting.Line{
+			{AccountCode: debitCode, Debit: amount, Narration: "Adjustment offset"},
+			{AccountCode: creditCode, Credit: amount, Narration: "Member share capital adjustment"},
+		},
+	}); err != nil {
+		return err
+	}
+	if err := h.Shares.UpdateJournalEntryIDTx(ctx, tx, txn.ID, txn.ID); err != nil {
+		return err
+	}
+	// Mutate the in-memory txn so the HTTP response reflects the stamp.
+	jeID := txn.ID
+	txn.JournalEntryID = &jeID
+	return nil
 }
 
 // ─────────── Helpers ───────────

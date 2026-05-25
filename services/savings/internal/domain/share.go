@@ -120,6 +120,12 @@ type ShareTransaction struct {
 	InitiatedBy           uuid.UUID       `json:"initiated_by"`
 	AuthorizedBy          *uuid.UUID      `json:"authorized_by,omitempty"`
 	AuthorizationReason   *string         `json:"authorization_reason,omitempty"`
+	// JournalEntryID is the synthetic JE handle stamped by the
+	// GL-posting helper. NULL ⇒ no GL move expected (transfer between
+	// members, pre-migration historical rows). NOT NULL ⇒ a JE was
+	// posted; recover via (source_module='savings.shares.…',
+	// source_ref=journal_entry_id) on journal_entries.
+	JournalEntryID        *uuid.UUID      `json:"journal_entry_id,omitempty"`
 	PostedAt              time.Time       `json:"posted_at"`
 	CreatedAt             time.Time       `json:"created_at"`
 }

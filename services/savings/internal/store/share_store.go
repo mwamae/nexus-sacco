@@ -210,7 +210,7 @@ func (s *ShareStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostInput) (*d
 		          par_value_at_txn, amount, payment_channel, payment_ref, narration,
 		          counterparty_account_id, counterparty_txn_id, balance_after_shares,
 		          balance_after_amount, initiated_by, authorized_by, authorization_reason,
-		          posted_at, created_at
+		          journal_entry_id, posted_at, created_at
 	`,
 		in.Account.ID, in.Account.CounterpartyID, txnNo, string(in.TxnType), in.SharesDelta,
 		in.ParValueAtTxn, amount, pc, in.PaymentRef, in.Narration,
@@ -228,7 +228,7 @@ func scanTxn(row pgx.Row) (*domain.ShareTransaction, error) {
 		&t.ParValueAtTxn, &t.Amount, &pc, &t.PaymentRef, &t.Narration,
 		&t.CounterpartyAccountID, &t.CounterpartyTxnID, &t.BalanceAfterShares,
 		&t.BalanceAfterAmount, &t.InitiatedBy, &t.AuthorizedBy, &t.AuthorizationReason,
-		&t.PostedAt, &t.CreatedAt,
+		&t.JournalEntryID, &t.PostedAt, &t.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -238,6 +238,21 @@ func scanTxn(row pgx.Row) (*domain.ShareTransaction, error) {
 		t.PaymentChannel = &c
 	}
 	return &t, nil
+}
+
+// UpdateJournalEntryIDTx stamps the synthetic JE handle on a posted
+// share_transactions row inside the caller's tx. Called from the
+// GL-posting helper after Posting.PostTx succeeds. For multi-txn JEs
+// (bonus issue), the same jeID is stamped on every txn produced by
+// the call so reconciliation by (journal_entry_id) returns the full
+// per-member breakdown.
+func (s *ShareStore) UpdateJournalEntryIDTx(ctx context.Context, tx pgx.Tx, txnID, jeID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE share_transactions
+		   SET journal_entry_id = $2
+		 WHERE id = $1
+	`, txnID, jeID)
+	return err
 }
 
 // LinkCounterpartyTxnTx fills the counterparty_txn_id back-reference on
@@ -260,7 +275,7 @@ func (s *ShareStore) HistoryByAccountTx(ctx context.Context, tx pgx.Tx, accountI
 		       par_value_at_txn, amount, payment_channel, payment_ref, narration,
 		       counterparty_account_id, counterparty_txn_id, balance_after_shares,
 		       balance_after_amount, initiated_by, authorized_by, authorization_reason,
-		       posted_at, created_at
+		       journal_entry_id, posted_at, created_at
 		FROM share_transactions
 		WHERE account_id = $1
 		ORDER BY posted_at DESC, id DESC
