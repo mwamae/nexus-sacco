@@ -127,7 +127,7 @@ type DepositAccount struct {
 // contribute zero (the leftover flows to the next leg).
 func (b *DistributionBalances) DepositAccountsTx(ctx context.Context, tx pgx.Tx, cpID uuid.UUID) ([]DepositAccount, error) {
 	rs, err := tx.Query(ctx, `
-		SELECT d.id, d.account_no, COALESCE(p.product_code, '')
+		SELECT d.id, d.account_no, COALESCE(p.code, '')
 		  FROM deposit_accounts d
 		  JOIN deposit_products p ON p.id = d.product_id
 		 WHERE d.counterparty_id = $1
@@ -158,7 +158,7 @@ func (b *DistributionBalances) DepositAccountByNoTx(ctx context.Context, tx pgx.
 	}
 	var d DepositAccount
 	err := tx.QueryRow(ctx, `
-		SELECT d.id, d.account_no, COALESCE(p.product_code, '')
+		SELECT d.id, d.account_no, COALESCE(p.code, '')
 		  FROM deposit_accounts d
 		  JOIN deposit_products p ON p.id = d.product_id
 		 WHERE d.account_no = $1
@@ -172,16 +172,29 @@ func (b *DistributionBalances) DepositAccountByNoTx(ctx context.Context, tx pgx.
 	return &d, nil
 }
 
-// FeesDueTx returns the amount of fees this counterparty owes. Phase
-// 3 stubs this to zero — fees aren't tracked in a per-member dues
-// table today, only as fee_catalog entries that fire on specific
-// events (loan disbursement, etc). Phase 3.5 wires the real dues
-// query once the fee-dues table lands. The engine's contract treats
-// any non-recognised target as "zero", so the fees_due leg
-// contributes nothing and the leftover flows.
+// FeesDueTx returns the total amount of fees this counterparty owes
+// across all open (or partial) member_fees_due rows. Phase 3.5
+// switches this from the phase-3 zero stub to a real query against
+// the member_fees_due table introduced in migration 0006.
 //
-// Kept as a method so phase 3.5 doesn't have to chase a static
-// helper through the engine's call sites.
-func (b *DistributionBalances) FeesDueTx(_ context.Context, _ pgx.Tx, _ uuid.UUID) (decimal.Decimal, error) {
-	return decimal.Zero, nil
+// The engine uses the sum to size the fees_due waterfall leg; the
+// finance fee executor then reduces individual rows as it pays.
+// When two fee codes are due simultaneously this returns the
+// aggregate; the engine doesn't pick a specific row at plan time
+// (the executor handles which row to apply to). Future fairness
+// concerns (oldest-first, priority-tagged, etc) can be expressed in
+// the per-row updates in the executor without changing this query.
+func (b *DistributionBalances) FeesDueTx(ctx context.Context, tx pgx.Tx, cpID uuid.UUID) (decimal.Decimal, error) {
+	var total decimal.Decimal
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(SUM(amount_due), 0)
+		  FROM member_fees_due
+		 WHERE counterparty_id = $1
+		   AND status IN ('open', 'partial')
+		   AND amount_due > 0
+	`, cpID).Scan(&total)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return total, nil
 }

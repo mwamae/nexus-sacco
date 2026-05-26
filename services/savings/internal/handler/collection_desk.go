@@ -389,7 +389,16 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 				// Unknown line kind — should have been rejected upstream.
 				return httpx.ErrBadRequest("unknown receipt line kind")
 			}
-			gated := kindToggleForReceiptLine(toggles, approvalKind)
+			// Phase-3.5 universal-approval bypass. A line that
+			// carries an external_validation_ref (Safaricom
+			// MpesaReceiptNumber today; future bank-rail / USSD
+			// receipt ids) was already validated by the upstream
+			// rail. Re-queuing it through the maker-checker gate
+			// would just delay an auto-posted entry without
+			// adding control. We force-skip the gate for those
+			// lines regardless of the per-kind toggle.
+			lineHasExternalRef := line.ExternalValidationRef != nil && *line.ExternalValidationRef != ""
+			gated := kindToggleForReceiptLine(toggles, approvalKind) && !lineHasExternalRef
 			if !gated {
 				// Toggle is OFF for this kind — direct-post path.
 				// Fee + welfare keep using the catalog-driven

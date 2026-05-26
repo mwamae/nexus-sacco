@@ -50,6 +50,45 @@ type Orchestrator struct {
 	// + COA mapping; for now we use the platform defaults.
 	CashAccountCode     string
 	ClearingAccountCode string
+
+	// Apply is the phase-3.5 plug. nil-safe: when unset, the
+	// orchestrator keeps the "park in clearing" semantics from
+	// phase 3 and the plan's splits are persisted-but-unapplied.
+	// Set in cmd/distributor/main.go to applier.ApplyPlanTx so we
+	// don't import the applier package here (avoids the
+	// distribution↔applier cycle: applier imports distribution
+	// for Plan + LegTarget).
+	Apply ApplyFn
+}
+
+// ApplyFn is the function shape the orchestrator calls after
+// persisting the run. Defined here (not in applier) so the
+// applier package can depend on distribution without creating a
+// cycle.
+type ApplyFn func(ctx context.Context, tx pgx.Tx, in ApplyInput) (*ApplyResult, error)
+
+// ApplyInput / ApplyResult are the wire shape between the
+// orchestrator and the applier. The applier package may re-export
+// these via type aliases.
+type ApplyInput struct {
+	TenantID              uuid.UUID
+	Plan                  *Plan
+	ExternalValidationRef string
+	Channel               string
+	ChannelRef            string
+	ValueDate             time.Time
+	InitiatedBy           uuid.UUID
+}
+
+type ApplyResult struct {
+	SplitResults []ApplySplitResult
+}
+
+type ApplySplitResult struct {
+	Leg     LegTarget
+	Amount  decimal.Decimal
+	TxnID    uuid.UUID
+	OutboxID uuid.UUID
 }
 
 // Result is what Process returns on success. nil + error means the
@@ -138,6 +177,29 @@ func (o *Orchestrator) Process(
 		plan.Amount, o.CashAccountCode, o.ClearingAccountCode, valueDate)
 	if err != nil {
 		return nil, fmt.Errorf("post cash leg: %w", err)
+	}
+
+	// 4b. Apply the plan to the savings tables (phase 3.5). The
+	// cash sits in clearing after step 4; the apply moves money
+	// out of clearing into the right destinations. Skipped when
+	// Apply is unset (deployments still on phase 3) or when the
+	// plan has no splits (unallocated — money stays in clearing
+	// and the reconciliation workflow handles it).
+	if o.Apply != nil && len(plan.Splits) > 0 {
+		applyRes, applyErr := o.Apply(ctx, tx, ApplyInput{
+			TenantID:              tenantID,
+			Plan:                  plan,
+			ExternalValidationRef: event.TransactionID,
+			Channel:               "mpesa",
+			ChannelRef:            event.TransactionID,
+			ValueDate:             valueDate,
+			InitiatedBy:           uuid.Nil,
+		})
+		if applyErr != nil {
+			return nil, fmt.Errorf("apply plan: %w", applyErr)
+		}
+		o.Logger.Info("plan applied",
+			"event_id", eventID, "splits_applied", len(applyRes.SplitResults))
 	}
 
 	// 5. Mark the run + the event as completed.

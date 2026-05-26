@@ -1,0 +1,19 @@
+// Workspace file joining the modules that share Go code.
+//
+// Adding a module here lets every other listed module import it via
+// its real module path (github.com/nexussacco/<name>) without a
+// go.mod `replace` directive. Local filesystem paths are picked up
+// automatically — handy for monorepo development and for the
+// in-tree finance module that doesn't yet live in a registry.
+//
+// Dockerfiles must COPY the workspace + every listed module's
+// source. See services/mpesa/Dockerfile and services/savings/Dockerfile
+// for the multi-stage build pattern.
+
+go 1.26.3
+
+use (
+	./services/finance
+	./services/mpesa
+	./services/savings
+)

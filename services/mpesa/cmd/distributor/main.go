@@ -34,6 +34,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/nexussacco/mpesa/internal/applier"
 	"github.com/nexussacco/mpesa/internal/config"
 	"github.com/nexussacco/mpesa/internal/db"
 	"github.com/nexussacco/mpesa/internal/distribution"
@@ -74,8 +75,11 @@ func main() {
 		Audit:               store.NewAuditStore(pool.Pool),
 		Workflow:            workflowclient.New(),
 		Logger:              logger,
-		CashAccountCode:     getEnv("MPESA_GL_CASH_ACCOUNT", "1030"),     // M-PESA receipts default
-		ClearingAccountCode: getEnv("MPESA_GL_CLEARING_ACCOUNT", "1099"), // unallocated clearing default
+		CashAccountCode:     getEnv("MPESA_GL_CASH_ACCOUNT", "1030"),
+		ClearingAccountCode: getEnv("MPESA_GL_CLEARING_ACCOUNT", "1099"),
+		// Phase 3.5 plug. applier.ApplyPlanTx matches the
+		// distribution.ApplyFn signature so we wire it in directly.
+		Apply: applier.ApplyPlanTx,
 	}
 
 	busy := durationMs("MPESA_DISTRIBUTOR_POLL_INTERVAL_MS", 1000)

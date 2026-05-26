@@ -128,6 +128,13 @@ type ReceiptLine struct {
 	VoidReason      *string           `json:"void_reason,omitempty"`
 	CreatedAt       time.Time         `json:"created_at"`
 	PostedAt        *time.Time        `json:"posted_at,omitempty"`
+	// Phase-3.5 addition. Carries the upstream rail's authoritative
+	// receipt id (Safaricom MpesaReceiptNumber, future bank-rail /
+	// USSD ids). Set when the line was created by an externally
+	// validated rail; nil for tellercreated rows. The collection-
+	// desk approval router uses this to skip the maker-checker
+	// queue for already-validated lines.
+	ExternalValidationRef *string `json:"external_validation_ref,omitempty"`
 }
 
 // ─────────── Outstanding (the "what does this CP owe?" bag) ───────────
