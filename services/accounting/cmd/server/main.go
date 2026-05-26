@@ -43,6 +43,10 @@ func main() {
 		"backfill the GL with prior-period adjustment JEs for every account whose subledger disagrees with the GL. Iterates all tenants. Backdated to each tenant's FY start. Contra-account is 3010 Retained Earnings. Idempotent — re-running on a clean state is a no-op.")
 	backfillDryRun := flag.Bool("backfill-dry-run", true,
 		"when used with -run-backfill, print the proposed JEs to stdout without committing. Default true — must explicitly pass -backfill-dry-run=false to commit.")
+	runIncomeBackfillFlag := flag.String("run-income-backfill", "",
+		"per-transaction backfill of missing income-bearing JEs for the named tenant slug. Reverses prior ops.backfill JEs then replays receipt fees / app fees / loan disburse / loan repay / interest run posts. Idempotent.")
+	incomeBackfillDryRun := flag.Bool("income-backfill-dry-run", true,
+		"when used with -run-income-backfill, prints proposed JEs without committing. Default true — pass false to commit.")
 	flag.Parse()
 	if *migrate {
 		_ = os.Setenv("DB_SKIP_SET_ROLE", "1")
@@ -195,6 +199,11 @@ func main() {
 
 	if *runBackfill {
 		runBackfillAcrossTenants(ctx, pool, tenants, reportStore, engine, *backfillDryRun, logger)
+		return
+	}
+
+	if *runIncomeBackfillFlag != "" {
+		runIncomeBackfill(ctx, pool, tenants, engine, *runIncomeBackfillFlag, *incomeBackfillDryRun, logger)
 		return
 	}
 
