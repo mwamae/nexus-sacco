@@ -51,10 +51,14 @@ func Routes(d Deps) http.Handler {
 			// Documents. Phase E A: route by counterparty.id directly;
 			// the URL contract for member-level documents now matches the
 			// savings-side /by-counterparty/ pattern from sub-PR 3.
-			r.With(middleware.RequirePermission("members:create")).
+			r.With(middleware.RequirePermission("members:edit")).
 				Post("/counterparties/{id}/documents/{kind}", d.Member.UploadDocument)
 			r.With(middleware.RequirePermission("members:view")).
 				Get("/counterparties/{id}/documents/{kind}", d.Member.DownloadDocument)
+			r.With(middleware.RequirePermission("members:edit")).
+				Post("/counterparties/{id}/documents/{kind}/verify", d.Member.VerifyDocument)
+			r.With(middleware.RequirePermission("members:edit")).
+				Delete("/counterparties/{id}/documents/{kind}", d.Member.DeleteDocument)
 
 			// ─────────── Organisations (non-individual members) ───────────
 			// Reuses the members:* permission catalog so existing roles
@@ -68,9 +72,10 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/kyc-status", d.Org.SetKYCStatus)
 
 			// Org documents.
-			r.With(middleware.RequirePermission("members:create")).Post("/orgs/{id}/documents/{kind}", d.Org.UploadDocument)
+			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/documents/{kind}", d.Org.UploadDocument)
 			r.With(middleware.RequirePermission("members:view")).Get("/orgs/{id}/documents/{kind}", d.Org.DownloadDocument)
 			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/documents/{kind}/verify", d.Org.VerifyDocument)
+			r.With(middleware.RequirePermission("members:edit")).Delete("/orgs/{id}/documents/{kind}", d.Org.DeleteDocument)
 
 			// Officials + per-official files + sanctions.
 			r.With(middleware.RequirePermission("members:edit")).Post("/orgs/{id}/officials", d.Org.AddOfficial)

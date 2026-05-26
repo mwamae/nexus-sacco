@@ -102,10 +102,22 @@ const (
 type DocumentKind string
 
 const (
-	DocSignature     DocumentKind = "signature"
-	DocPassportPhoto DocumentKind = "passport_photo"
-	DocIDFront       DocumentKind = "id_front"
-	DocIDBack        DocumentKind = "id_back"
+	DocSignature             DocumentKind = "signature"
+	DocPassportPhoto         DocumentKind = "passport_photo"
+	DocIDFront               DocumentKind = "id_front"
+	DocIDBack                DocumentKind = "id_back"
+	DocDeathCertificate      DocumentKind = "death_certificate"
+	DocExitClearance         DocumentKind = "exit_clearance"
+	DocBlacklistDirective    DocumentKind = "blacklist_directive"
+	DocMemberKRAPIN          DocumentKind = "kra_pin_certificate"
+	DocMemberProofOfAddress  DocumentKind = "proof_of_address"
+	DocMemberBankStatement   DocumentKind = "bank_statement"
+	DocPayslip               DocumentKind = "payslip"
+	DocEmploymentLetter      DocumentKind = "employment_letter"
+	DocMemberBusinessPermit  DocumentKind = "business_permit"
+	DocSignedApplicationForm DocumentKind = "signed_application_form"
+	DocNextOfKinID           DocumentKind = "next_of_kin_id"
+	DocOther                 DocumentKind = "other"
 )
 
 type Member struct {
@@ -156,13 +168,20 @@ type Relation struct {
 }
 
 type Document struct {
-	ID          uuid.UUID    `json:"id"`
-	CounterpartyID    uuid.UUID    `json:"counterparty_id"`
-	Kind        DocumentKind `json:"kind"`
-	StoragePath string       `json:"-"` // never expose raw storage path
-	MIME        string       `json:"mime"`
-	SizeBytes   int64        `json:"size_bytes"`
-	UploadedAt  time.Time    `json:"uploaded_at"`
+	ID               uuid.UUID       `json:"id"`
+	CounterpartyID   uuid.UUID       `json:"counterparty_id"`
+	Kind             DocumentKind    `json:"kind"`
+	StoragePath      string          `json:"-"` // never expose raw storage path
+	MIME             string          `json:"mime"`
+	SizeBytes        int64           `json:"size_bytes"`
+	IssueDate        *time.Time      `json:"issue_date,omitempty"`
+	ExpiryDate       *time.Time      `json:"expiry_date,omitempty"`
+	Verification     DocVerification `json:"verification"`
+	VerifiedBy       *uuid.UUID      `json:"verified_by,omitempty"`
+	VerifiedAt       *time.Time      `json:"verified_at,omitempty"`
+	VerificationNote string          `json:"verification_note,omitempty"`
+	UploadedAt       time.Time       `json:"uploaded_at"`
+	UploadedBy       *uuid.UUID      `json:"uploaded_by,omitempty"`
 }
 
 // ───────── Organisations ─────────

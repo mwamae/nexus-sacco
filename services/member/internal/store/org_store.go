@@ -302,6 +302,21 @@ func (s *OrgDocumentStore) SetVerificationTx(ctx context.Context, tx pgx.Tx, id 
 	return nil
 }
 
+// DeleteTx removes the row by id and returns the deleted row's
+// storage_path so the caller can delete the underlying blob after
+// commit. Returns ErrNotFound when nothing matched.
+func (s *OrgDocumentStore) DeleteTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (string, error) {
+	var path string
+	err := tx.QueryRow(ctx, `
+		DELETE FROM org_documents WHERE id = $1
+		RETURNING storage_path
+	`, id).Scan(&path)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return path, err
+}
+
 func (s *OrgDocumentStore) ListForOrgTx(ctx context.Context, tx pgx.Tx, orgID uuid.UUID) ([]*domain.OrgDocument, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT id, org_id, kind, storage_path, mime, size_bytes,

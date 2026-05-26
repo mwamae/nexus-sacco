@@ -621,6 +621,21 @@ func (h *MemberHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	issueDate, err := parseOptionalDate(r.URL.Query().Get("issue_date"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid issue_date (want YYYY-MM-DD)"))
+		return
+	}
+	expiryDate, err := parseOptionalDate(r.URL.Query().Get("expiry_date"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid expiry_date (want YYYY-MM-DD)"))
+		return
+	}
+	if issueDate != nil && expiryDate != nil && expiryDate.Before(*issueDate) {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("expiry_date must be on or after issue_date"))
+		return
+	}
+
 	// First check counterparty exists (RLS will hide cross-tenant ids).
 	if err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		_, err := h.Counterparties.GetTx(r.Context(), tx, id)
@@ -644,13 +659,15 @@ func (h *MemberHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 	var doc *domain.Document
 	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		d, err := h.Documents.UpsertTx(r.Context(), tx, store.CreateDocumentInput{
-			CounterpartyID:    id,
-			TenantID:    tenantID,
-			Kind:        kind,
-			StoragePath: path,
-			MIME:        mime,
-			SizeBytes:   size,
-			UploadedBy:  nonZero(actorID),
+			CounterpartyID: id,
+			TenantID:       tenantID,
+			Kind:           kind,
+			StoragePath:    path,
+			MIME:           mime,
+			SizeBytes:      size,
+			IssueDate:      issueDate,
+			ExpiryDate:     expiryDate,
+			UploadedBy:     nonZero(actorID),
 		})
 		if err != nil {
 			return err
@@ -665,9 +682,124 @@ func (h *MemberHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, tenantID, id, "member.document_uploaded", map[string]any{
-		"kind": string(kind), "mime": mime, "size": size,
+		"kind":        string(kind),
+		"mime":        mime,
+		"size":        size,
+		"issue_date":  isoDate(issueDate),
+		"expiry_date": isoDate(expiryDate),
 	})
 	httpx.Created(w, doc)
+}
+
+// ─────────── POST /v1/counterparties/{id}/documents/{kind}/verify ───────────
+//
+// Mirrors OrgHandler.VerifyDocument for the individual side. Permission
+// is gated by routes.go (members:edit). Body is {status, note}.
+func (h *MemberHandler) VerifyDocument(w http.ResponseWriter, r *http.Request) {
+	tenantID, _ := middleware.TenantIDFrom(r)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid counterparty id"))
+		return
+	}
+	kind, err := parseDocKind(chi.URLParam(r, "kind"))
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var req verifyMemberDocReq
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	status := domain.DocVerification(strings.ToLower(strings.TrimSpace(req.Status)))
+	switch status {
+	case domain.VerifyPending, domain.VerifyVerified, domain.VerifyRejected:
+		// ok
+	default:
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("status must be pending/verified/rejected"))
+		return
+	}
+	if status == domain.VerifyRejected && strings.TrimSpace(req.Note) == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("note is required when rejecting"))
+		return
+	}
+	actorID, _ := middleware.UserIDFrom(r)
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		doc, err := h.Documents.ByKindTx(r.Context(), tx, id, kind)
+		if err != nil {
+			return err
+		}
+		return h.Documents.SetVerificationTx(r.Context(), tx, doc.ID, status, actorID, req.Note)
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.WriteErr(w, r, httpx.ErrNotFound("document not found"))
+			return
+		}
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	h.audit(r, tenantID, id, "member.document_verified", map[string]any{
+		"kind": string(kind), "status": string(status), "note": req.Note,
+	})
+	httpx.NoContent(w)
+}
+
+// ─────────── DELETE /v1/counterparties/{id}/documents/{kind} ───────────
+//
+// Removes the DB row inside an RLS-scoped transaction, then best-effort
+// deletes the underlying storage blob. Storage failure is logged but
+// does NOT roll back the DB delete — the row is the source of truth
+// and a stranded blob is preferable to a row pointing at nothing.
+func (h *MemberHandler) DeleteDocument(w http.ResponseWriter, r *http.Request) {
+	tenantID, _ := middleware.TenantIDFrom(r)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid counterparty id"))
+		return
+	}
+	kind, err := parseDocKind(chi.URLParam(r, "kind"))
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var storagePath string
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		doc, err := h.Documents.ByKindTx(r.Context(), tx, id, kind)
+		if err != nil {
+			return err
+		}
+		path, err := h.Documents.DeleteTx(r.Context(), tx, doc.ID)
+		if err != nil {
+			return err
+		}
+		storagePath = path
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.WriteErr(w, r, httpx.ErrNotFound("document not found"))
+			return
+		}
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if storagePath != "" {
+		if err := h.Storage.Delete(storagePath); err != nil {
+			slog.Warn("storage delete failed after member_documents row removal",
+				"path", storagePath, "err", err)
+		}
+	}
+	h.audit(r, tenantID, id, "member.document_removed", map[string]any{
+		"kind": string(kind),
+	})
+	httpx.NoContent(w)
+}
+
+type verifyMemberDocReq struct {
+	Status string `json:"status"`
+	Note   string `json:"note"`
 }
 
 // ─────────── GET /v1/members/{id}/documents/{kind} ───────────
@@ -743,7 +875,11 @@ func parseGender(s string) (domain.Gender, error) {
 func parseDocKind(s string) (domain.DocumentKind, error) {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
-	case "signature", "passport_photo", "id_front", "id_back":
+	case "signature", "passport_photo", "id_front", "id_back",
+		"death_certificate", "exit_clearance", "blacklist_directive",
+		"kra_pin_certificate", "proof_of_address", "bank_statement",
+		"payslip", "employment_letter", "business_permit",
+		"signed_application_form", "next_of_kin_id", "other":
 		return domain.DocumentKind(s), nil
 	}
 	return "", httpx.ErrBadRequest("invalid document kind")
@@ -761,15 +897,41 @@ func parseDate(s string) (*time.Time, error) {
 	return &t, nil
 }
 
+// parseOptionalDate returns nil on empty input (the caller supplies
+// the field-specific error message — keeps the helper generic).
+func parseOptionalDate(s string) (*time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func isoDate(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.Format("2006-01-02")
+}
+
 func isAllowedMIME(kind domain.DocumentKind, mime string) bool {
 	mime = strings.ToLower(strings.TrimSpace(mime))
 	switch kind {
 	case domain.DocSignature:
 		return mime == "image/png" || mime == "image/jpeg" || mime == "image/jpg" || mime == "image/svg+xml"
-	case domain.DocPassportPhoto, domain.DocIDFront, domain.DocIDBack:
+	case domain.DocPassportPhoto, domain.DocIDFront, domain.DocIDBack,
+		domain.DocNextOfKinID:
 		return mime == "image/png" || mime == "image/jpeg" || mime == "image/jpg" || mime == "image/webp"
 	}
-	return false
+	// Generic KYC / supporting documents: images + PDF + Word.
+	return mime == "image/png" || mime == "image/jpeg" || mime == "image/jpg" ||
+		mime == "image/webp" || mime == "application/pdf" ||
+		mime == "application/msword" ||
+		mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 }
 
 func nonZero(id uuid.UUID) *uuid.UUID {

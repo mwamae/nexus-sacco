@@ -28,12 +28,30 @@ import {
   getOrg,
   listAuditForTarget,
   extractError,
+  uploadMemberDocument,
+  verifyMemberDocument,
+  deleteMemberDocument,
+  memberDocumentURL,
+  fetchMemberDocument,
+  uploadOrgDocument,
+  verifyOrgDocument,
+  deleteOrgDocument,
+  fetchOrgDocument,
+  DOC_KIND_LABELS,
+  KYC_REQUIRED_INDIVIDUAL,
+  KYC_REQUIRED_INSTITUTION,
+  type ApiDocument,
   type ApiMemberDetail,
+  type ApiOrg,
+  type ApiOrgDocument,
   type ApiOrgDetail,
   type ApiRelation,
   type ApiOfficial,
   type ApiSignatory,
   type AuditEntry,
+  type DocVerification,
+  type DocumentKind,
+  type OrgDocKind,
 } from '../api/client';
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
@@ -593,62 +611,580 @@ function BankingTab({ entity }: { entity: Entity }) {
   );
 }
 
+// DocumentsTab is the canonical KYC workstation for a counterparty.
+// Same component for individual + institutional; the kind decides
+// which API helpers + enum + required-doc checklist to use.
 function DocumentsTab({ entity }: { entity: Entity }) {
-  if (entity.kind === 'individual') {
-    const docs = entity.m.documents ?? [];
-    return (
+  return entity.kind === 'individual'
+    ? <DocsWorkstationIndividual m={entity.m} />
+    : <DocsWorkstationInstitution o={entity.o} />;
+}
+
+function DocsWorkstationIndividual({ m }: { m: ApiMemberDetail }) {
+  const counterpartyId = m.counterparty_id ?? m.id;
+  const [docs, setDocs] = useState<ApiDocument[]>(m.documents ?? []);
+  return (
+    <DocsWorkstation<DocumentKind, ApiDocument>
+      title="Documents & KYC"
+      docs={docs}
+      setDocs={setDocs}
+      reload={async () => {
+        const fresh = await getMember(m.id);
+        setDocs(fresh.documents ?? []);
+      }}
+      requiredKinds={KYC_REQUIRED_INDIVIDUAL}
+      allKinds={INDIVIDUAL_KINDS}
+      upload={(kind, file, opts) => uploadMemberDocument(counterpartyId, kind, file, opts)}
+      verify={(kind, status, note) => verifyMemberDocument(counterpartyId, kind, status, note)}
+      remove={(kind) => deleteMemberDocument(counterpartyId, kind)}
+      previewURL={(kind) => memberDocumentURL(counterpartyId, kind)}
+      fetchBlob={(kind) => fetchMemberDocument(counterpartyId, kind)}
+    />
+  );
+}
+
+function DocsWorkstationInstitution({ o }: { o: ApiOrgDetail }) {
+  const [docs, setDocs] = useState<ApiOrgDocument[]>(o.documents ?? []);
+  return (
+    <DocsWorkstation<OrgDocKind, ApiOrgDocument>
+      title="Documents & KYC"
+      docs={docs}
+      setDocs={setDocs}
+      reload={async () => {
+        const fresh = await getOrg(o.id);
+        setDocs(fresh.documents ?? []);
+      }}
+      requiredKinds={KYC_REQUIRED_INSTITUTION}
+      allKinds={ORG_KINDS}
+      upload={(kind, file, opts) => uploadOrgDocument(o.id, kind, file, opts)}
+      verify={(kind, status, note) => verifyOrgDocument(o.id, kind, status, note)}
+      remove={(kind) => deleteOrgDocument(o.id, kind)}
+      previewURL={() => ''} // org-side has no direct URL helper — preview always streams via blob
+      fetchBlob={(kind) => fetchOrgDocument(o.id, kind)}
+    />
+  );
+}
+
+// ─────────── Workstation (kind-generic) ───────────
+
+const INDIVIDUAL_KINDS: DocumentKind[] = [
+  'id_front', 'id_back', 'passport_photo', 'kra_pin_certificate', 'signature',
+  'proof_of_address', 'bank_statement', 'payslip', 'employment_letter',
+  'business_permit', 'signed_application_form', 'next_of_kin_id',
+  'death_certificate', 'exit_clearance', 'blacklist_directive', 'other',
+];
+
+const ORG_KINDS: OrgDocKind[] = [
+  'registration_certificate', 'cr12', 'kra_pin_certificate', 'memorandum_articles',
+  'constitution_bylaws', 'business_permit', 'tax_compliance_certificate', 'vat_certificate',
+  'ngo_certificate', 'cooperative_certificate', 'proof_of_address', 'audited_financials',
+  'bank_statement', 'board_resolution', 'signatory_appointment_resolution',
+  'beneficial_ownership_declaration',
+];
+
+type DocLike = {
+  id: string;
+  mime: string;
+  size_bytes: number;
+  issue_date?: string;
+  expiry_date?: string;
+  verification: DocVerification;
+  verified_at?: string;
+  verification_note?: string;
+  uploaded_at: string;
+  uploaded_by?: string;
+};
+
+function DocsWorkstation<K extends string, D extends DocLike & { kind: K }>({
+  title,
+  docs,
+  setDocs,
+  reload,
+  requiredKinds,
+  allKinds,
+  upload,
+  verify,
+  remove,
+  previewURL,
+  fetchBlob,
+}: {
+  title: string;
+  docs: D[];
+  setDocs: (d: D[]) => void;
+  reload: () => Promise<void>;
+  requiredKinds: K[];
+  allKinds: K[];
+  upload: (kind: K, file: File, opts: { issue_date?: string; expiry_date?: string }) => Promise<D>;
+  verify: (kind: K, status: DocVerification, note?: string) => Promise<void>;
+  remove: (kind: K) => Promise<void>;
+  previewURL: (kind: K) => string;
+  fetchBlob: (kind: K) => Promise<Blob>;
+}) {
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission('members:edit');
+  const [search, setSearch] = useState('');
+  const [expiredOnly, setExpiredOnly] = useState(false);
+  const [addModal, setAddModal] = useState<{ open: boolean; preselect?: K }>({ open: false });
+  const [rejectModal, setRejectModal] = useState<{ kind: K } | null>(null);
+  const [deleteModal, setDeleteModal] = useState<{ kind: K } | null>(null);
+  const [preview, setPreview] = useState<{ kind: K; url: string; mime: string } | null>(null);
+  const [actionErr, setActionErr] = useState<string | null>(null);
+
+  // KYC progress against the required-doc checklist for this kind.
+  const required = requiredKinds;
+  const presentRequired = required.filter((k) => docs.some((d) => d.kind === k));
+  const verifiedRequired = required.filter((k) => docs.some((d) => d.kind === k && d.verification === 'verified'));
+  const totalRequired = required.length;
+  const pct = totalRequired === 0 ? 0 : Math.round((verifiedRequired.length / totalRequired) * 100);
+
+  const today = new Date();
+  const filtered = docs.filter((d) => {
+    if (search && !DOC_KIND_LABELS[d.kind].toLowerCase().includes(search.toLowerCase())) return false;
+    if (expiredOnly) {
+      if (!d.expiry_date) return false;
+      const exp = new Date(d.expiry_date);
+      const daysOut = (exp.getTime() - today.getTime()) / (24 * 3600 * 1000);
+      if (daysOut > 30) return false;
+    }
+    return true;
+  });
+
+  async function handleVerify(kind: K) {
+    setActionErr(null);
+    const prev = docs;
+    setDocs(docs.map((d) => d.kind === kind ? { ...d, verification: 'verified' } : d));
+    try {
+      await verify(kind, 'verified');
+      await reload();
+    } catch (e) {
+      setDocs(prev);
+      setActionErr(extractError(e));
+    }
+  }
+
+  async function handlePreview(kind: K, mime: string) {
+    setActionErr(null);
+    try {
+      if (mime.startsWith('image/') && previewURL(kind)) {
+        // Cheaper: cookie-auth'd <img src>. Falls back to blob when
+        // the family-specific URL helper is empty (org side).
+        setPreview({ kind, url: previewURL(kind), mime });
+        return;
+      }
+      const blob = await fetchBlob(kind);
+      const url = URL.createObjectURL(blob);
+      setPreview({ kind, url, mime });
+    } catch (e) {
+      setActionErr(extractError(e));
+    }
+  }
+
+  function closePreview() {
+    if (preview?.url.startsWith('blob:')) URL.revokeObjectURL(preview.url);
+    setPreview(null);
+  }
+
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="card-body" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <strong>KYC completion</strong>
+              <span className="muted tiny">{verifiedRequired.length}/{totalRequired} verified · {presentRequired.length}/{totalRequired} uploaded</span>
+            </div>
+            <div style={{ background: 'var(--border)', borderRadius: 4, height: 8, overflow: 'hidden' }}>
+              <div style={{
+                width: `${pct}%`,
+                height: '100%',
+                background: pct === 100 ? 'var(--pos)' : pct >= 50 ? 'var(--accent)' : 'var(--warn)',
+                transition: 'width .25s ease',
+              }} />
+            </div>
+            <div className="muted tiny" style={{ marginTop: 6 }}>
+              {required.filter((k) => !docs.some((d) => d.kind === k)).map((k) => (
+                <Badge key={k} tone="warn">Missing: {DOC_KIND_LABELS[k]}</Badge>
+              )).reduce<ReactNode[]>((acc, b, i) => (i === 0 ? [b] : [...acc, ' ', b]), [])}
+              {required.every((k) => docs.some((d) => d.kind === k)) && (
+                <span className="muted tiny">All required documents uploaded.</span>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="card">
         <div className="card-hd">
-          <h3>Documents &amp; KYC</h3>
+          <h3>{title}</h3>
           <span className="card-sub">{docs.length} on file</span>
-        </div>
-        <div className="card-body flush">
-          {docs.length === 0
-            ? <div className="empty">No documents uploaded yet.</div>
-            : (
-              <table className="tbl">
-                <thead><tr><th>Kind</th><th>Uploaded</th><th>Size</th></tr></thead>
-                <tbody>
-                  {docs.map((d) => (
-                    <tr key={d.id}>
-                      <td className="mono tiny">{d.kind.replace('_', ' ')}</td>
-                      <td className="tiny-mono">{new Date(d.uploaded_at).toISOString().slice(0, 10)}</td>
-                      <td className="mono tiny">{Math.round(d.size_bytes / 1024)} KB</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="card-hd-actions" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              className="input"
+              placeholder="Search by kind…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{ minWidth: 180 }}
+            />
+            <label className="muted tiny" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input type="checkbox" checked={expiredOnly} onChange={(e) => setExpiredOnly(e.target.checked)} />
+              Expiring / expired
+            </label>
+            {canEdit && (
+              <button className="btn btn-accent" onClick={() => setAddModal({ open: true })}>
+                <Icon name="plus" size={12} /> Add document
+              </button>
             )}
+          </div>
+        </div>
+        {actionErr && <div className="alert alert-error" style={{ margin: 12 }}>{actionErr}</div>}
+        <div className="card-body" style={{ display: 'grid', gap: 10 }}>
+          {filtered.length === 0 ? (
+            <div className="empty">{docs.length === 0 ? 'No documents uploaded yet.' : 'No documents match the current filters.'}</div>
+          ) : filtered.map((d) => (
+            <DocCard
+              key={d.id}
+              doc={d}
+              canEdit={canEdit}
+              onPreview={() => void handlePreview(d.kind, d.mime)}
+              onReplace={() => setAddModal({ open: true, preselect: d.kind })}
+              onVerify={() => void handleVerify(d.kind)}
+              onReject={() => setRejectModal({ kind: d.kind })}
+              onDelete={() => setDeleteModal({ kind: d.kind })}
+            />
+          ))}
         </div>
       </div>
-    );
-  }
+
+      {addModal.open && (
+        <DocAddModal<K>
+          kinds={allKinds}
+          preselect={addModal.preselect}
+          docs={docs}
+          onClose={() => setAddModal({ open: false })}
+          onSaved={async (kind, file, opts) => {
+            await upload(kind, file, opts);
+            await reload();
+            setAddModal({ open: false });
+          }}
+        />
+      )}
+
+      {rejectModal && (
+        <DocRejectModal
+          label={DOC_KIND_LABELS[rejectModal.kind]}
+          onClose={() => setRejectModal(null)}
+          onSubmit={async (note) => {
+            await verify(rejectModal.kind, 'rejected', note);
+            await reload();
+            setRejectModal(null);
+          }}
+        />
+      )}
+
+      {deleteModal && (
+        <DocConfirmModal
+          title="Delete document?"
+          message={`Permanently delete "${DOC_KIND_LABELS[deleteModal.kind]}". This action is recorded in the audit log.`}
+          confirmLabel="Delete"
+          danger
+          onClose={() => setDeleteModal(null)}
+          onConfirm={async () => {
+            await remove(deleteModal.kind);
+            await reload();
+            setDeleteModal(null);
+          }}
+        />
+      )}
+
+      {preview && <DocPreviewModal mime={preview.mime} url={preview.url} label={DOC_KIND_LABELS[preview.kind]} onClose={closePreview} />}
+    </>
+  );
+}
+
+function DocCard({
+  doc, canEdit, onPreview, onReplace, onVerify, onReject, onDelete,
+}: {
+  doc: DocLike & { kind: string };
+  canEdit: boolean;
+  onPreview: () => void;
+  onReplace: () => void;
+  onVerify: () => void;
+  onReject: () => void;
+  onDelete: () => void;
+}) {
+  const expiry = doc.expiry_date ? new Date(doc.expiry_date) : null;
+  const today = new Date();
+  const daysOut = expiry ? Math.round((expiry.getTime() - today.getTime()) / (24 * 3600 * 1000)) : null;
+  const expState: 'ok' | 'soon' | 'expired' | null = expiry
+    ? (expiry < today ? 'expired' : daysOut !== null && daysOut <= 30 ? 'soon' : 'ok')
+    : null;
   return (
-    <div className="card">
-      <div className="card-hd">
-        <h3>Documents &amp; KYC</h3>
-        <span className="card-sub">{entity.o.documents.length} on file · org-specific KYC set</span>
-      </div>
-      <div className="card-body flush">
-        {entity.o.documents.length === 0
-          ? <div className="empty">No documents uploaded yet.</div>
-          : (
-            <table className="tbl">
-              <thead><tr><th>Kind</th><th>Issued</th><th>Verification</th><th>Uploaded</th></tr></thead>
-              <tbody>
-                {entity.o.documents.map((d) => (
-                  <tr key={d.id}>
-                    <td className="mono tiny">{d.kind.replace(/_/g, ' ')}</td>
-                    <td className="tiny-mono">{d.issue_date || '—'}</td>
-                    <td><Badge tone={d.verification === 'verified' ? 'pos' : d.verification === 'rejected' ? 'neg' : 'warn'}>{d.verification}</Badge></td>
-                    <td className="tiny-mono">{new Date(d.uploaded_at).toISOString().slice(0, 10)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+    <div className="card" style={{ padding: 0, border: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: 12 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <strong>{DOC_KIND_LABELS[doc.kind as DocumentKind] ?? doc.kind}</strong>
+            <Badge tone={doc.verification === 'verified' ? 'pos' : doc.verification === 'rejected' ? 'neg' : 'warn'}>
+              {doc.verification}
+            </Badge>
+            {expState === 'expired' && <Badge tone="neg">Expired</Badge>}
+            {expState === 'soon' && <Badge tone="warn">Expires in {daysOut}d</Badge>}
+          </div>
+          <div className="muted tiny" style={{ marginTop: 4 }}>
+            {doc.mime} · {(doc.size_bytes / 1024).toFixed(1)} KB · uploaded {new Date(doc.uploaded_at).toISOString().slice(0, 10)}
+          </div>
+          {(doc.issue_date || doc.expiry_date) && (
+            <div className="muted tiny" style={{ marginTop: 2 }}>
+              {doc.issue_date && <>Issued {doc.issue_date}</>}
+              {doc.issue_date && doc.expiry_date && ' · '}
+              {doc.expiry_date && <>Expires {doc.expiry_date}</>}
+            </div>
           )}
+          {doc.verification_note && (
+            <div className="muted tiny" style={{ marginTop: 4, fontStyle: 'italic' }}>
+              Note: {doc.verification_note}
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button className="btn btn-sm btn-ghost" onClick={onPreview}>Preview</button>
+          {canEdit && <button className="btn btn-sm" onClick={onReplace}>Replace</button>}
+          {canEdit && doc.verification !== 'verified' && (
+            <button className="btn btn-sm btn-accent" onClick={onVerify}>Verify</button>
+          )}
+          {canEdit && doc.verification !== 'rejected' && (
+            <button className="btn btn-sm" onClick={onReject}>Reject</button>
+          )}
+          {canEdit && <button className="btn btn-sm btn-danger" onClick={onDelete}>Delete</button>}
+        </div>
       </div>
     </div>
+  );
+}
+
+function DocAddModal<K extends string>({
+  kinds, preselect, docs, onClose, onSaved,
+}: {
+  kinds: K[];
+  preselect?: K;
+  docs: { kind: K }[];
+  onClose: () => void;
+  onSaved: (kind: K, file: File, opts: { issue_date?: string; expiry_date?: string }) => Promise<void>;
+}) {
+  const [kind, setKind] = useState<K>(preselect ?? kinds[0]);
+  const [file, setFile] = useState<File | null>(null);
+  const [issueDate, setIssueDate] = useState('');
+  const [expiryDate, setExpiryDate] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const MAX = 10 * 1024 * 1024;
+  function validate(): string | null {
+    if (!file) return 'Pick a file first.';
+    if (file.size > MAX) return 'File is larger than 10 MB.';
+    if (issueDate && expiryDate && expiryDate < issueDate) return 'Expiry date must be on or after issue date.';
+    return null;
+  }
+  // Keep the submit button enabled once a file is present so the
+  // date-cross-check error has somewhere to surface (a disabled button
+  // would silently swallow the click). The submit handler re-runs
+  // validate() and parks the message in `err`.
+  const disabled = !file;
+
+  // Replacement warning when the chosen kind already has a doc on file
+  // and isn't 'other' (which legitimately repeats).
+  const existing = docs.find((d) => d.kind === kind);
+  const replacing = existing && kind !== ('other' as K);
+
+  return (
+    <LocalModalShell
+      title={preselect ? 'Replace document' : 'Add document'}
+      busy={busy}
+      submitLabel={preselect ? 'Replace' : 'Upload'}
+      disabled={disabled}
+      onClose={onClose}
+      onSubmit={async () => {
+        const v = validate();
+        if (v) { setErr(v); return; }
+        setErr(null); setBusy(true);
+        try {
+          await onSaved(kind, file!, {
+            issue_date: issueDate || undefined,
+            expiry_date: expiryDate || undefined,
+          });
+        } catch (e) {
+          setErr(extractError(e));
+        } finally { setBusy(false); }
+      }}
+    >
+      {err && <div className="alert alert-error">{err}</div>}
+      {replacing && (
+        <div className="alert alert-warn">
+          A document already exists for this kind. Uploading will replace it and reset verification to pending.
+        </div>
+      )}
+      <Field label="Document kind">
+        <select className="input" value={kind} onChange={(e) => setKind(e.target.value as K)} disabled={!!preselect}>
+          {kinds.map((k) => (
+            <option key={k} value={k}>{DOC_KIND_LABELS[k as DocumentKind] ?? k}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="File" hint="Max 10 MB. PDF, Word, or image.">
+        <input type="file" className="input" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      </Field>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label="Issue date (optional)">
+          <input type="date" className="input" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
+        </Field>
+        <Field label="Expiry date (optional)">
+          <input type="date" className="input" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
+        </Field>
+      </div>
+    </LocalModalShell>
+  );
+}
+
+function DocRejectModal({ label, onClose, onSubmit }: {
+  label: string;
+  onClose: () => void;
+  onSubmit: (note: string) => Promise<void>;
+}) {
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <LocalModalShell
+      title={`Reject ${label}`}
+      busy={busy}
+      submitLabel="Reject"
+      disabled={!note.trim()}
+      onClose={onClose}
+      onSubmit={async () => {
+        setErr(null); setBusy(true);
+        try { await onSubmit(note.trim()); }
+        catch (e) { setErr(extractError(e)); }
+        finally { setBusy(false); }
+      }}
+    >
+      {err && <div className="alert alert-error">{err}</div>}
+      <Field label="Reason" hint="Required — shown to the member or onboarding officer.">
+        <textarea
+          className="input"
+          rows={4}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. ID photo is blurry; please re-upload."
+        />
+      </Field>
+    </LocalModalShell>
+  );
+}
+
+function DocConfirmModal({
+  title, message, confirmLabel, danger, onClose, onConfirm,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  danger?: boolean;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <LocalModalShell
+      title={title}
+      busy={busy}
+      submitLabel={confirmLabel}
+      submitClassName={danger ? 'btn btn-danger' : undefined}
+      onClose={onClose}
+      onSubmit={async () => {
+        setErr(null); setBusy(true);
+        try { await onConfirm(); }
+        catch (e) { setErr(extractError(e)); }
+        finally { setBusy(false); }
+      }}
+    >
+      {err && <div className="alert alert-error">{err}</div>}
+      <p>{message}</p>
+    </LocalModalShell>
+  );
+}
+
+function DocPreviewModal({ mime, url, label, onClose }: { mime: string; url: string; label: string; onClose: () => void }) {
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.55)', display: 'grid', placeItems: 'center' }}
+      onClick={onClose}
+    >
+      <div className="card" style={{ width: 720, maxWidth: '92vw', maxHeight: '92vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
+        <div className="card-hd">
+          <h3>{label}</h3>
+          <div className="card-hd-actions">
+            <a className="btn btn-sm" href={url} target="_blank" rel="noreferrer">Open in new tab</a>
+            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12} /></button>
+          </div>
+        </div>
+        <div className="card-body" style={{ display: 'grid', placeItems: 'center' }}>
+          {mime.startsWith('image/')
+            ? <img src={url} alt={label} style={{ maxWidth: '100%', maxHeight: '70vh' }} />
+            : mime === 'application/pdf'
+              ? <iframe title={label} src={url} style={{ width: '100%', height: '70vh', border: 0 }} />
+              : <p className="muted">Preview not available for this file type. Open in a new tab to view.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// LocalModalShell — DocumentsTab keeps its own copy so it doesn't pull
+// from MemberAccountsPanel (which would force a non-essential import
+// graph entanglement just to reuse 25 lines of layout).
+function LocalModalShell({
+  title, busy, onClose, children, submitLabel, onSubmit, disabled, submitClassName,
+}: {
+  title: string;
+  busy?: boolean;
+  onClose: () => void;
+  children: ReactNode;
+  submitLabel: string;
+  onSubmit: () => void | Promise<void>;
+  disabled?: boolean;
+  submitClassName?: string;
+}) {
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.45)', display: 'grid', placeItems: 'center' }}
+      onClick={onClose}
+    >
+      <div className="card" style={{ width: 520, maxWidth: '92vw', maxHeight: '92vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
+        <div className="card-hd">
+          <h3>{title}</h3>
+          <div className="card-hd-actions">
+            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12} /></button>
+          </div>
+        </div>
+        <div className="card-body">{children}</div>
+        <div className="card-body" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '1px solid var(--border)' }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className={submitClassName ?? 'btn btn-accent'} disabled={busy || disabled} onClick={() => void onSubmit()}>
+            {busy ? 'Working…' : submitLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <label style={{ display: 'block', marginBottom: 10 }}>
+      <div className="muted tiny" style={{ marginBottom: 4 }}>{label}</div>
+      {children}
+      {hint && <div className="muted tiny" style={{ marginTop: 4 }}>{hint}</div>}
+    </label>
   );
 }
 
@@ -728,6 +1264,24 @@ function FeesTab({ entity }: { entity: Entity }) {
 
 // ─────────── Shared helpers ───────────
 
+// AUDIT_LABELS maps the canonical action strings (the same strings the
+// Go handlers emit via h.audit) to UI-friendly verbs. Anything not in
+// the map falls back to a derived label (replace _ with space). Add
+// new entries here when wiring a new audit-emitting endpoint.
+const AUDIT_LABELS: Record<string, string> = {
+  // documents (PR: Documents & KYC workstation)
+  'member.document_uploaded': 'Member document uploaded',
+  'member.document_verified': 'Member document verified',
+  'member.document_removed': 'Member document deleted',
+  'org.document_uploaded': 'Org document uploaded',
+  'org.document_verified': 'Org document verified',
+  'org.document_removed': 'Org document deleted',
+};
+
+function labelForAuditAction(action: string): string {
+  return AUDIT_LABELS[action] ?? action.replace(/_/g, ' ');
+}
+
 function AuditTimeline({ entity, limit }: { entity: Entity; limit: number }) {
   const target = entity.kind === 'individual' ? 'member' : 'org_member';
   const id = entity.kind === 'individual' ? entity.m.id : entity.o.id;
@@ -747,7 +1301,7 @@ function AuditTimeline({ entity, limit }: { entity: Entity; limit: number }) {
     <ol className="tl" style={{ listStyle: 'none', margin: 0 }}>
       {entries.map((e) => (
         <li key={e.id} className="tl-item">
-          <div className="tl-action">{e.action.replace(/_/g, ' ')}</div>
+          <div className="tl-action">{labelForAuditAction(e.action)}</div>
           <div className="tl-meta">
             <time>{new Date(e.created_at).toISOString().replace('T', ' ').slice(0, 19)}</time>
           </div>

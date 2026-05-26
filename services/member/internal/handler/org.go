@@ -713,7 +713,8 @@ func (h *OrgHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, tenantID, id, "org.document_uploaded", map[string]any{
 		"kind": string(kind), "mime": mime, "size": size,
-		"expiry": stringOrEmpty(expiryDate),
+		"issue_date":  stringOrEmpty(issueDate),
+		"expiry_date": stringOrEmpty(expiryDate),
 	})
 	httpx.Created(w, doc)
 }
@@ -789,6 +790,10 @@ func (h *OrgHandler) VerifyDocument(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("status must be pending/verified/rejected"))
 		return
 	}
+	if status == domain.VerifyRejected && strings.TrimSpace(req.Note) == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("note is required when rejecting"))
+		return
+	}
 	actorID, _ := middleware.UserIDFrom(r)
 	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		doc, err := h.Documents.ByKindTx(r.Context(), tx, id, kind)
@@ -807,6 +812,56 @@ func (h *OrgHandler) VerifyDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, tenantID, id, "org.document_verified", map[string]any{
 		"kind": string(kind), "status": string(status), "note": req.Note,
+	})
+	httpx.NoContent(w)
+}
+
+// ─────────── DELETE /v1/orgs/{id}/documents/{kind} ───────────
+//
+// Removes the DB row inside an RLS-scoped tx and best-effort deletes
+// the underlying blob. Storage failure is logged, not surfaced — see
+// MemberHandler.DeleteDocument for the rationale.
+func (h *OrgHandler) DeleteDocument(w http.ResponseWriter, r *http.Request) {
+	tenantID, _ := middleware.TenantIDFrom(r)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid org id"))
+		return
+	}
+	kind, err := parseOrgDocKind(chi.URLParam(r, "kind"))
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	var storagePath string
+	err = h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		doc, err := h.Documents.ByKindTx(r.Context(), tx, id, kind)
+		if err != nil {
+			return err
+		}
+		path, err := h.Documents.DeleteTx(r.Context(), tx, doc.ID)
+		if err != nil {
+			return err
+		}
+		storagePath = path
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.WriteErr(w, r, httpx.ErrNotFound("document not found"))
+			return
+		}
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if storagePath != "" {
+		if err := h.Storage.Delete(storagePath); err != nil {
+			slog.Warn("storage delete failed after org_documents row removal",
+				"path", storagePath, "err", err)
+		}
+	}
+	h.audit(r, tenantID, id, "org.document_removed", map[string]any{
+		"kind": string(kind),
 	})
 	httpx.NoContent(w)
 }

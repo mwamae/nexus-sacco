@@ -1445,7 +1445,58 @@ export type MemberStatusReason =
 export type IDDocKind = 'national_id' | 'passport' | 'alien_id';
 export type Gender = 'male' | 'female' | 'other' | 'undisclosed';
 export type RelationKind = 'next_of_kin' | 'beneficiary';
-export type DocumentKind = 'signature' | 'passport_photo' | 'id_front' | 'id_back';
+export type DocumentKind =
+  | 'signature' | 'passport_photo' | 'id_front' | 'id_back'
+  | 'death_certificate' | 'exit_clearance' | 'blacklist_directive'
+  | 'kra_pin_certificate' | 'proof_of_address' | 'bank_statement'
+  | 'payslip' | 'employment_letter' | 'business_permit'
+  | 'signed_application_form' | 'next_of_kin_id' | 'other';
+
+// Human-readable labels for both individual + institutional documents.
+// Used by DocumentsTab, the KYC banner, and AuditTimeline.
+export const DOC_KIND_LABELS: Record<DocumentKind | OrgDocKind, string> = {
+  // individual
+  signature: 'Specimen signature',
+  passport_photo: 'Passport photo',
+  id_front: 'National ID (front)',
+  id_back: 'National ID (back)',
+  death_certificate: 'Death certificate',
+  exit_clearance: 'Exit clearance',
+  blacklist_directive: 'Blacklist directive',
+  payslip: 'Payslip',
+  employment_letter: 'Employment letter',
+  signed_application_form: 'Signed application form',
+  next_of_kin_id: 'Next-of-kin ID',
+  other: 'Other / supporting document',
+  // shared (member + org)
+  kra_pin_certificate: 'KRA PIN certificate',
+  proof_of_address: 'Proof of address',
+  bank_statement: 'Bank statement',
+  business_permit: 'Business permit',
+  // org-only
+  registration_certificate: 'Registration certificate',
+  cr12: 'CR12 (shareholders)',
+  memorandum_articles: 'Memorandum & Articles',
+  constitution_bylaws: 'Constitution / by-laws',
+  tax_compliance_certificate: 'Tax compliance certificate',
+  vat_certificate: 'VAT certificate',
+  ngo_certificate: 'NGO certificate',
+  cooperative_certificate: 'Co-operative certificate',
+  audited_financials: 'Audited financials',
+  board_resolution: 'Board resolution',
+  signatory_appointment_resolution: 'Signatory appointment resolution',
+  beneficial_ownership_declaration: 'Beneficial-ownership declaration',
+};
+
+// Required KYC document checklists. The DocumentsTab banner walks
+// these and reports completion percentage against the documents
+// currently uploaded for the counterparty.
+export const KYC_REQUIRED_INDIVIDUAL: DocumentKind[] = [
+  'id_front', 'id_back', 'passport_photo', 'kra_pin_certificate', 'signature',
+];
+export const KYC_REQUIRED_INSTITUTION: OrgDocKind[] = [
+  'registration_certificate', 'kra_pin_certificate', 'board_resolution',
+];
 
 export type ApiMember = {
   id: string;
@@ -1497,7 +1548,14 @@ export type ApiDocument = {
   kind: DocumentKind;
   mime: string;
   size_bytes: number;
+  issue_date?: string;
+  expiry_date?: string;
+  verification: DocVerification;
+  verified_by?: string;
+  verified_at?: string;
+  verification_note?: string;
   uploaded_at: string;
+  uploaded_by?: string;
 };
 
 export type ApiMemberDetail = ApiMember & {
@@ -1817,12 +1875,17 @@ export async function uploadMemberDocument(
   counterpartyId: string,
   kind: DocumentKind,
   file: Blob,
-  filename?: string,
+  opts: { filename?: string; issue_date?: string; expiry_date?: string } = {},
 ): Promise<ApiDocument> {
   const form = new FormData();
-  form.append('file', file, filename ?? `${kind}.${(file.type || 'image/png').split('/')[1] ?? 'bin'}`);
+  const inferredExt = (file.type || 'image/png').split('/')[1] ?? 'bin';
+  form.append('file', file, opts.filename ?? `${kind}.${inferredExt}`);
+  const params: Record<string, string> = {};
+  if (opts.issue_date) params.issue_date = opts.issue_date;
+  if (opts.expiry_date) params.expiry_date = opts.expiry_date;
   const r = await api.post(`/v1/counterparties/${counterpartyId}/documents/${kind}`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    params,
   });
   return r.data.data;
 }
@@ -1836,6 +1899,25 @@ export function memberDocumentURL(counterpartyId: string, kind: DocumentKind): s
 export async function fetchMemberDocument(counterpartyId: string, kind: DocumentKind): Promise<Blob> {
   const r = await api.get(`/v1/counterparties/${counterpartyId}/documents/${kind}`, { responseType: 'blob' });
   return r.data as Blob;
+}
+
+export async function verifyMemberDocument(
+  counterpartyId: string,
+  kind: DocumentKind,
+  status: DocVerification,
+  note?: string,
+): Promise<void> {
+  await api.post(`/v1/counterparties/${counterpartyId}/documents/${kind}/verify`, {
+    status, note: note ?? '',
+  });
+}
+
+export async function deleteMemberDocument(counterpartyId: string, kind: DocumentKind): Promise<void> {
+  await api.delete(`/v1/counterparties/${counterpartyId}/documents/${kind}`);
+}
+
+export async function deleteOrgDocument(orgId: string, kind: OrgDocKind): Promise<void> {
+  await api.delete(`/v1/orgs/${orgId}/documents/${kind}`);
 }
 
 export type ApiError = {
