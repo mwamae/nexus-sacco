@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -361,6 +362,11 @@ type MemberStatusCounts struct {
 	TotalActiveServicing int `json:"total_active_servicing"`
 }
 
+// Deprecated: prefer CounterpartyStatusCountsTx, which sources from
+// the counterparties table and therefore includes institutional
+// counterparties. Kept alive because the legacy
+// /v1/members/status/{counts,summary} handlers may still be hit by
+// external dashboards.
 func (s *StatusChangeStore) MemberStatusCountsTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) (*MemberStatusCounts, error) {
 	var c MemberStatusCounts
 	err := tx.QueryRow(ctx, `
@@ -371,6 +377,91 @@ func (s *StatusChangeStore) MemberStatusCountsTx(ctx context.Context, tx pgx.Tx,
 		&c.Active, &c.Dormant, &c.Pending, &c.Suspended, &c.Blacklisted,
 		&c.Exited, &c.Deceased, &c.Rejected,
 		&c.TotalOnRegister, &c.TotalActiveServicing,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// ─────────── Counterparty roll-call counts (canonical, v2) ───────────
+//
+// CounterpartyStatusCounts is the v2 roll-call shape returned by the
+// counterparty_status_counts(tenant, kind, statuses, q) Postgres
+// function (migration 0022). It supersedes MemberStatusCounts because
+// it sources from the counterparties table and therefore covers BOTH
+// individual members and institutional counterparties. The filter
+// dimensions match CounterpartyStore.ListTx so the directory page can
+// derive every number it shows from a single canonical source.
+//
+// The struct embeds MemberStatusCounts so any caller that only reads
+// the per-bucket / total_on_register / total_active_servicing fields
+// keeps compiling unchanged.
+type CounterpartyStatusCounts struct {
+	MemberStatusCounts
+	// total_directory counts every row regardless of status — the
+	// number the register page actually displays when no status chip
+	// is selected.
+	TotalDirectory int `json:"total_directory"`
+	// Per-kind split of the same filtered set.
+	Individuals  int `json:"individuals"`
+	Institutions int `json:"institutions"`
+}
+
+// CounterpartyKindFilter is the discriminator the SQL function accepts.
+// 'all' covers every kind; 'institutional' = every kind except 'individual'.
+type CounterpartyKindFilter string
+
+const (
+	CPKindAll           CounterpartyKindFilter = "all"
+	CPKindIndividual    CounterpartyKindFilter = "individual"
+	CPKindInstitutional CounterpartyKindFilter = "institutional"
+)
+
+// CounterpartyStatusCountsTx calls counterparty_status_counts with the
+// supplied filters. `statuses` may be nil (no filter); `q` may be ""
+// (no search). `kind` defaults to CPKindAll when empty.
+func (s *StatusChangeStore) CounterpartyStatusCountsTx(
+	ctx context.Context, tx pgx.Tx,
+	tenantID uuid.UUID,
+	kind CounterpartyKindFilter,
+	statuses []domain.MemberStatus,
+	q string,
+) (*CounterpartyStatusCounts, error) {
+	if kind == "" {
+		kind = CPKindAll
+	}
+	// pgx wants a []string for text[]; pass nil to the function when
+	// the caller didn't specify any status (the SQL function treats
+	// NULL as "no filter").
+	var statusArg any
+	if len(statuses) > 0 {
+		ss := make([]string, len(statuses))
+		for i, st := range statuses {
+			ss[i] = string(st)
+		}
+		statusArg = ss
+	} else {
+		statusArg = nil
+	}
+	var qArg any
+	if strings.TrimSpace(q) != "" {
+		qArg = q
+	} else {
+		qArg = nil
+	}
+
+	var c CounterpartyStatusCounts
+	err := tx.QueryRow(ctx, `
+		SELECT active, dormant, pending, suspended, blacklisted, exited, deceased, rejected,
+		       total_on_register, total_active_servicing,
+		       total_directory, individuals, institutions
+		  FROM counterparty_status_counts($1, $2, $3, $4)
+	`, tenantID, string(kind), statusArg, qArg).Scan(
+		&c.Active, &c.Dormant, &c.Pending, &c.Suspended, &c.Blacklisted,
+		&c.Exited, &c.Deceased, &c.Rejected,
+		&c.TotalOnRegister, &c.TotalActiveServicing,
+		&c.TotalDirectory, &c.Individuals, &c.Institutions,
 	)
 	if err != nil {
 		return nil, err

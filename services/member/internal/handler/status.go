@@ -510,15 +510,26 @@ func (h *StatusHandler) dormancy(w http.ResponseWriter, r *http.Request, apply b
 // ─────────── GET /v1/members/status/summary ───────────
 
 // statusSummaryResponse is the dashboard payload. All count fields
-// (by_status + the two totals) come from the same
-// member_status_counts(tenant_id) source so they cannot disagree.
+// (by_status + the totals) come from the same
+// counterparty_status_counts(tenant_id, …) source so they cannot
+// disagree. The three "additive" fields below were introduced when
+// the canonical source moved from member_status_counts to
+// counterparty_status_counts (migration 0022) — they expose the
+// individual / institutional split + the total-directory headcount
+// the dashboard widget now displays alongside total_on_register.
+// They're typed as plain ints (zero is a meaningful "no rows") so
+// older callers that don't know about them still see a valid number.
 type statusSummaryResponse struct {
 	ByStatus             map[domain.MemberStatus]int `json:"by_status"`
 	TotalOnRegister      int                         `json:"total_on_register"`
 	TotalActiveServicing int                         `json:"total_active_servicing"`
-	DormancyPipeline     []*store.DormancyCandidate  `json:"dormancy_pipeline"`
-	RecentChanges        []*store.RecentChange       `json:"recent_changes"`
-	ThresholdDays        int                         `json:"dormancy_threshold_days"`
+	// Additive (migration 0022). See comment above.
+	TotalDirectory   int                        `json:"total_directory"`
+	Individuals      int                        `json:"individuals"`
+	Institutions     int                        `json:"institutions"`
+	DormancyPipeline []*store.DormancyCandidate `json:"dormancy_pipeline"`
+	RecentChanges    []*store.RecentChange      `json:"recent_changes"`
+	ThresholdDays    int                        `json:"dormancy_threshold_days"`
 }
 
 func (h *StatusHandler) Summary(w http.ResponseWriter, r *http.Request) {
@@ -527,13 +538,21 @@ func (h *StatusHandler) Summary(w http.ResponseWriter, r *http.Request) {
 	warn := 30
 	out := &statusSummaryResponse{ThresholdDays: threshold}
 	err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
-		counts, err := h.Status.MemberStatusCountsTx(r.Context(), tx, tenantID)
+		// Unfiltered (kind=all, no status, no q) so the dashboard
+		// reflects the full directory. The Members page hits the v2
+		// counts endpoint with active filters instead.
+		counts, err := h.Status.CounterpartyStatusCountsTx(
+			r.Context(), tx, tenantID, store.CPKindAll, nil, "",
+		)
 		if err != nil {
 			return err
 		}
 		out.ByStatus = counts.ByStatus()
 		out.TotalOnRegister = counts.TotalOnRegister
 		out.TotalActiveServicing = counts.TotalActiveServicing
+		out.TotalDirectory = counts.TotalDirectory
+		out.Individuals = counts.Individuals
+		out.Institutions = counts.Institutions
 
 		out.DormancyPipeline, err = h.Status.DormancyPipelineTx(r.Context(), tx, threshold, warn)
 		if err != nil {
@@ -560,17 +579,83 @@ func (h *StatusHandler) Summary(w http.ResponseWriter, r *http.Request) {
 
 // ─────────── GET /v1/members/status/counts ───────────
 //
-// Lean version of /status/summary for views that need the roll-call
-// numbers but not the dormancy pipeline / recent-changes panels (e.g.
-// the Members page KPI strip). Returns exactly the
-// MemberStatusCounts shape so the Members page and the dashboard pull
-// from the same source.
+// LEGACY shape — kept alive so external dashboards still compile.
+// Now delegates to the v2 counterparty_status_counts function so the
+// numbers it returns are kept in lockstep with /v1/counterparties/
+// status/counts (and therefore the Members page + dashboard widget).
+// New callers should use Counts2 instead.
 
 func (h *StatusHandler) Counts(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := middleware.TenantIDFrom(r)
-	var counts *store.MemberStatusCounts
+	var counts *store.CounterpartyStatusCounts
 	err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
-		c, err := h.Status.MemberStatusCountsTx(r.Context(), tx, tenantID)
+		c, err := h.Status.CounterpartyStatusCountsTx(
+			r.Context(), tx, tenantID, store.CPKindAll, nil, "",
+		)
+		if err != nil {
+			return err
+		}
+		counts = c
+		return nil
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, counts)
+}
+
+// ─────────── GET /v1/counterparties/status/counts ───────────
+//
+// Canonical v2 endpoint. Returns the roll-call counts for the
+// counterparties matched by the supplied kind / status / q filters.
+// The shape mirrors what CounterpartyStore.ListTx counts when handed
+// the same filters, so the Members register page can derive its
+// header total, KPI strip, and per-status sub-line from a single
+// source. Bucket semantics live in migration 0022's SQL function
+// (which inherits them from migration 0006).
+//
+// Query parameters (all optional):
+//   kind   = all | individual | institutional       (default 'all')
+//   status = pending | active | dormant | …          (repeatable or
+//            comma-separated; matches list endpoint)
+//   q      = ILIKE match on display_name / cp_number / legacy_id
+
+func (h *StatusHandler) CountsV2(w http.ResponseWriter, r *http.Request) {
+	tenantID, _ := middleware.TenantIDFrom(r)
+	q := r.URL.Query()
+
+	kind := store.CPKindAll
+	switch strings.ToLower(strings.TrimSpace(q.Get("kind"))) {
+	case "", "all":
+		kind = store.CPKindAll
+	case "individual":
+		kind = store.CPKindIndividual
+	case "institutional":
+		kind = store.CPKindInstitutional
+	default:
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("kind must be all, individual, or institutional"))
+		return
+	}
+
+	// Same parsing shape as counterparty.go::List — accepts repeated
+	// `?status=` or a single comma-separated value.
+	var statuses []domain.MemberStatus
+	for _, raw := range q["status"] {
+		for _, p := range splitCSV(raw) {
+			p = strings.ToLower(strings.TrimSpace(p))
+			if p == "" {
+				continue
+			}
+			statuses = append(statuses, domain.MemberStatus(p))
+		}
+	}
+
+	search := strings.TrimSpace(q.Get("q"))
+
+	var counts *store.CounterpartyStatusCounts
+	err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		c, err := h.Status.CounterpartyStatusCountsTx(r.Context(), tx, tenantID, kind, statuses, search)
 		if err != nil {
 			return err
 		}

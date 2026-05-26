@@ -275,19 +275,39 @@ export function MemberStatusPanel({ summary, canRun, busy, onRun, runLabel }: {
   // whether the Unified Inbox is on for the tenant.
   runLabel?: string;
 }) {
-  // total_on_register comes from member_status_counts(tenant_id), the
-  // single source of truth shared with the Members page KPI strip.
-  // It deliberately excludes exited / deceased / rejected.
+  // total_on_register comes from counterparty_status_counts (member
+  // migration 0022) — the single source of truth shared with the
+  // Members page KPI strip. It covers individuals + institutions and
+  // excludes exited / deceased / rejected. individuals + institutions
+  // were added when the source moved off member_status_counts; older
+  // member-service builds may not populate them yet, so we render
+  // them defensively.
   const total = summary.total_on_register;
+  const directory = summary.total_directory;
+  const individuals = summary.individuals;
+  const institutions = summary.institutions;
   const pipelineCount = summary.dormancy_pipeline.length;
   return (
     <>
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-hd">
-          <h3>Members — status overview</h3>
-          <span className="card-sub">{total} on register · {summary.total_active_servicing} servicing</span>
+          <h3>Counterparties — status overview</h3>
+          <span className="card-sub">
+            {total} on register · {summary.total_active_servicing} servicing
+            {typeof individuals === 'number' && typeof institutions === 'number' && (
+              <> · includes <strong>{individuals}</strong> individual{individuals === 1 ? '' : 's'} +{' '}
+                <strong>{institutions}</strong> organisation{institutions === 1 ? '' : 's'}</>
+            )}
+            {typeof directory === 'number' && directory !== total && (
+              <> · {directory} total in directory</>
+            )}
+          </span>
           <div className="card-hd-actions">
             <a className="btn btn-sm" href="/members">Open register →</a>
+            {/* Direct entry-point to the institutional sub-register
+                so org-admins don't have to land on /members and flip
+                the kind chip themselves. */}
+            <a className="btn btn-sm" href="/members?kind=institutional">Organisations →</a>
             {canRun && (
               <button className="btn btn-sm" disabled={busy} onClick={() => void onRun()}>
                 {busy ? 'Running dormancy…' : (runLabel ?? 'Run dormancy detector')}
@@ -300,7 +320,9 @@ export function MemberStatusPanel({ summary, canRun, busy, onRun, runLabel }: {
             {STATUS_ORDER.map((s) => (
               <a
                 key={s}
-                href={`/members?status=${s}`}
+                // Deep-link with kind=all so the destination matches
+                // the unfiltered universe this widget reports on.
+                href={`/members?status=${s}&kind=all`}
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: 6,
                   padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 'var(--r-md)',

@@ -1730,10 +1730,38 @@ export type MemberStatusSummary = {
   by_status: Partial<Record<MemberStatus, number>>;
   total_on_register: number;
   total_active_servicing: number;
+  // Optional fields populated since the canonical counts source moved
+  // from member_status_counts to counterparty_status_counts (member
+  // migration 0022). The dashboard widget uses these to surface the
+  // individual / institutional split alongside the roll-call totals.
+  // Optional in the type because older builds of the service may not
+  // emit them yet.
+  total_directory?: number;
+  individuals?: number;
+  institutions?: number;
   dormancy_pipeline: DormancyCandidate[];
   recent_changes: RecentStatusChange[];
   dormancy_threshold_days: number;
 };
+
+// CounterpartyStatusCounts mirrors the Postgres function
+// counterparty_status_counts(tenant, kind, statuses, q) — the
+// canonical roll-call source covering BOTH individual members and
+// institutional counterparties. The Members register page derives
+// every number it displays from this so the page header, the KPI
+// strip, and the per-status sub-line can never disagree with each
+// other (or with the dashboard widget reading the same source).
+// See member migration 0022 for bucket semantics.
+export type CounterpartyStatusCounts = MemberStatusCounts & {
+  // Every counterparty regardless of status. The number the register
+  // table actually shows before any status chip is selected.
+  total_directory: number;
+  // Per-kind split of the same filtered set.
+  individuals: number;
+  institutions: number;
+};
+
+export type CounterpartyKindFilter = 'all' | 'individual' | 'institutional';
 
 export async function getMemberStatusActions(counterpartyId: string): Promise<MemberStatusActions> {
   const r = await api.get(`/v1/counterparties/${counterpartyId}/status-actions`);
@@ -1771,12 +1799,40 @@ export async function getMemberStatusSummary(): Promise<MemberStatusSummary> {
   return r.data.data;
 }
 
-// Leaner endpoint for views that just need the roll-call numbers (e.g.
-// the Members page KPI strip), so we don't ship the dormancy pipeline
-// + recent-changes panels on every navigation. Same underlying source
-// function as getMemberStatusSummary.
+/**
+ * @deprecated Prefer `getCounterpartyStatusCounts(...)`. The legacy
+ * endpoint still answers (and now sources from the counterparty-wide
+ * function under the hood for back-compat), but the new endpoint
+ * exposes the kind / status / search filter axes the directory page
+ * needs to keep its header, KPI strip, and table consistent.
+ */
 export async function getMemberStatusCounts(): Promise<MemberStatusCounts> {
   const r = await api.get('/v1/members/status/counts');
+  return r.data.data;
+}
+
+// getCounterpartyStatusCounts is the canonical client-side fetcher
+// for the directory page. It calls /v1/counterparties/status/counts
+// (migration 0022's function) with the same kind / status / q axes
+// the list endpoint accepts so the page's header, KPI strip, and
+// table row count can all be derived from a single source.
+//
+// Empty arrays / undefined values are omitted from the URL so the
+// backend treats them as "no filter" — matching the SQL function's
+// NULL-defaulted parameters.
+export async function getCounterpartyStatusCounts(p: {
+  kind?: CounterpartyKindFilter;
+  status?: MemberStatus[];
+  q?: string;
+} = {}): Promise<CounterpartyStatusCounts> {
+  const qp = new URLSearchParams();
+  if (p.kind && p.kind !== 'all') qp.set('kind', p.kind);
+  if (p.status && p.status.length > 0) {
+    for (const s of p.status) qp.append('status', s);
+  }
+  if (p.q && p.q.trim() !== '') qp.set('q', p.q.trim());
+  const path = '/v1/counterparties/status/counts' + (qp.toString() ? '?' + qp.toString() : '');
+  const r = await api.get(path);
   return r.data.data;
 }
 
@@ -1832,7 +1888,17 @@ export type ListCounterpartiesParams = {
 };
 
 export async function listCounterparties(p: ListCounterpartiesParams = {}): Promise<{
-  counterparties: Counterparty[]; total: number; limit: number; offset: number;
+  counterparties: Counterparty[];
+  total: number;
+  // Per-kind split of the SAME filtered result set. Used by /members
+  // to render "X total · Y individuals · Z organisations" so the gap
+  // between the register and the members-only dashboard widget is
+  // self-evident. May be 0 when the caller's filter excludes that
+  // kind (e.g. kind=individual ⇒ institutions=0).
+  individuals: number;
+  institutions: number;
+  limit: number;
+  offset: number;
 }> {
   const q = new URLSearchParams();
   if (p.q) q.set('q', p.q);

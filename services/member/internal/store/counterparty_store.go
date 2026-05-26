@@ -114,6 +114,12 @@ type CPListInput struct {
 type CPListResult struct {
 	Counterparties []domain.Counterparty
 	Total          int
+	// Per-kind breakdown of the SAME filtered result set. Surfaced on
+	// the directory header so the user can see why the page total
+	// differs from the "Members — status overview" dashboard widget
+	// (which is members-only and excludes terminal statuses).
+	Individuals    int
+	Institutions   int
 }
 
 func (s *CounterpartyStore) ListTx(ctx context.Context, tx pgx.Tx, in CPListInput) (*CPListResult, error) {
@@ -153,10 +159,16 @@ func (s *CounterpartyStore) ListTx(ctx context.Context, tx pgx.Tx, in CPListInpu
 		whereSQL = " WHERE " + strings.Join(where, " AND ")
 	}
 
-	var total int
+	// Single round-trip: total + individual/institutional split for
+	// the same filter set. FILTER (WHERE …) is cheaper than two
+	// separate queries and keeps the counts internally consistent.
+	var total, individuals, institutions int
 	if err := tx.QueryRow(ctx,
-		"SELECT count(*) FROM counterparties"+whereSQL, args...,
-	).Scan(&total); err != nil {
+		"SELECT count(*),"+
+			" count(*) FILTER (WHERE kind = 'individual'),"+
+			" count(*) FILTER (WHERE kind <> 'individual')"+
+			" FROM counterparties"+whereSQL, args...,
+	).Scan(&total, &individuals, &institutions); err != nil {
 		return nil, err
 	}
 
@@ -169,7 +181,12 @@ func (s *CounterpartyStore) ListTx(ctx context.Context, tx pgx.Tx, in CPListInpu
 		return nil, err
 	}
 	defer rows.Close()
-	out := &CPListResult{Counterparties: []domain.Counterparty{}, Total: total}
+	out := &CPListResult{
+		Counterparties: []domain.Counterparty{},
+		Total:          total,
+		Individuals:    individuals,
+		Institutions:   institutions,
+	}
 	for rows.Next() {
 		c, err := scanCounterpartyWithTarget(rows)
 		if err != nil {

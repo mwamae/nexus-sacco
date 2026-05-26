@@ -101,6 +101,11 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("members:view")).Get("/counterparties/{id}/status-history/{change_id}/doc", d.Status.DownloadSupportingDoc)
 			r.With(middleware.RequirePermission("members:view")).Get("/members/status/summary", d.Status.Summary)
 			r.With(middleware.RequirePermission("members:view")).Get("/members/status/counts", d.Status.Counts)
+			// V2 canonical counts endpoint — accepts kind / status / q
+			// in lockstep with /v1/counterparties so the directory page
+			// can derive every number from a single source. Migration
+			// 0022 holds the SQL semantics.
+			r.With(middleware.RequirePermission("members:view")).Get("/counterparties/status/counts", d.Status.CountsV2)
 
 			// ─────────── Unified counterparty register (Phase B) ───────────
 			r.With(middleware.RequirePermission("members:view")).Get("/counterparties", d.Counterparties.List)

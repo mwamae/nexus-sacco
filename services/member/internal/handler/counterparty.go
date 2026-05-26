@@ -82,6 +82,8 @@ func (h *CounterpartyHandler) List(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]any{
 		"counterparties": res.Counterparties,
 		"total":          res.Total,
+		"individuals":    res.Individuals,
+		"institutions":   res.Institutions,
 		"limit":          in.Limit,
 		"offset":         in.Offset,
 	})
