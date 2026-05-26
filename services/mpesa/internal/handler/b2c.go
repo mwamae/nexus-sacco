@@ -36,6 +36,7 @@ import (
 	"github.com/nexussacco/mpesa/internal/db"
 	"github.com/nexussacco/mpesa/internal/domain"
 	"github.com/nexussacco/mpesa/internal/httpx"
+	"github.com/nexussacco/mpesa/internal/metrics"
 	"github.com/nexussacco/mpesa/internal/store"
 	"github.com/nexussacco/mpesa/internal/workflowclient"
 )
@@ -130,6 +131,7 @@ func (h *B2CHandler) Enqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if inserted {
+		metrics.OutboundTotal.Inc("queued", paybillTenant.String())
 		h.audit(r, paybillTenant, out.ID, "mpesa.b2c.enqueued", map[string]any{
 			"source_module": req.SourceModule,
 			"source_ref":    req.SourceRef,
@@ -219,6 +221,11 @@ func (h *B2CHandler) Result(w http.ResponseWriter, r *http.Request) {
 		if err := h.Outbound.MarkResultTx(r.Context(), tx, out.ID,
 			resultCode, env.Result.ResultDesc, mpesaReceipt, rawBody); err != nil {
 			return err
+		}
+		if resultCode == "0" {
+			metrics.OutboundTotal.Inc("completed", paybillTenant.String())
+		} else {
+			metrics.OutboundTotal.Inc("failed", paybillTenant.String())
 		}
 
 		// Look up the loan id for the finalize call. The source_ref

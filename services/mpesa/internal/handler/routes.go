@@ -6,26 +6,34 @@
 package handler
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/nexussacco/mpesa/internal/auth"
+	"github.com/nexussacco/mpesa/internal/db"
+	"github.com/nexussacco/mpesa/internal/metrics"
 	"github.com/nexussacco/mpesa/internal/middleware"
 	"github.com/nexussacco/mpesa/internal/store"
 )
 
 type Deps struct {
-	Paybill        *PaybillHandler
-	Webhook        *WebhookHandler
-	InboundEvents  *InboundEventsHandler
-	B2C            *B2CHandler
-	TenantStore    *store.TenantStore
-	Issuer         *auth.TokenIssuer
-	IPAllowList    *middleware.IPAllowList
-	AppDomain      string
-	Logger         *slog.Logger
+	Paybill       *PaybillHandler
+	Webhook       *WebhookHandler
+	InboundEvents *InboundEventsHandler
+	B2C           *B2CHandler
+	TenantStore   *store.TenantStore
+	Issuer        *auth.TokenIssuer
+	IPAllowList   *middleware.IPAllowList
+	// Phase 6 — /readyz uses the pool to check posting_outbox lag.
+	// nil-safe: when omitted, /readyz degrades to a 200 OK so tests
+	// + the in-process unit tests don't need a live DB.
+	Pool      *db.Pool
+	AppDomain string
+	Logger    *slog.Logger
 }
 
 func Routes(d Deps) http.Handler {
@@ -40,34 +48,64 @@ func Routes(d Deps) http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok","service":"mpesa"}`))
 	})
 
+	// Phase 6 — Prometheus metrics. Public + unauthenticated by
+	// convention (most observability stacks scrape over a private
+	// network; the ingress is responsible for blocking the public
+	// internet from hitting this).
+	r.Get("/metrics", metrics.HandlerForDefault().ServeHTTP)
+
+	// /readyz — 503 when the posting_outbox dispatcher is lagging
+	// (oldest undispatched row > 60s old). Used by the orchestrator
+	// to gate rolling deploys + by the load balancer to drain
+	// traffic away from a lagging instance.
+	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
+		if d.Pool == nil {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok","note":"no pool wired — readyz is unconditional"}`))
+			return
+		}
+		ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+		defer cancel()
+		var oldest *time.Time
+		err := d.Pool.QueryRow(ctx, `
+			SELECT MIN(enqueued_at) FROM posting_outbox
+			 WHERE dispatched_at IS NULL
+		`).Scan(&oldest)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"degraded","error":"posting_outbox query failed"}`))
+			return
+		}
+		var lag time.Duration
+		if oldest != nil {
+			lag = time.Since(*oldest)
+		}
+		if lag > 60*time.Second {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"degraded","posting_outbox_lag_seconds":` + lagText(lag) + `}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"ok","posting_outbox_lag_seconds":` + lagText(lag) + `}`))
+	})
+
 	// ─────────── Public webhooks (no JWT, IP allow-list + token) ───────────
-	// These routes do NOT pass through ResolveTenant — tenant context
-	// is recovered from the (paybill_id, webhook_token) pair inside
-	// the handler via the SECURITY DEFINER lookup.
 	r.Route("/v1/mpesa/c2b", func(r chi.Router) {
 		r.Use(d.IPAllowList.Middleware)
-		r.Post("/{paybill_id}/validation",   d.Webhook.Validation)
+		r.Post("/{paybill_id}/validation", d.Webhook.Validation)
 		r.Post("/{paybill_id}/confirmation", d.Webhook.Confirmation)
 	})
 
-	// B2C result/timeout callbacks. Same auth shape (IP + token) as
-	// C2B. Daraja hits these after a B2C payment lands or times out.
 	if d.B2C != nil {
 		r.Route("/v1/mpesa/b2c", func(r chi.Router) {
 			r.Use(d.IPAllowList.Middleware)
-			r.Post("/{paybill_id}/result",  d.B2C.Result)
+			r.Post("/{paybill_id}/result", d.B2C.Result)
 			r.Post("/{paybill_id}/timeout", d.B2C.Timeout)
 			r.Post("/{paybill_id}/reverse", d.B2C.Reverse)
-
-			// Internal enqueue endpoint. Gated by X-Internal-Token
-			// inside the handler itself (no IP allow-list — internal
-			// services don't appear in the Safaricom-IPs list). The
-			// handler check is the only auth.
 			r.Post("/requests", d.B2C.Enqueue)
 		})
 	}
 
-	// ─────────── Admin / staff JWT routes ───────────
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
 		r.Group(func(r chi.Router) {
@@ -76,16 +114,30 @@ func Routes(d Deps) http.Handler {
 
 			r.With(middleware.RequirePermission("tenant:settings:edit")).
 				Post("/mpesa/paybills", d.Paybill.Create)
-			r.With(middleware.RequirePermission("tenant:settings:edit")).
+			r.With(middleware.RequirePermission("mpesa:credentials:rotate")).
 				Post("/mpesa/paybills/{id}/credentials", d.Paybill.PutCredential)
 			r.With(middleware.RequirePermission("tenant:settings:view")).
 				Get("/mpesa/paybills/{id}/test-auth", d.Paybill.TestAuth)
 
-			// Staff-facing "recent inbound traffic" list — used by
-			// the Settings UI panel.
 			r.With(middleware.RequirePermission("tenant:settings:view")).
 				Get("/mpesa/c2b/events", d.InboundEvents.List)
 		})
 	})
 	return r
+}
+
+func lagText(d time.Duration) string {
+	secs := int64(d.Seconds())
+	if secs < 0 {
+		secs = 0
+	}
+	if secs == 0 {
+		return "0"
+	}
+	buf := make([]byte, 0, 16)
+	for secs > 0 {
+		buf = append([]byte{byte('0' + secs%10)}, buf...)
+		secs /= 10
+	}
+	return string(buf)
 }

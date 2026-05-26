@@ -145,6 +145,7 @@ func main() {
 		TenantStore:   tenants,
 		Issuer:        issuer,
 		IPAllowList:   allowList,
+		Pool:          pool, // phase 6 — /readyz queries posting_outbox lag
 		AppDomain:     cfg.AppDomain,
 		Logger:        logger,
 	})

@@ -36,6 +36,7 @@ import (
 	"github.com/nexussacco/mpesa/internal/db"
 	"github.com/nexussacco/mpesa/internal/distribution"
 	"github.com/nexussacco/mpesa/internal/domain"
+	"github.com/nexussacco/mpesa/internal/metrics"
 	"github.com/nexussacco/mpesa/internal/store"
 	"github.com/nexussacco/mpesa/internal/workflowclient"
 )
@@ -212,10 +213,13 @@ func (h *WebhookHandler) Confirmation(w http.ResponseWriter, r *http.Request) {
 	}
 	if !inserted {
 		// Duplicate. We have already resolved + audited it; just ack.
-		h.Logger.Info("confirmation duplicate ignored", "trans_id", body.TransID, "paybill_id", paybillID)
+		h.Logger.Info("confirmation duplicate ignored",
+			"trans_id", body.TransID, "paybill_id", paybillID,
+			"tenant_id", paybill.TenantID)
 		writeDaraja(w, darajaResult{ResultCode: 0, ResultDesc: "Received"})
 		return
 	}
+	metrics.InboundTotal.Inc("received", paybill.TenantID.String())
 
 	// 2. Run the resolver + write resolution + workflow task + audit.
 	// Downstream failures are logged but never block the Safaricom ack.
@@ -253,6 +257,9 @@ func (h *WebhookHandler) resolveAndWire(
 		}
 		// If unallocated, create the reconciliation workflow task
 		// inside the same tx so the task and the event are atomic.
+		if decision.Via == domain.ViaUnallocated {
+			metrics.UnallocatedTotal.Inc(paybill.TenantID.String())
+		}
 		if decision.Via == domain.ViaUnallocated && h.WorkflowClient != nil {
 			id, err := h.WorkflowClient.CreateInstanceTx(r.Context(), tx,
 				workflowclient.CreateInstanceInput{

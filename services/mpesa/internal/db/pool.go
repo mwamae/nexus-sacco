@@ -35,6 +35,21 @@ type Pool struct {
 const appRole = "nexus_app"
 
 func New(ctx context.Context, dsn string) (*Pool, error) {
+	return newPool(ctx, dsn, false)
+}
+
+// NewPrivileged opens a pool that does NOT downgrade to nexus_app —
+// it keeps the DSN's user (typically a superuser/db-owner) so RLS is
+// bypassed. Use this from operational binaries that intentionally
+// span tenants (cmd/reconciler, cmd/distributor's bootstrap scan).
+// Per-tenant writes still pass through WithTenantTx so the tenant_id
+// GUC is stamped on inserts; RLS being off just means SELECTs aren't
+// silently filtered to the empty set.
+func NewPrivileged(ctx context.Context, dsn string) (*Pool, error) {
+	return newPool(ctx, dsn, true)
+}
+
+func newPool(ctx context.Context, dsn string, forceSkipRole bool) (*Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse dsn: %w", err)
@@ -44,7 +59,7 @@ func New(ctx context.Context, dsn string) (*Pool, error) {
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 
-	skipSetRole := os.Getenv("DB_SKIP_SET_ROLE") == "1"
+	skipSetRole := forceSkipRole || os.Getenv("DB_SKIP_SET_ROLE") == "1"
 	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		if skipSetRole {
 			return nil

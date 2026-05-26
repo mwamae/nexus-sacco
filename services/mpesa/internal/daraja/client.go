@@ -71,8 +71,15 @@ type Client struct {
 }
 
 // NewClient builds a Client. The transport pins the Safaricom roots
-// when PinnedRootCertsPEM is non-empty (phase 6 onwards); otherwise
-// it falls back to the system pool so the sandbox still works.
+// when PinnedRootCertsPEM is non-empty (loaded by LoadProductionPins
+// from internal/daraja/certs/production.pem); otherwise it falls back
+// to the system pool so sandbox traffic still works.
+//
+// Phase 6: the caller (cmd/server, cmd/reconciler, cmd/b2c-dispatcher)
+// is responsible for invoking LoadProductionPins before constructing
+// the Client when env != sandbox. The constructor stays decoupled
+// from MPESA_FORCE_SANDBOX so unit tests can spin up a Client
+// against any base URL without pulling in the env-config layer.
 func NewClient(baseURL string, env Environment) *Client {
 	tr := &http.Transport{
 		ResponseHeaderTimeout: 12 * time.Second,
