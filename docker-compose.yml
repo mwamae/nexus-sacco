@@ -143,6 +143,39 @@ services:
       postgres:
         condition: service_healthy
 
+  # Phase-3 background worker. Same image as the mpesa HTTP service —
+  # just runs the distributor binary instead. Scales independently;
+  # multiple replicas are safe (SELECT … FOR UPDATE SKIP LOCKED in the
+  # lease query is what makes them race-free).
+  mpesa-distributor:
+    build:
+      context: ./services/mpesa
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/mpesa-distributor"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      MPESA_ENV: ${MPESA_ENV:-development}
+      MPESA_LOG_LEVEL: ${MPESA_LOG_LEVEL:-info}
+      # Defaults below match phase-3 platform GL convention. Override
+      # per-tenant via the paybill row in phase 3.5.
+      MPESA_GL_CASH_ACCOUNT: ${MPESA_GL_CASH_ACCOUNT:-1030}
+      MPESA_GL_CLEARING_ACCOUNT: ${MPESA_GL_CLEARING_ACCOUNT:-1099}
+      # The distributor doesn't terminate webhooks, so it doesn't
+      # need TRUSTED_IPS / KMS to start. It still loads
+      # MPESA_KMS_MASTER_KEY for parity with the HTTP service so the
+      # same config.Load works.
+      MPESA_KMS_MASTER_KEY: ${MPESA_KMS_MASTER_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      MPESA_KMS_MASTER_KEY_ID: ${MPESA_KMS_MASTER_KEY_ID:-kms-dev-001}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-do-not-use-in-production-eef9b4c6c0f04f4d8a8b1e7f2a3b4c5d}
+      JWT_ISSUER: ${JWT_ISSUER:-nexus-identity}
+      APP_DOMAIN: ${APP_DOMAIN:-nexussacco.local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mpesa:
+        condition: service_started
+
 volumes:
   pgdata:
   member_storage:

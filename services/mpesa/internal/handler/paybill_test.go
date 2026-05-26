@@ -335,8 +335,9 @@ func seedPaybill(t *testing.T, dbPool *db.Pool, tenantID uuid.UUID) (uuid.UUID, 
 	uniq := hex.EncodeToString([]byte{byte(time.Now().UnixNano() & 0xff)})
 	err := dbPool.WithTenantTx(context.Background(), tenantID, func(tx pgx.Tx) error {
 		return tx.QueryRow(context.Background(), `
-			INSERT INTO mpesa_paybills (tenant_id, label, shortcode, purpose, scope, environment)
-			VALUES ($1, $2, $3, 'collection', '{member_deposits}', 'sandbox')
+			INSERT INTO mpesa_paybills (tenant_id, label, shortcode, purpose, scope, environment, webhook_token)
+			VALUES ($1, $2, $3, 'collection', '{member_deposits}', 'sandbox',
+			        encode(gen_random_bytes(24),'hex'))
 			RETURNING id
 		`, tenantID, "Seed Paybill "+uniq, "TEST-"+uniq).Scan(&id)
 	})
