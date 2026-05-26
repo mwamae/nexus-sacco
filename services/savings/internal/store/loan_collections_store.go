@@ -140,11 +140,11 @@ func (s *LoanCollectionsStore) ListCasesTx(ctx context.Context, tx pgx.Tx, f Cas
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT %s,
 		       %s,
-		       m.member_no, m.full_name, p.code,
+		       cd.member_no, cd.full_name, p.code,
 		       (SELECT COUNT(*) FROM loan_promises_to_pay WHERE case_id = c.id AND status = 'open') AS open_ptps
 		FROM loan_collection_cases c
 		JOIN loans l ON l.id = c.loan_id
-		JOIN members m ON m.counterparty_id = c.counterparty_id
+		JOIN counterparty_directory cd ON cd.counterparty_id = c.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		%s
 		ORDER BY c.priority DESC, c.opened_at

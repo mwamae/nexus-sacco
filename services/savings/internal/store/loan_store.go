@@ -180,19 +180,19 @@ func (s *LoanStore) ListTx(ctx context.Context, tx pgx.Tx, f LoanListFilter) ([]
 		args = append(args, *f.ProductID); idx++
 	}
 	if f.Q != "" {
-		where += fmt.Sprintf(" AND (m.full_name ILIKE $%d OR m.member_no ILIKE $%d OR l.loan_no ILIKE $%d)", idx, idx, idx)
+		where += fmt.Sprintf(" AND (cd.full_name ILIKE $%d OR cd.member_no ILIKE $%d OR cd.cp_number ILIKE $%d OR l.loan_no ILIKE $%d)", idx, idx, idx, idx)
 		args = append(args, "%"+f.Q+"%"); idx++
 	}
 	var total int
 	if err := tx.QueryRow(ctx,
-		"SELECT COUNT(*) FROM loans l JOIN members m ON m.counterparty_id = l.counterparty_id JOIN loan_products p ON p.id = l.product_id "+where, args...).Scan(&total); err != nil {
+		"SELECT COUNT(*) FROM loans l JOIN counterparty_directory cd ON cd.counterparty_id = l.counterparty_id JOIN loan_products p ON p.id = l.product_id "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, f.Limit, f.Offset)
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
-		SELECT %s, m.member_no, m.full_name, p.code, p.name
+		SELECT %s, cd.member_no, cd.full_name, p.code, p.name
 		FROM loans l
-		JOIN members m ON m.counterparty_id = l.counterparty_id
+		JOIN counterparty_directory cd ON cd.counterparty_id = l.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		%s
 		ORDER BY l.created_at DESC

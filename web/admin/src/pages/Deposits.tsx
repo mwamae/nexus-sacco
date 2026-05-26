@@ -13,7 +13,7 @@ import {
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { Avatar } from '../components/Avatar';
-import { StatusBadge } from '../components/Badge';
+import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
 
 export default function Deposits() {
@@ -151,28 +151,37 @@ export default function Deposits() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((it) => (
-                  <tr key={it.account.id}>
-                    <td><Avatar name={it.full_name} size="sm" /></td>
-                    <td>
-                      <div style={{ fontWeight: 500 }}>
-                        <a href={`/members/${it.account.counterparty_id}?tab=accounts`} className="tbl-link">{it.full_name}</a>
-                      </div>
-                      <div className="tiny-mono">{it.member_no}</div>
-                    </td>
-                    <td className="tiny-mono">{it.account.account_no}</td>
-                    <td>
-                      {it.product.name}
-                      <div className="muted tiny">{it.product.product_type}</div>
-                    </td>
-                    <td><StatusBadge status={it.account.status} /></td>
-                    <td className="mono" style={{ textAlign: 'right' }}>{currency} {fmtMoney(it.account.current_balance)}</td>
-                    <td className="tiny-mono">{it.account.last_activity_at ? it.account.last_activity_at.slice(0, 10) : '—'}</td>
-                    <td>
-                      <a className="btn btn-sm" href={`/members/${it.account.counterparty_id}?tab=accounts`} title="Open"><Icon name="eye" size={12} /></a>
-                    </td>
-                  </tr>
-                ))}
+                {items.map((it) => {
+                  // Institutional rows → /orgs/<id>; individuals →
+                  // /members/<id>. CounterpartyProfile dispatches on
+                  // the URL prefix.
+                  const profilePath = it.is_institution
+                    ? `/orgs/${it.account.counterparty_id}?tab=accounts`
+                    : `/members/${it.account.counterparty_id}?tab=accounts`;
+                  return (
+                    <tr key={it.account.id}>
+                      <td><Avatar name={it.full_name} size="sm" /></td>
+                      <td>
+                        <div style={{ fontWeight: 500 }}>
+                          <a href={profilePath} className="tbl-link">{it.full_name}</a>
+                          {it.is_institution && <> <Badge tone="info">Org</Badge></>}
+                        </div>
+                        <div className="tiny-mono">{it.member_no}</div>
+                      </td>
+                      <td className="tiny-mono">{it.account.account_no}</td>
+                      <td>
+                        {it.product.name}
+                        <div className="muted tiny">{it.product.product_type}</div>
+                      </td>
+                      <td><StatusBadge status={it.account.status} /></td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{currency} {fmtMoney(it.account.current_balance)}</td>
+                      <td className="tiny-mono">{it.account.last_activity_at ? it.account.last_activity_at.slice(0, 10) : '—'}</td>
+                      <td>
+                        <a className="btn btn-sm" href={profilePath} title="Open"><Icon name="eye" size={12} /></a>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

@@ -305,10 +305,16 @@ type ListFilter struct {
 }
 
 type AccountListItem struct {
-	Account  domain.ShareAccount `json:"account"`
-	MemberNo string              `json:"member_no"`
-	FullName string              `json:"full_name"`
-	Status   string              `json:"member_status"`
+	Account       domain.ShareAccount `json:"account"`
+	MemberNo      string              `json:"member_no"`
+	FullName      string              `json:"full_name"`
+	Status        string              `json:"member_status"`
+	// Kind + IsInstitution are projected from counterparty_directory
+	// so the UI can render the "Org" chip and route institutional
+	// rows to /orgs/<id> instead of /members/<id>. Empty/false on
+	// pre-view rows for backwards-compat.
+	Kind          string              `json:"kind"`
+	IsInstitution bool                `json:"is_institution"`
 }
 
 func (s *ShareStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f ListFilter, minRequired int) ([]AccountListItem, int, error) {
@@ -324,7 +330,7 @@ func (s *ShareStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f ListFilter
 		idx++
 	}
 	if f.Q != "" {
-		where += fmt.Sprintf(" AND (m.full_name ILIKE $%d OR m.member_no ILIKE $%d OR a.account_no ILIKE $%d)", idx, idx, idx)
+		where += fmt.Sprintf(" AND (cd.full_name ILIKE $%d OR cd.member_no ILIKE $%d OR cd.cp_number ILIKE $%d OR a.account_no ILIKE $%d)", idx, idx, idx, idx)
 		args = append(args, "%"+f.Q+"%")
 		idx++
 	}
@@ -335,17 +341,17 @@ func (s *ShareStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f ListFilter
 	}
 
 	var total int
-	if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM share_accounts a JOIN members m ON m.counterparty_id = a.counterparty_id "+where, args...).Scan(&total); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM share_accounts a JOIN counterparty_directory cd ON cd.counterparty_id = a.counterparty_id "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	args = append(args, f.Limit, f.Offset)
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
-		SELECT %s, m.member_no, m.full_name, m.status::text
+		SELECT %s, cd.member_no, cd.full_name, cd.cp_status, cd.kind::text, cd.is_institution
 		FROM share_accounts a
-		JOIN members m ON m.counterparty_id = a.counterparty_id
+		JOIN counterparty_directory cd ON cd.counterparty_id = a.counterparty_id
 		%s
-		ORDER BY a.shares_held DESC, m.full_name ASC
+		ORDER BY a.shares_held DESC, cd.full_name ASC
 		LIMIT $%d OFFSET $%d
 	`, prefixCols(accountCols, "a"), where, idx, idx+1), args...)
 	if err != nil {
@@ -361,7 +367,7 @@ func (s *ShareStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f ListFilter
 			&it.Account.Status, &it.Account.SharesHeld, &it.Account.SharesPledged,
 			&it.Account.ParValueAtOpen, &it.Account.FirstPurchaseAt, &it.Account.ClosedAt,
 			&it.Account.CreatedAt, &it.Account.UpdatedAt,
-			&it.MemberNo, &it.FullName, &it.Status,
+			&it.MemberNo, &it.FullName, &it.Status, &it.Kind, &it.IsInstitution,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -459,19 +465,20 @@ func (s *ShareStore) TotalSharesIssuedTx(ctx context.Context, tx pgx.Tx) (int, e
 }
 
 // ActiveAccountsTx returns every active account with at least one share
-// whose owning member is in a status that permits crediting (pending,
-// active, dormant, suspended). Blacklisted, exited, deceased, and
-// rejected members are excluded — they should not receive bonus shares
-// or dividend top-ups.
+// whose owning counterparty is in a status that permits crediting
+// (pending, active, dormant, suspended). Blacklisted, exited,
+// deceased, and rejected counterparties are excluded — they should
+// not receive bonus shares or dividend top-ups. Includes institutional
+// counterparties (chamas, companies, NGOs, …) via counterparty_directory.
 //
 // Used by bonus-issue runs that iterate the whole tenant register.
 func (s *ShareStore) ActiveAccountsTx(ctx context.Context, tx pgx.Tx) ([]domain.ShareAccount, error) {
 	rows, err := tx.Query(ctx, `SELECT `+prefixCols(accountCols, "a")+`
 		FROM share_accounts a
-		JOIN members m ON m.counterparty_id = a.counterparty_id
+		JOIN counterparty_directory cd ON cd.counterparty_id = a.counterparty_id
 		WHERE a.status = 'active'
 		  AND a.shares_held > 0
-		  AND m.status NOT IN ('blacklisted', 'exited', 'deceased', 'rejected')
+		  AND cd.cp_status NOT IN ('blacklisted', 'exited', 'deceased', 'rejected')
 		ORDER BY a.id`)
 	if err != nil {
 		return nil, err

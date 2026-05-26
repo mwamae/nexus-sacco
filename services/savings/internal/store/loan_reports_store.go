@@ -323,9 +323,9 @@ func (s *LoanReportsStore) MaturingLoansTx(ctx context.Context, tx pgx.Tx, withi
 		  GROUP BY loan_id
 		)
 		SELECT `+prefixCols(loanCols, "l")+`,
-		       m.member_no, m.full_name, p.name, f.final_due
+		       cd.member_no, cd.full_name, p.name, f.final_due
 		FROM loans l
-		JOIN members m ON m.counterparty_id = l.counterparty_id
+		JOIN counterparty_directory cd ON cd.counterparty_id = l.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		JOIN final_dues f ON f.loan_id = l.id
 		WHERE l.status IN ('active', 'in_arrears', 'restructured')
@@ -386,10 +386,10 @@ func (s *LoanReportsStore) RestructuringRegisterTx(ctx context.Context, tx pgx.T
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT `+prefixCols(restructureCols, "r")+`,
-		       l.loan_no, m.member_no, m.full_name, p.name
+		       l.loan_no, cd.member_no, cd.full_name, p.name
 		FROM loan_restructurings r
 		JOIN loans l ON l.id = r.loan_id
-		JOIN members m ON m.counterparty_id = l.counterparty_id
+		JOIN counterparty_directory cd ON cd.counterparty_id = l.counterparty_id
 		JOIN loan_products p ON p.id = l.product_id
 		`+where+`
 		ORDER BY r.created_at DESC
@@ -545,11 +545,11 @@ func (s *LoanReportsStore) WriteoffRegisterTx(ctx context.Context, tx pgx.Tx) ([
 		SELECT w.id, w.loan_id, w.counterparty_id,
 		       w.principal_written_off, w.interest_written_off, w.fees_written_off, w.penalty_written_off, w.total_written_off,
 		       w.reason, w.authorized_at, w.authorized_by, w.writeoff_txn_id,
-		       l.loan_no, m.member_no, m.full_name,
+		       l.loan_no, cd.member_no, cd.full_name,
 		       COALESCE((SELECT SUM(amount) FROM loan_recoveries WHERE writeoff_id = w.id), 0)
 		FROM loan_writeoffs w
 		JOIN loans l ON l.id = w.loan_id
-		JOIN members m ON m.counterparty_id = w.counterparty_id
+		JOIN counterparty_directory cd ON cd.counterparty_id = w.counterparty_id
 		ORDER BY w.authorized_at DESC
 	`)
 	if err != nil {
@@ -590,13 +590,22 @@ type CRBLoanRecord struct {
 }
 
 func (s *LoanReportsStore) CRBSubmissionTx(ctx context.Context, tx pgx.Tx) ([]CRBLoanRecord, error) {
+	// CRB filing uses cd.full_name for name + COALESCE(individual ID,
+	// institution registration_no, '') for the identifier. CRB
+	// metropol/transunion accept both individual KRA-PIN/national ID
+	// and company registration numbers, so we keep org borrowers in
+	// the submission rather than silently dropping them. LEFT JOIN
+	// members fetches the individual id_doc_number when available.
 	rows, err := tx.Query(ctx, `
-		SELECT l.loan_no, l.counterparty_id, m.full_name, m.id_doc_number,
+		SELECT l.loan_no, l.counterparty_id, cd.full_name,
+		       COALESCE(m.id_doc_number, c.registration_no, '') AS id_doc_number,
 		       l.disbursed_at, l.principal_disbursed,
 		       (l.principal_balance + l.interest_balance + l.fees_balance + l.penalty_balance),
 		       l.days_past_due, l.arrears_classification
 		FROM loans l
-		JOIN members m ON m.counterparty_id = l.counterparty_id
+		JOIN counterparty_directory cd ON cd.counterparty_id = l.counterparty_id
+		JOIN counterparties c          ON c.id              = l.counterparty_id
+		LEFT JOIN members m            ON m.counterparty_id = l.counterparty_id
 		WHERE l.status IN ('active', 'in_arrears', 'restructured', 'written_off')
 		ORDER BY l.disbursed_at
 	`)

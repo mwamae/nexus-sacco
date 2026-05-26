@@ -193,11 +193,15 @@ type AcctListFilter struct {
 }
 
 type AcctListItem struct {
-	Account  domain.DepositAccount `json:"account"`
-	MemberNo string                `json:"member_no"`
-	FullName string                `json:"full_name"`
-	Status   string                `json:"member_status"`
-	Product  struct {
+	Account       domain.DepositAccount `json:"account"`
+	MemberNo      string                `json:"member_no"`
+	FullName      string                `json:"full_name"`
+	Status        string                `json:"member_status"`
+	// Kind + IsInstitution from counterparty_directory — UI uses them
+	// to render the "Org" chip + route to /orgs/<id> on the row link.
+	Kind          string                `json:"kind"`
+	IsInstitution bool                  `json:"is_institution"`
+	Product       struct {
 		Code        string                    `json:"code"`
 		Name        string                    `json:"name"`
 		ProductType domain.DepositProductType `json:"product_type"`
@@ -222,14 +226,14 @@ func (s *DepositStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f AcctList
 		idx++
 	}
 	if f.Q != "" {
-		where += fmt.Sprintf(" AND (m.full_name ILIKE $%d OR m.member_no ILIKE $%d OR a.account_no ILIKE $%d)", idx, idx, idx)
+		where += fmt.Sprintf(" AND (cd.full_name ILIKE $%d OR cd.member_no ILIKE $%d OR cd.cp_number ILIKE $%d OR a.account_no ILIKE $%d)", idx, idx, idx, idx)
 		args = append(args, "%"+f.Q+"%")
 		idx++
 	}
 
 	var total int
 	if err := tx.QueryRow(ctx,
-		"SELECT COUNT(*) FROM deposit_accounts a JOIN members m ON m.counterparty_id = a.counterparty_id JOIN deposit_products p ON p.id = a.product_id "+where,
+		"SELECT COUNT(*) FROM deposit_accounts a JOIN counterparty_directory cd ON cd.counterparty_id = a.counterparty_id JOIN deposit_products p ON p.id = a.product_id "+where,
 		args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -237,13 +241,13 @@ func (s *DepositStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f AcctList
 	args = append(args, f.Limit, f.Offset)
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT %s,
-		       m.member_no, m.full_name, m.status::text,
+		       cd.member_no, cd.full_name, cd.cp_status, cd.kind::text, cd.is_institution,
 		       p.code, p.name, p.product_type
 		FROM deposit_accounts a
-		JOIN members m ON m.counterparty_id = a.counterparty_id
+		JOIN counterparty_directory cd ON cd.counterparty_id = a.counterparty_id
 		JOIN deposit_products p ON p.id = a.product_id
 		%s
-		ORDER BY a.current_balance DESC, m.full_name ASC
+		ORDER BY a.current_balance DESC, cd.full_name ASC
 		LIMIT $%d OFFSET $%d
 	`, prefixCols(acctCols, "a"), where, idx, idx+1), args...)
 	if err != nil {
@@ -264,7 +268,7 @@ func (s *DepositStore) ListAccountsTx(ctx context.Context, tx pgx.Tx, f AcctList
 			&it.Account.GuardianMemberID, &it.Account.GroupOrgID,
 			&it.Account.WithdrawalNoticeGivenAt, &it.Account.WithdrawalNoticeAmount,
 			&it.Account.CreatedAt, &it.Account.UpdatedAt, &it.Account.CreatedBy,
-			&it.MemberNo, &it.FullName, &it.Status,
+			&it.MemberNo, &it.FullName, &it.Status, &it.Kind, &it.IsInstitution,
 			&it.Product.Code, &it.Product.Name, &it.Product.ProductType,
 		)
 		if err != nil {

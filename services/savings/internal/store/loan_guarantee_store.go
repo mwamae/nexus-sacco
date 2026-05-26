@@ -139,13 +139,17 @@ func (s *LoanGuaranteeStore) ByGuarantorMemberTx(ctx context.Context, tx pgx.Tx,
 		       l.loan_no,
 		       a.application_no,
 		       a.counterparty_id        AS borrower_member_id,
-		       m.full_name        AS borrower_full_name,
-		       p.code             AS product_code,
-		       p.name             AS product_name
+		       cd.full_name             AS borrower_full_name,
+		       p.code                   AS product_code,
+		       p.name                   AS product_name
 		  FROM loan_guarantees g
-		  JOIN loan_applications a ON a.id = g.application_id
-		  JOIN members          m ON m.id = a.counterparty_id
-		  JOIN loan_products    p ON p.id = a.product_id
+		  JOIN loan_applications        a ON a.id = g.application_id
+		  -- Was: JOIN members m ON m.id = a.counterparty_id — broken
+		  -- since the Phase D refactor (members.id ≠ counterparties.id).
+		  -- counterparty_directory bridges both individual + org
+		  -- borrowers and joins on the correct id.
+		  JOIN counterparty_directory   cd ON cd.counterparty_id = a.counterparty_id
+		  JOIN loan_products            p ON p.id = a.product_id
 		  LEFT JOIN loans       l ON l.id = g.loan_id
 		 WHERE g.guarantor_counterparty_id = $1
 		 ORDER BY g.requested_at DESC

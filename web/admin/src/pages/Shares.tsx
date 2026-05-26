@@ -121,32 +121,42 @@ export default function Shares() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((it) => (
-                  <tr key={it.account.id}>
-                    <td><Avatar name={it.full_name} size="sm" /></td>
-                    <td>
-                      <div style={{ fontWeight: 500 }}>
-                        <a href={`/members/${it.account.counterparty_id}?tab=accounts`} className="tbl-link">{it.full_name}</a>
-                      </div>
-                      <div className="tiny-mono">{it.member_no}</div>
-                    </td>
-                    <td className="tiny-mono">{it.account.account_no}</td>
-                    <td>
-                      <StatusBadge status={it.member_status} />
-                      {it.account.status === 'closed' && <span> · <Badge tone="neutral">closed</Badge></span>}
-                    </td>
-                    <td className="mono" style={{ textAlign: 'right' }}>{it.account.shares_held}</td>
-                    <td className="mono" style={{ textAlign: 'right', color: it.account.shares_pledged > 0 ? 'var(--warn)' : undefined }}>
-                      {it.account.shares_pledged || '—'}
-                    </td>
-                    <td className="mono" style={{ textAlign: 'right' }}>{currency} {fmtMoney(it.account.total_value)}</td>
-                    <td>
-                      <a className="btn btn-sm" href={`/members/${it.account.counterparty_id}?tab=accounts`} title="Open">
-                        <Icon name="eye" size={12} />
-                      </a>
-                    </td>
-                  </tr>
-                ))}
+                {items.map((it) => {
+                  // Institutional rows route to /orgs/<id> instead of
+                  // /members/<id> — CounterpartyProfile handles both
+                  // path prefixes but the org-shape data is loaded
+                  // when the URL says /orgs/.
+                  const profilePath = it.is_institution
+                    ? `/orgs/${it.account.counterparty_id}?tab=accounts`
+                    : `/members/${it.account.counterparty_id}?tab=accounts`;
+                  return (
+                    <tr key={it.account.id}>
+                      <td><Avatar name={it.full_name} size="sm" /></td>
+                      <td>
+                        <div style={{ fontWeight: 500 }}>
+                          <a href={profilePath} className="tbl-link">{it.full_name}</a>
+                          {it.is_institution && <> <Badge tone="info">Org</Badge></>}
+                        </div>
+                        <div className="tiny-mono">{it.member_no}</div>
+                      </td>
+                      <td className="tiny-mono">{it.account.account_no}</td>
+                      <td>
+                        <StatusBadge status={it.member_status} />
+                        {it.account.status === 'closed' && <span> · <Badge tone="neutral">closed</Badge></span>}
+                      </td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{it.account.shares_held}</td>
+                      <td className="mono" style={{ textAlign: 'right', color: it.account.shares_pledged > 0 ? 'var(--warn)' : undefined }}>
+                        {it.account.shares_pledged || '—'}
+                      </td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{currency} {fmtMoney(it.account.total_value)}</td>
+                      <td>
+                        <a className="btn btn-sm" href={profilePath} title="Open">
+                          <Icon name="eye" size={12} />
+                        </a>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

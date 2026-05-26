@@ -2369,6 +2369,10 @@ export type ShareAccountListItem = {
   member_no: string;
   full_name: string;
   member_status: string;
+  // From counterparty_directory (migration 0037). Powers the "Org"
+  // chip + routing to /orgs/<id> on institutional rows.
+  kind: 'individual' | 'chama' | 'company' | 'ngo' | 'church' | 'school' | 'other';
+  is_institution: boolean;
 };
 
 export type ShareTxnResponse = {
@@ -2640,6 +2644,11 @@ export type DepositAcctListItem = {
   member_no: string;
   full_name: string;
   member_status: string;
+  // From counterparty_directory (migration 0037). Same shape as the
+  // share-side list — UI uses these to render the "Org" chip + route
+  // institutional rows to /orgs/<id>.
+  kind: 'individual' | 'chama' | 'company' | 'ngo' | 'church' | 'school' | 'other';
+  is_institution: boolean;
   product: { code: string; name: string; product_type: DepositProductType };
 };
 

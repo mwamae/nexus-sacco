@@ -428,17 +428,18 @@ func TestShareBonus_PostsBatchedAppropriationToOutbox(t *testing.T) {
 
 	// Snapshot active holders pre-bonus to compute the expected total
 	// dynamically (executor iterates the full register). Use the SAME
-	// query the executor uses — ActiveAccountsTx joins members and
-	// excludes blacklisted/exited/deceased/rejected. A naive
-	// "shares_held > 0" snapshot over-counts those excluded holders.
+	// query the executor uses — ActiveAccountsTx joins
+	// counterparty_directory and excludes blacklisted/exited/
+	// deceased/rejected. A naive "shares_held > 0" snapshot
+	// over-counts those excluded holders.
 	type acctSnap struct{ ID uuid.UUID; Shares int }
 	var preState []acctSnap
 	if err := env.Pool.WithTenantTx(ctx, env.TenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT a.id, a.shares_held FROM share_accounts a
-			  JOIN members m ON m.counterparty_id = a.counterparty_id
+			  JOIN counterparty_directory cd ON cd.counterparty_id = a.counterparty_id
 			 WHERE a.tenant_id=$1 AND a.status='active' AND a.shares_held > 0
-			   AND m.status NOT IN ('blacklisted','exited','deceased','rejected')
+			   AND cd.cp_status NOT IN ('blacklisted','exited','deceased','rejected')
 			 ORDER BY a.id
 		`, env.TenantID)
 		if err != nil {
