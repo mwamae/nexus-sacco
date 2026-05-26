@@ -1,0 +1,22 @@
+-- Revoke the SELECT privilege that the database's default ACL auto-
+-- granted to nexus_app when mpesa_paybill_credentials was created in
+-- migration 0001.
+--
+-- Background: an earlier platform-bootstrap migration (in the identity
+-- service) issued
+--   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+--     GRANT ALL PRIVILEGES ON TABLES TO nexus_app;
+-- so every CREATE TABLE in `public` confers arwd (SELECT, INSERT,
+-- UPDATE, DELETE) on nexus_app irrespective of what the migration
+-- itself grants. The migration in 0001 issued an explicit
+-- `GRANT INSERT, UPDATE, DELETE` (deliberately omitting SELECT) but
+-- that's additive — it doesn't remove the SELECT that the default
+-- ACL added.
+--
+-- This migration REVOKEs SELECT on the credentials table so the only
+-- documented read path is via the mpesa_credentials_read SECURITY
+-- DEFINER function. Tests in services/mpesa/internal/handler pin this
+-- behaviour so a future schema churn can't silently re-add the
+-- privilege.
+
+REVOKE SELECT ON mpesa_paybill_credentials FROM nexus_app;
