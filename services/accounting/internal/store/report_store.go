@@ -856,7 +856,7 @@ type DepositSummary struct {
 // The interest engine + year-end close workflow both read these
 // columns; SASRA must agree or its income-statement window will
 // silently disagree with the GL.
-func (s *ReportStore) fiscalYearStartTx(ctx context.Context, tx pgx.Tx, asOf time.Time) (time.Time, error) {
+func (s *ReportStore) FiscalYearStartTx(ctx context.Context, tx pgx.Tx, asOf time.Time) (time.Time, error) {
 	month := 1
 	day := 1
 	err := tx.QueryRow(ctx, `
@@ -956,7 +956,7 @@ func (s *ReportStore) SASRAReturnTx(ctx context.Context, tx pgx.Tx, asOf time.Ti
 	// Reads tenant_operations.fy_start_month/day; defaults (1,1) so a
 	// tenant without that config keeps the original calendar-year
 	// behaviour.
-	fyStart, err := s.fiscalYearStartTx(ctx, tx, asOf)
+	fyStart, err := s.FiscalYearStartTx(ctx, tx, asOf)
 	if err != nil {
 		return nil, err
 	}
@@ -1301,7 +1301,7 @@ func (s *ReportStore) DashboardTx(ctx context.Context, tx pgx.Tx, asOf time.Time
 	// ─── YTD income statement ───
 	// Tenant-configured FY start (mirrors SASRAReturnTx); calendar-year
 	// hard-code is incorrect for SACCOs not on January-start.
-	fyStart, err := s.fiscalYearStartTx(ctx, tx, asOf)
+	fyStart, err := s.FiscalYearStartTx(ctx, tx, asOf)
 	if err != nil {
 		return nil, err
 	}
