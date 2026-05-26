@@ -1276,6 +1276,16 @@ const AUDIT_LABELS: Record<string, string> = {
   'org.document_uploaded': 'Org document uploaded',
   'org.document_verified': 'Org document verified',
   'org.document_removed': 'Org document deleted',
+  // M-PESA (phases 2-4)
+  'mpesa.inbound_received':            'M-PESA payment received',
+  'mpesa.distribution_run.started':    'M-PESA distribution started',
+  'mpesa.distribution_run.split':      'M-PESA split posted',
+  'mpesa.distribution_run.completed':  'M-PESA distribution completed',
+  'mpesa.distribution_run.failed':     'M-PESA distribution failed',
+  'mpesa.b2c.enqueued':                'M-PESA B2C queued',
+  'mpesa.b2c.sent':                    'M-PESA B2C sent to Daraja',
+  'mpesa.b2c.result':                  'M-PESA B2C result received',
+  'mpesa.b2c.reversed':                'M-PESA B2C reversed',
 };
 
 function labelForAuditAction(action: string): string {
@@ -1287,6 +1297,7 @@ function AuditTimeline({ entity, limit }: { entity: Entity; limit: number }) {
   const id = entity.kind === 'individual' ? entity.m.id : entity.o.id;
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [mpesaPanel, setMpesaPanel] = useState<AuditEntry | null>(null);
   useEffect(() => {
     let cancelled = false;
     listAuditForTarget(target as 'member', id, limit)
@@ -1298,16 +1309,104 @@ function AuditTimeline({ entity, limit }: { entity: Entity; limit: number }) {
   if (!entries) return <span className="muted tiny" role="status">Loading activity…</span>;
   if (entries.length === 0) return <div className="empty" style={{ padding: 20 }}>No audit events yet.</div>;
   return (
-    <ol className="tl" style={{ listStyle: 'none', margin: 0 }}>
-      {entries.map((e) => (
-        <li key={e.id} className="tl-item">
-          <div className="tl-action">{labelForAuditAction(e.action)}</div>
-          <div className="tl-meta">
-            <time>{new Date(e.created_at).toISOString().replace('T', ' ').slice(0, 19)}</time>
+    <>
+      <ol className="tl" style={{ listStyle: 'none', margin: 0 }}>
+        {entries.map((e) => (
+          <li key={e.id} className="tl-item">
+            <div className="tl-action" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>{labelForAuditAction(e.action)}</span>
+              {isMpesaAction(e.action) && (
+                <button
+                  className="btn btn-sm btn-ghost"
+                  title="View M-PESA receipt details"
+                  onClick={() => setMpesaPanel(e)}
+                  style={{ padding: '2px 6px', fontSize: 11 }}
+                >
+                  <Badge tone="accent">M-PESA</Badge>
+                </button>
+              )}
+            </div>
+            <div className="tl-meta">
+              <time>{new Date(e.created_at).toISOString().replace('T', ' ').slice(0, 19)}</time>
+            </div>
+          </li>
+        ))}
+      </ol>
+      {mpesaPanel && (
+        <MpesaActivityPanel entry={mpesaPanel} onClose={() => setMpesaPanel(null)} />
+      )}
+    </>
+  );
+}
+
+// isMpesaAction tags audit rows that the M-PESA chip should be
+// rendered against. The audit-writer emits these action keys from
+// phases 2-4 (inbound received + distribution started/split/
+// completed/failed + outbound sent/result).
+function isMpesaAction(action: string): boolean {
+  return action.startsWith('mpesa.');
+}
+
+// MpesaActivityPanel — side panel surfaced when an operator taps the
+// "M-PESA" chip on an audit row. Shows whatever's in the audit
+// metadata (split breakdown, Safaricom receipt, transaction id) plus
+// a link to the raw event on the reconciliation page.
+function MpesaActivityPanel({ entry, onClose }: { entry: AuditEntry; onClose: () => void }) {
+  const meta = (entry.metadata ?? {}) as Record<string, unknown>;
+  const eventID = typeof meta.event_id === 'string' ? meta.event_id : undefined;
+  const receipt = typeof meta.trans_id === 'string' ? meta.trans_id : undefined;
+  const amount  = typeof meta.amount   === 'string' ? meta.amount   : undefined;
+  const leg     = typeof meta.leg      === 'string' ? meta.leg      : undefined;
+  const via     = typeof meta.resolved_via === 'string' ? meta.resolved_via : undefined;
+  return (
+    <div
+      role="dialog"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,.40)', display: 'flex', justifyContent: 'flex-end',
+      }}
+      onClick={onClose}
+    >
+      <aside
+        className="card"
+        style={{
+          width: 420, maxWidth: '92vw', height: '100%',
+          borderRadius: 0, overflow: 'auto', display: 'flex', flexDirection: 'column',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="card-hd">
+          <h3>M-PESA · {labelForAuditAction(entry.action)}</h3>
+          <div className="card-hd-actions">
+            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12} /></button>
           </div>
-        </li>
-      ))}
-    </ol>
+        </div>
+        <div className="card-body" style={{ display: 'grid', gap: 10 }}>
+          <KVS>
+            <Row k="Audit action" v={<code className="mono tiny">{entry.action}</code>} />
+            <Row k="When" v={new Date(entry.created_at).toISOString().replace('T', ' ').slice(0, 19)} mono />
+            {receipt && <Row k="Safaricom receipt" v={receipt} mono />}
+            {amount  && <Row k="Amount"            v={amount}  mono />}
+            {leg     && <Row k="Distribution leg"  v={<Badge tone="neutral">{leg}</Badge>} />}
+            {via     && <Row k="Resolved via"      v={<Badge tone={via === 'unallocated' ? 'warn' : 'neutral'}>{via}</Badge>} />}
+            {typeof meta.run_id === 'string' && <Row k="Run id" v={<code className="mono tiny">{meta.run_id}</code>} />}
+            {typeof meta.target_ref === 'string' && <Row k="Target" v={<code className="mono tiny">{meta.target_ref}</code>} />}
+          </KVS>
+          {eventID && (
+            <a className="btn btn-sm" href={`/accounting/mpesa-reconciliation?event=${eventID}`}>
+              Open raw event in reconciliation →
+            </a>
+          )}
+          <details>
+            <summary className="muted tiny">Raw metadata</summary>
+            <pre style={{
+              fontSize: 11, background: 'var(--surface-subtle)',
+              padding: 8, borderRadius: 'var(--r-sm)', overflow: 'auto',
+            }}>{JSON.stringify(meta, null, 2)}</pre>
+          </details>
+        </div>
+      </aside>
+    </div>
   );
 }
 

@@ -54,6 +54,8 @@ import {
   type LoanScoreFlag,
   type LoanScoreResult,
   type LoanStatus,
+  listMpesaPaybills,
+  type ApiMpesaPaybill,
   type MemberDepositItem,
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
@@ -833,18 +835,24 @@ function LoanDetailView({ loanId }: { loanId: string }) {
     { p: 0, i: 0, t: 0 }
   );
 
-  async function disburse() {
+  // Disbursement is now picker-driven (phase 5). The button below
+  // opens DisburseChannelPickerModal which handles internal /
+  // bank / cheque / cash / mpesa branches in one place. The legacy
+  // confirm-then-internal path is gone — every disbursement goes
+  // through the explicit channel choice.
+  const [disburseOpen, setDisburseOpen] = useState(false);
+  async function doDisburse(channel: string, targetAcctID?: string) {
     if (l.status !== 'pending_disbursement') return;
-    const ord = accounts.find((a) => a.product.product_type === 'ordinary');
-    if (!ord) { alert('Member has no ordinary savings account to disburse into.'); return; }
-    if (!confirm(`Disburse to ${ord.account.account_no} (${ord.product.name})?`)) return;
     setBusy(true);
     try {
-      const r = await disburseLoan(loanId, { channel: 'internal', target_account_id: ord.account.id });
+      const r = await disburseLoan(loanId, {
+        channel,
+        target_account_id: targetAcctID,
+      });
       if (r.pending) alert(`Queued for approval. Pending id: ${r.pending.id.slice(0, 8)}…`);
       await load();
     } catch (e) { alert(extractError(e)); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setDisburseOpen(false); }
   }
 
   return (
@@ -907,13 +915,24 @@ function LoanDetailView({ loanId }: { loanId: string }) {
           <div className="card-hd"><h3>Disbursement</h3><span className="card-sub">Awaiting authorisation</span></div>
           <div className="card-body">
             <div className="alert alert-warn">
-              Disbursing credits the member's ordinary savings account with the net amount (after upfront fees) and activates the amortisation schedule.
+              Disbursing posts a GL entry that debits Loans Receivable
+              and credits the chosen channel (member savings, bank,
+              cheque suspense, cash, or M-PESA). For M-PESA the cash
+              leg fires after Daraja confirms.
             </div>
-            <button className="btn btn-sm btn-accent" disabled={busy} onClick={() => void disburse()}>
-              {busy ? 'Disbursing…' : 'Disburse to ordinary savings'}
+            <button className="btn btn-sm btn-accent" disabled={busy} onClick={() => setDisburseOpen(true)}>
+              {busy ? 'Disbursing…' : 'Disburse…'}
             </button>
           </div>
         </div>
+      )}
+      {disburseOpen && (
+        <DisburseChannelPickerModal
+          accounts={accounts}
+          onClose={() => setDisburseOpen(false)}
+          onSubmit={doDisburse}
+          busy={busy}
+        />
       )}
 
       <div className="card" style={{ marginBottom: 14 }}>
@@ -1441,6 +1460,158 @@ function SettleModal({ loan, accounts, onClose, onPosted }: {
       )}
       <Field label="Channel reference"><input className="input mono" value={ref} onChange={(e) => setRef(e.target.value)} placeholder="optional" /></Field>
     </ModalShell>
+  );
+}
+
+// ─────────── Disbursement channel picker (phase 5) ───────────
+//
+// Five channels: internal (ordinary savings — same as the legacy
+// confirm-then-disburse path), bank, cheque, cash, mpesa. The
+// M-PESA option is only enabled when at least one paybill exists
+// with purpose IN ('disbursement','both') and status='active' — the
+// picker fetches the paybill list lazily on mount + disables itself
+// + shows a hint when none qualify.
+//
+// The "default paybill" the savings disburse handler uses is the
+// is_default=true row (falling back to most-recently-updated); this
+// picker doesn't ask the user to choose between multiple paybills —
+// that's handled by the savings handler. The picker DOES display the
+// chosen paybill's label + last 4 of shortcode so the operator sees
+// where the money will be drawn from before clicking.
+
+function DisburseChannelPickerModal({
+  accounts, onClose, onSubmit, busy,
+}: {
+  accounts: MemberDepositItem[];
+  onClose: () => void;
+  onSubmit: (channel: string, targetAcctID?: string) => Promise<void> | void;
+  busy: boolean;
+}) {
+  const ord = accounts.find((a) => a.product.product_type === 'ordinary');
+  const [channel, setChannel] = useState<'internal' | 'bank' | 'cheque' | 'cash' | 'mpesa'>('internal');
+  const [paybills, setPaybills] = useState<ApiMpesaPaybill[] | null>(null);
+  useEffect(() => {
+    // Fetch paybills opportunistically; the modal still renders
+    // when this returns nothing (M-PESA option just disabled).
+    let cancelled = false;
+    listMpesaPaybills()
+      .then((rows) => { if (!cancelled) setPaybills(rows); })
+      .catch(() => { if (!cancelled) setPaybills([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const defaultB2C = useMemo(() => {
+    if (!paybills) return undefined;
+    const candidates = paybills.filter(
+      (p) => p.status === 'active' && (p.purpose === 'disbursement' || p.purpose === 'both'),
+    );
+    if (candidates.length === 0) return undefined;
+    return candidates.find((p) => p.is_default) ?? candidates[0];
+  }, [paybills]);
+
+  const mpesaDisabled = paybills !== null && !defaultB2C;
+  const internalDisabled = !ord;
+
+  function shortLast4(shortcode: string): string {
+    return shortcode.length <= 4 ? shortcode : shortcode.slice(-4);
+  }
+
+  async function submit() {
+    if (channel === 'internal') {
+      if (!ord) return;
+      await onSubmit('internal', ord.account.id);
+      return;
+    }
+    await onSubmit(channel);
+  }
+
+  return (
+    <ModalShell
+      title="Disburse loan"
+      busy={busy}
+      submitLabel="Disburse"
+      onClose={onClose}
+      onSubmit={submit}
+      disabled={(channel === 'internal' && internalDisabled) || (channel === 'mpesa' && mpesaDisabled)}
+    >
+      <p className="muted tiny" style={{ marginTop: 0 }}>
+        Pick where the principal lands. The GL entry posts immediately
+        for internal / bank / cheque / cash; M-PESA defers the cash
+        leg until Daraja confirms.
+      </p>
+      <div style={{ display: 'grid', gap: 6 }}>
+        <ChannelRow
+          name="internal"
+          label="Internal (ordinary savings)"
+          hint={ord ? `→ ${ord.account.account_no} · ${ord.product.name}` : 'No ordinary savings account on file.'}
+          checked={channel === 'internal'}
+          disabled={internalDisabled}
+          onPick={() => setChannel('internal')}
+        />
+        <ChannelRow
+          name="bank"
+          label="Bank transfer"
+          checked={channel === 'bank'}
+          onPick={() => setChannel('bank')}
+        />
+        <ChannelRow
+          name="cheque"
+          label="Cheque"
+          checked={channel === 'cheque'}
+          onPick={() => setChannel('cheque')}
+        />
+        <ChannelRow
+          name="cash"
+          label="Cash"
+          checked={channel === 'cash'}
+          onPick={() => setChannel('cash')}
+        />
+        <ChannelRow
+          name="mpesa"
+          label="M-PESA"
+          hint={
+            paybills === null ? 'Checking paybills…'
+              : defaultB2C ? `→ ${defaultB2C.label} · …${shortLast4(defaultB2C.shortcode)}`
+                : 'No B2C-capable paybill configured — register one in Settings → M-PESA paybills.'
+          }
+          checked={channel === 'mpesa'}
+          disabled={mpesaDisabled}
+          onPick={() => setChannel('mpesa')}
+        />
+      </div>
+    </ModalShell>
+  );
+}
+
+function ChannelRow({ name, label, hint, checked, disabled, onPick }: {
+  name: string; label: string; hint?: string; checked: boolean; disabled?: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <label
+      style={{
+        display: 'flex', alignItems: 'flex-start', gap: 8,
+        padding: '8px 10px', border: '1px solid var(--border)',
+        borderRadius: 'var(--r-md)', cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.55 : 1,
+        background: checked ? 'var(--surface-subtle)' : undefined,
+      }}
+      onClick={() => !disabled && onPick()}
+    >
+      <input
+        type="radio"
+        name="disburse_channel"
+        value={name}
+        checked={checked}
+        disabled={disabled}
+        readOnly
+        onChange={() => { /* radio is driven by the row click */ }}
+      />
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 500 }}>{label}</div>
+        {hint && <div className="muted tiny" style={{ marginTop: 2 }}>{hint}</div>}
+      </div>
+    </label>
   );
 }
 

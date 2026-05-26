@@ -6402,3 +6402,139 @@ export async function downloadReport(report: string, query: Record<string, strin
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+// ─── M-PESA paybills + events (phases 1-4) ───
+// Staff-facing read + admin actions exposed to /settings/mpesa and
+// /accounting/mpesa-reconciliation. The mpesa service lives on a
+// separate host in production; the admin UI proxies through
+// /api/v1/mpesa/... so callers don't see the topology.
+
+export type MpesaPaybillPurpose = 'collection' | 'disbursement' | 'both';
+export type MpesaPaybillStatus = 'active' | 'disabled';
+export type MpesaEnvironment = 'sandbox' | 'production';
+export type MpesaCredentialKind =
+  | 'consumer_key' | 'consumer_secret' | 'passkey'
+  | 'initiator_name' | 'initiator_password';
+
+export type ApiMpesaPaybill = {
+  id: string;
+  tenant_id: string;
+  label: string;
+  shortcode: string;
+  purpose: MpesaPaybillPurpose;
+  scope: string[];
+  environment: MpesaEnvironment;
+  status: MpesaPaybillStatus;
+  strict_validation: boolean;
+  allow_msisdn_fallback: boolean;
+  webhook_token: string;
+  is_default?: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MpesaInboundStatus = 'received' | 'distributed' | 'failed';
+export type MpesaResolvedVia =
+  | 'member_no' | 'cp_number' | 'loan_no' | 'deposit_account_no'
+  | 'msisdn' | 'unallocated';
+
+export type ApiMpesaInboundEvent = {
+  id: string;
+  tenant_id: string;
+  paybill_id: string | null;
+  shortcode: string;
+  transaction_id: string;
+  transaction_time: string | null;
+  amount: string;
+  msisdn: string;
+  bill_ref: string;
+  raw_payload: unknown;
+  status: MpesaInboundStatus;
+  resolved_member_id: string | null;
+  resolved_via: MpesaResolvedVia | null;
+  workflow_instance_id: string | null;
+  received_at: string;
+};
+
+// listMpesaPaybills hits /v1/mpesa/paybills (mpesa service). Phase-1
+// shipped CRUD endpoints; here we expose the GET surface the
+// settings page needs.
+export async function listMpesaPaybills(): Promise<ApiMpesaPaybill[]> {
+  const r = await api.get('/v1/mpesa/paybills');
+  const data = r.data?.data ?? r.data;
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.paybills)) return data.paybills;
+  return [];
+}
+
+export type MpesaTestAuthResult = {
+  ok: boolean;
+  expires_at?: string;
+  error?: string;
+};
+
+export async function testMpesaAuth(paybillID: string): Promise<MpesaTestAuthResult> {
+  const r = await api.get(`/v1/mpesa/paybills/${paybillID}/test-auth`);
+  return r.data?.data ?? r.data;
+}
+
+export async function rotateMpesaCredential(
+  paybillID: string,
+  kind: MpesaCredentialKind,
+  plaintext: string,
+): Promise<void> {
+  await api.post(`/v1/mpesa/paybills/${paybillID}/credentials`, { kind, plaintext });
+}
+
+export type ListMpesaEventsParams = {
+  paybill_id?: string;
+  msisdn?: string;
+  bill_ref?: string;
+  status?: MpesaInboundStatus;
+  from?: string; // RFC3339
+  to?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function listMpesaInboundEvents(p: ListMpesaEventsParams = {}): Promise<{
+  events: ApiMpesaInboundEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+}> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+  }
+  const path = '/v1/mpesa/c2b/events' + (qs.toString() ? '?' + qs.toString() : '');
+  const r = await api.get(path);
+  const d = r.data?.data ?? r.data;
+  return {
+    events: d.events ?? [],
+    total: d.total ?? 0,
+    limit: d.limit ?? 0,
+    offset: d.offset ?? 0,
+  };
+}
+
+// Daraja webhook URLs the staff member pastes into the Daraja portal.
+// Constructed client-side from window.location + the paybill row so we
+// can show the EXACT string staff need to copy without an extra
+// roundtrip.
+export function mpesaDarajaWebhookURLs(paybill: ApiMpesaPaybill, originOverride?: string): {
+  validation: string;
+  confirmation: string;
+  b2cResult: string;
+  b2cTimeout: string;
+} {
+  const origin = originOverride ?? window.location.origin;
+  const t = encodeURIComponent(paybill.webhook_token);
+  const id = paybill.id;
+  return {
+    validation:   `${origin}/api/v1/mpesa/c2b/${id}/validation?token=${t}`,
+    confirmation: `${origin}/api/v1/mpesa/c2b/${id}/confirmation?token=${t}`,
+    b2cResult:    `${origin}/api/v1/mpesa/b2c/${id}/result?token=${t}`,
+    b2cTimeout:   `${origin}/api/v1/mpesa/b2c/${id}/timeout?token=${t}`,
+  };
+}

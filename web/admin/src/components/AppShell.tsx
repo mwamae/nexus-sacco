@@ -89,6 +89,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         { href: '/accounting/cash-flow',         label: 'Cash Flow',         icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/fees-summary',      label: 'Fees & Collections', icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/reconciliation',    label: 'Reconciliation',    icon: 'check', show: !onPlatform && hasPermission('tenant:settings:view') },
+        { href: '/accounting/mpesa-reconciliation', label: 'M-PESA reconciliation', icon: 'bank', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/year-end-close',    label: 'Year-end close',    icon: 'check', show: !onPlatform && hasPermission('tenant:settings:edit') },
         { href: '/bank-accounts',                label: 'Bank reconciliation', icon: 'bank', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/cash-management',              label: 'Cash & float',      icon: 'bank',  show: !onPlatform && hasPermission('tenant:settings:view') },
@@ -115,6 +116,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         { href: '/deposit-products', label: 'Deposit products', icon: 'settings', show: !onPlatform && hasPermission('deposits:configure') },
         { href: '/loan-products', label: 'Loan products', icon: 'settings', show: !onPlatform && hasPermission('loans:configure') },
         { href: '/settings', label: 'Settings', icon: 'settings', show: !onPlatform && hasPermission('tenant:settings:view') },
+        { href: '/settings/mpesa', label: 'M-PESA paybills', icon: 'bank', show: !onPlatform && hasPermission('tenant:settings:view') },
       ],
     },
   ];

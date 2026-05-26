@@ -26,6 +26,7 @@ import ApplicationDetailPage from './pages/Applications/ApplicationDetail';
 import TenantOnboarding from './pages/TenantOnboarding';
 import TenantProfile from './pages/TenantProfile';
 import TenantSettings from './pages/TenantSettings';
+import MpesaPaybillsPage from './pages/Settings/MpesaPaybills';
 import ApprovalsInbox from './pages/ApprovalsInbox';
 import WorkflowDefinitions from './pages/WorkflowDefinitions';
 import Shares from './pages/Shares';
@@ -63,6 +64,7 @@ import BudgetDetailPage from './pages/Accounting/BudgetDetail';
 import BudgetVariancePage from './pages/Accounting/BudgetVariance';
 import SASRAReturnPage from './pages/Accounting/SASRAReturn';
 import FinanceDashboardPage from './pages/Accounting/FinanceDashboard';
+import MpesaReconciliationPage from './pages/Accounting/MpesaReconciliation';
 import MemberStatementPage from './pages/Members/MemberStatement';
 import ProvisioningPage from './pages/Loans/Provisioning';
 import CollectionDesk from './pages/CollectionDesk';
@@ -102,6 +104,7 @@ function Gate() {
   else if (path.startsWith('/members/')) page = <CounterpartyProfile />;
   else if (path === '/tenants/new') page = <TenantOnboarding />;
   else if (path.startsWith('/tenants/')) page = <TenantProfile />;
+  else if (path === '/settings/mpesa') page = <MpesaPaybillsPage />;
   else if (path === '/settings') page = <TenantSettings />;
   else if (path === '/orgs/new') {
     window.location.replace('/applications/new?kind=institutional');
@@ -168,6 +171,7 @@ function Gate() {
   else if (path.startsWith('/budgets/')) page = <BudgetDetailPage />;
   else if (path === '/accounting/sasra-return') page = <SASRAReturnPage />;
   else if (path === '/accounting/dashboard') page = <FinanceDashboardPage />;
+  else if (path === '/accounting/mpesa-reconciliation') page = <MpesaReconciliationPage />;
   else if (path === '/provisioning' || path.startsWith('/provisioning/')) page = <ProvisioningPage />;
   else if (path === '/collect') page = <CollectionDesk />;
   else if (path === '/collect/receipts' || path.startsWith('/collect/receipts/')) page = <CollectionReceipts />;
