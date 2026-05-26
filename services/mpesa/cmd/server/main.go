@@ -17,13 +17,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nexussacco/mpesa/internal/auth"
 	"github.com/nexussacco/mpesa/internal/config"
 	"github.com/nexussacco/mpesa/internal/crypto"
 	"github.com/nexussacco/mpesa/internal/daraja"
 	"github.com/nexussacco/mpesa/internal/db"
 	"github.com/nexussacco/mpesa/internal/handler"
-	"github.com/nexussacco/mpesa/internal/auth"
+	"github.com/nexussacco/mpesa/internal/middleware"
 	"github.com/nexussacco/mpesa/internal/store"
+	"github.com/nexussacco/mpesa/internal/workflowclient"
 )
 
 func main() {
@@ -81,6 +83,9 @@ func main() {
 	tenants := store.NewTenantStore(pool.Pool)
 	paybills := store.NewPaybillStore(pool.Pool)
 	credentials := store.NewCredentialStore(pool.Pool)
+	inboundEvents := store.NewInboundEventStore(pool.Pool)
+	resolverLookups := store.NewResolverLookups(pool.Pool)
+	audit := store.NewAuditStore(pool.Pool)
 
 	paybillH := &handler.PaybillHandler{
 		DB:          pool,
@@ -90,15 +95,37 @@ func main() {
 		Daraja:      darajaClient,
 		Logger:      logger,
 	}
+	webhookH := &handler.WebhookHandler{
+		DB:             pool,
+		Paybills:       paybills,
+		InboundEvents:  inboundEvents,
+		Resolver:       resolverLookups,
+		Audit:          audit,
+		WorkflowClient: workflowclient.New(),
+		Logger:         logger,
+	}
+	inboundH := &handler.InboundEventsHandler{
+		DB:     pool,
+		Events: inboundEvents,
+	}
+
+	allowList, err := middleware.NewIPAllowList(cfg.TrustedIPs, logger)
+	if err != nil {
+		logger.Error("ip allow list", "err", err)
+		os.Exit(1)
+	}
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
 	r := handler.Routes(handler.Deps{
-		Paybill:     paybillH,
-		TenantStore: tenants,
-		Issuer:      issuer,
-		AppDomain:   cfg.AppDomain,
-		Logger:      logger,
+		Paybill:       paybillH,
+		Webhook:       webhookH,
+		InboundEvents: inboundH,
+		TenantStore:   tenants,
+		Issuer:        issuer,
+		IPAllowList:   allowList,
+		AppDomain:     cfg.AppDomain,
+		Logger:        logger,
 	})
 
 	srv := &http.Server{

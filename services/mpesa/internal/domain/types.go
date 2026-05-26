@@ -5,6 +5,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -55,9 +56,62 @@ type Paybill struct {
 	Environment          Environment    `json:"environment"`
 	Status               PaybillStatus  `json:"status"`
 	DistributionPolicyID *uuid.UUID     `json:"distribution_policy_id,omitempty"`
-	CreatedBy            *uuid.UUID     `json:"created_by,omitempty"`
-	CreatedAt            time.Time      `json:"created_at"`
-	UpdatedAt            time.Time      `json:"updated_at"`
+	// Phase 2 additions:
+	StrictValidation    bool   `json:"strict_validation"`
+	AllowMSISDNFallback bool   `json:"allow_msisdn_fallback"`
+	// WebhookToken is the per-paybill shared secret Safaricom appends
+	// to the validation/confirmation URL as `?token=…`. Returned in
+	// full on the create-paybill response so the operator can paste
+	// it into the Daraja portal; thereafter it's surfaced only via
+	// the explicit "rotate token" path (phase 3).
+	WebhookToken string     `json:"webhook_token,omitempty"`
+	CreatedBy    *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+// InboundStatus mirrors the mpesa_inbound_status enum: the lifecycle
+// of a received C2B event through the distribution engine.
+type InboundStatus string
+
+const (
+	InboundReceived    InboundStatus = "received"
+	InboundDistributed InboundStatus = "distributed"
+	InboundFailed      InboundStatus = "failed"
+)
+
+// ResolvedVia is the resolver's verdict: which branch matched, or
+// 'unallocated' when none did.
+type ResolvedVia string
+
+const (
+	ViaMemberNo         ResolvedVia = "member_no"
+	ViaCPNumber         ResolvedVia = "cp_number"
+	ViaLoanNo           ResolvedVia = "loan_no"
+	ViaDepositAccountNo ResolvedVia = "deposit_account_no"
+	ViaMSISDN           ResolvedVia = "msisdn"
+	ViaUnallocated      ResolvedVia = "unallocated"
+)
+
+// InboundEvent is one C2B confirmation as stored. The raw Safaricom
+// payload is preserved verbatim in RawPayload so the resolver can be
+// re-run from history if its rules change.
+type InboundEvent struct {
+	ID                 uuid.UUID       `json:"id"`
+	TenantID           uuid.UUID       `json:"tenant_id"`
+	PaybillID          *uuid.UUID      `json:"paybill_id,omitempty"`
+	Shortcode          string          `json:"shortcode"`
+	TransactionID      string          `json:"transaction_id"` // Safaricom MpesaReceiptNumber
+	TransactionTime    *time.Time      `json:"transaction_time,omitempty"`
+	Amount             string          `json:"amount"`
+	MSISDN             string          `json:"msisdn,omitempty"`
+	BillRef            string          `json:"bill_ref,omitempty"`
+	RawPayload         json.RawMessage `json:"raw_payload"`
+	Status             InboundStatus   `json:"status"`
+	ResolvedMemberID   *uuid.UUID      `json:"resolved_member_id,omitempty"`
+	ResolvedVia        *ResolvedVia    `json:"resolved_via,omitempty"`
+	WorkflowInstanceID *uuid.UUID      `json:"workflow_instance_id,omitempty"`
+	ReceivedAt         time.Time       `json:"received_at"`
 }
 
 // CredentialMetadata is what the credential CRUD endpoints return.

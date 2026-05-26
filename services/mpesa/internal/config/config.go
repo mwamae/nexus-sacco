@@ -37,6 +37,12 @@ type Config struct {
 	KMSMasterKey   []byte
 	KMSMasterKeyID string
 
+	// Comma-separated IPs / CIDRs the webhook handlers will accept
+	// callbacks from. Empty in sandbox (logged as a warning at
+	// startup); MUST be non-empty when MPESA_ENV=production or the
+	// service refuses to start.
+	TrustedIPs string
+
 	ReadHeaderTimeout time.Duration
 }
 
@@ -62,10 +68,18 @@ func Load() (*Config, error) {
 		ForceSandbox:      getEnv("MPESA_FORCE_SANDBOX", "true") == "true",
 		KMSMasterKey:      key,
 		KMSMasterKeyID:    getEnv("MPESA_KMS_MASTER_KEY_ID", "kms-dev-001"),
+		TrustedIPs:        getEnv("MPESA_TRUSTED_IPS", ""),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if len(cfg.JWTSecret) < 32 {
 		return nil, errors.New("JWT_SECRET must be at least 32 bytes")
+	}
+	// Production must pin an allow list — there's no plausible
+	// reason for a live SACCO webhook to accept callbacks from any
+	// IP, and Daraja publishes a small fixed list. Sandbox can run
+	// empty (warned about in the middleware).
+	if cfg.Env == "production" && cfg.TrustedIPs == "" {
+		return nil, errors.New("MPESA_TRUSTED_IPS must be set in production")
 	}
 	return cfg, nil
 }

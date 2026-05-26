@@ -307,7 +307,13 @@ func openTestPool(t *testing.T) (*pgxpool.Pool, uuid.UUID, func()) {
 		pool.Close()
 		t.Skipf("no tenant available: %v", err)
 	}
-	return pool, tenantID, func() { pool.Close() }
+	// Pool close goes through t.Cleanup (NOT a returned deferred
+	// func) so it runs AFTER any t.Cleanup the caller registers.
+	// `defer pool.Close()` would otherwise fire before those
+	// callbacks and their pool.Exec would silently no-op on a
+	// closed pool.
+	t.Cleanup(func() { pool.Close() })
+	return pool, tenantID, func() {}
 }
 
 func newTestSealer(t *testing.T, id string) *crypto.Sealer {
