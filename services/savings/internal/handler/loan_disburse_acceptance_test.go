@@ -227,9 +227,16 @@ func TestLoanDisbursement_PostsBatchedJEWithFees(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
+	// Phase-4 note: channel='mpesa' is now async (queues a B2C
+	// outbound row + defers ExecuteDisbursementTx until Daraja's
+	// Result callback). This test exercises the synchronous
+	// disbursement → batched-GL property; channel 'bank' keeps the
+	// old immediate-post semantics and lets the GL math
+	// assertions below still hold without coupling to the new
+	// B2C-queue plumbing.
 	body := map[string]any{
-		"channel":      "mpesa",
-		"external_ref": "MPS-DISB-" + env.MarkerSuffix,
+		"channel":      "bank",
+		"external_ref": "BNK-DISB-" + env.MarkerSuffix,
 	}
 	status, raw := httpJSON(t, "POST",
 		srv.URL+"/v1/loans/"+sc.LoanID.String()+"/disburse", body)
@@ -246,11 +253,11 @@ func TestLoanDisbursement_PostsBatchedJEWithFees(t *testing.T) {
 		Debit  decimal.Decimal
 		Credit decimal.Decimal
 	}{
-		"1100": {Debit: decimal.NewFromInt(50000)}, // Member Loans Receivable
-		"1030": {Credit: decimal.NewFromInt(47750)}, // M-Pesa Float
-		"4010": {Credit: decimal.NewFromInt(1250)},  // Processing
-		"4020": {Credit: decimal.NewFromInt(500)},   // Insurance
-		"4190": {Credit: decimal.NewFromInt(500)},   // Appraisal
+		"1100": {Debit: decimal.NewFromInt(50000)},   // Member Loans Receivable
+		"1020": {Credit: decimal.NewFromInt(47750)},  // Bank (phase-4 swap from 1030 M-Pesa Float)
+		"4010": {Credit: decimal.NewFromInt(1250)},   // Processing
+		"4020": {Credit: decimal.NewFromInt(500)},    // Insurance
+		"4190": {Credit: decimal.NewFromInt(500)},    // Appraisal
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

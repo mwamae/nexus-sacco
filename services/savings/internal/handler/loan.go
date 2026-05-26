@@ -281,6 +281,50 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 			pending = pa
 			return nil
 		}
+		// Phase-4 M-PESA branch. When channel='mpesa' the
+		// disbursement is deferred until Daraja confirms cash has
+		// actually left the paybill. Inside this tx we:
+		//   1. Validate the loan is still in pending_disbursement.
+		//   2. Resolve the member's MSISDN + the tenant's default
+		//      B2C paybill.
+		//   3. Insert an mpesa_outbound_requests row (shared-DB —
+		//      this is exactly the precedent ApplicationFeeReceipt
+		//      / PostOpeningContributions set in earlier phases).
+		// The actual ExecuteDisbursementTx + GL post fire when
+		// mpesa's b2c result handler hits POST /internal/v1/
+		// loans/{id}/finalize-disbursement (FinalizeDisbursement
+		// below).
+		if strings.EqualFold(in.Channel, "mpesa") {
+			loan, err := h.Loans.GetTx(r.Context(), tx, loanID)
+			if err != nil {
+				return err
+			}
+			if loan.Status != domain.LoanPendingDisbursement {
+				return domain.ErrAppNotDisbursable
+			}
+			msisdn, err := mpesaMSISDNForCounterpartyTx(r.Context(), tx, loan.CounterpartyID)
+			if err != nil {
+				return fmt.Errorf("resolve msisdn: %w", err)
+			}
+			paybillID, err := defaultB2CPaybillTx(r.Context(), tx, tid)
+			if err != nil {
+				return fmt.Errorf("resolve default b2c paybill: %w", err)
+			}
+			if _, err := tx.Exec(r.Context(), `
+				INSERT INTO mpesa_outbound_requests
+					(tenant_id, paybill_id, kind, msisdn, amount,
+					 source_module, source_ref, status)
+				VALUES ($1, $2, 'b2c_disbursement', $3, $4,
+				        'loan.disbursement', $5, 'pending')
+				ON CONFLICT (tenant_id, source_module, source_ref) DO NOTHING
+			`, tid, paybillID, msisdn, loan.Principal, loan.ID.String()); err != nil {
+				return fmt.Errorf("queue mpesa outbound: %w", err)
+			}
+			// Loan stays in pending_disbursement; no GL post yet.
+			// result stays nil; the response below handles that.
+			return nil
+		}
+
 		res, err := h.ExecuteDisbursementTx(r.Context(), tx, payload, userID)
 		if err != nil {
 			return err
@@ -342,9 +386,80 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	if result == nil {
+		// M-PESA branch: outbound row was queued; the loan stays in
+		// pending_disbursement until Daraja's Result callback hits
+		// our finalize endpoint and runs ExecuteDisbursementTx.
+		httpx.Created(w, map[string]any{
+			"status":  "queued_for_mpesa",
+			"loan_id": loanID,
+			"message": "B2C payment queued; loan will move to active once Daraja confirms.",
+		})
+		return
+	}
 	httpx.Created(w, result)
 }
 
+// mpesaMSISDNForCounterpartyTx pulls the member's primary phone out
+// of counterparties.contact and normalises it to the 254xxxxxxxxx
+// shape Daraja's B2C expects. Returns an error when the field is
+// missing — disbursement to a member without a phone number on file
+// fails closed rather than silently dropping the cash.
+func mpesaMSISDNForCounterpartyTx(ctx context.Context, tx pgx.Tx, cpID uuid.UUID) (string, error) {
+	var raw string
+	err := tx.QueryRow(ctx,
+		`SELECT COALESCE(contact->>'phone', '') FROM counterparties WHERE id = $1`,
+		cpID,
+	).Scan(&raw)
+	if err != nil {
+		return "", err
+	}
+	// Strip everything except digits + collapse the country-code
+	// prefixes ("0xxx…", "+254xxx…", "254xxx…") down to a single
+	// canonical "254xxxxxxxxx". Daraja rejects + or leading 0.
+	digits := ""
+	for _, r := range raw {
+		if r >= '0' && r <= '9' {
+			digits += string(r)
+		}
+	}
+	if strings.HasPrefix(digits, "254") {
+		// already canonical
+	} else if strings.HasPrefix(digits, "0") {
+		digits = "254" + digits[1:]
+	} else if len(digits) == 9 {
+		digits = "254" + digits
+	}
+	if len(digits) != 12 || !strings.HasPrefix(digits, "254") {
+		return "", fmt.Errorf("counterparty %s has no usable msisdn (raw=%q normalised=%q)", cpID, raw, digits)
+	}
+	return digits, nil
+}
+
+// defaultB2CPaybillTx returns the tenant's preferred B2C paybill —
+// active, purpose includes b2c, is_default=true. Falls back to the
+// most-recently-updated active b2c paybill when no default is
+// flagged. Errors when nothing matches; phase 4 expects every
+// tenant to have at least one configured before any disbursement
+// uses channel='mpesa'.
+func defaultB2CPaybillTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT id FROM mpesa_paybills
+		 WHERE tenant_id = $1
+		   AND status   = 'active'
+		   AND purpose  IN ('disbursement', 'both')
+		 ORDER BY is_default DESC, updated_at DESC
+		 LIMIT 1
+	`, tenantID).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, fmt.Errorf("no active b2c-capable paybill configured for tenant %s", tenantID)
+		}
+		return uuid.Nil, err
+	}
+	return id, nil
+}
 
 // ─────────── Reads ───────────
 
@@ -539,7 +654,13 @@ func (h *LoanHandler) resolveDisbursementCashAcctTx(ctx context.Context, tx pgx.
 	if ch != "internal" && ch != "savings" {
 		switch ch {
 		case "mpesa":
-			return "1030"
+			// Phase 4: B2C disbursements debit Loans Receivable
+			// (1100) and credit the per-paybill cash account
+			// 1015. The legacy 1030 (M-Pesa Float) is kept for
+			// historical references; new disbursements land
+			// against 1015 so the GL reflects "money has left the
+			// Safaricom paybill".
+			return "1015"
 		case "bank", "bank_transfer":
 			return "1020"
 		default:

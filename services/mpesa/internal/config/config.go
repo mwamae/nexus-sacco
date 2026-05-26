@@ -43,6 +43,30 @@ type Config struct {
 	// service refuses to start.
 	TrustedIPs string
 
+	// X-Internal-Token gates the /v1/mpesa/b2c/requests enqueue
+	// endpoint. Required when MPESA_ENV=production. The enqueue
+	// caller (savings disburse path today; future loan/refund
+	// flows) sends this header from MPESA_INTERNAL_TOKEN.
+	InternalToken string
+
+	// Base URL for the savings service. mpesa's B2C result handler
+	// posts here to finalize a loan disbursement once Daraja
+	// confirms. Empty disables the auto-finalize path (the
+	// reconciler still picks up the row).
+	SavingsBaseURL string
+
+	// PEM-encoded initiator certificate (or PKIX public key). The
+	// b2c-dispatcher uses this to RSA-OAEP-encrypt the initiator
+	// password. Required for any B2C call — the dispatcher errors
+	// at startup when empty AND MPESA_ENV=production. In sandbox
+	// the dispatcher logs a warning + keeps queued rows pending.
+	InitiatorCertPEM []byte
+
+	// Public callback URLs Safaricom hits with B2C result/timeout.
+	// Each paybill submits these as part of its B2C request.
+	B2CResultURL  string
+	B2CTimeoutURL string
+
 	ReadHeaderTimeout time.Duration
 }
 
@@ -69,6 +93,11 @@ func Load() (*Config, error) {
 		KMSMasterKey:      key,
 		KMSMasterKeyID:    getEnv("MPESA_KMS_MASTER_KEY_ID", "kms-dev-001"),
 		TrustedIPs:        getEnv("MPESA_TRUSTED_IPS", ""),
+		InternalToken:     getEnv("MPESA_INTERNAL_TOKEN", ""),
+		SavingsBaseURL:    getEnv("MPESA_SAVINGS_URL", ""),
+		InitiatorCertPEM:  []byte(getEnv("MPESA_INITIATOR_CERT_PEM", "")),
+		B2CResultURL:      getEnv("MPESA_B2C_RESULT_URL", ""),
+		B2CTimeoutURL:     getEnv("MPESA_B2C_TIMEOUT_URL", ""),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if len(cfg.JWTSecret) < 32 {
@@ -80,6 +109,18 @@ func Load() (*Config, error) {
 	// empty (warned about in the middleware).
 	if cfg.Env == "production" && cfg.TrustedIPs == "" {
 		return nil, errors.New("MPESA_TRUSTED_IPS must be set in production")
+	}
+	// Phase-4 production-mode checks. Sandbox is lenient — the
+	// B2C dispatcher just skips signing rows when the cert is
+	// missing, and the enqueue endpoint stays unauth'd until an
+	// operator sets MPESA_INTERNAL_TOKEN.
+	if cfg.Env == "production" {
+		if cfg.InternalToken == "" {
+			return nil, errors.New("MPESA_INTERNAL_TOKEN must be set in production")
+		}
+		if len(cfg.InitiatorCertPEM) == 0 {
+			return nil, errors.New("MPESA_INITIATOR_CERT_PEM must be set in production for B2C signing")
+		}
 	}
 	return cfg, nil
 }

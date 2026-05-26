@@ -24,6 +24,7 @@ import (
 	"github.com/nexussacco/mpesa/internal/db"
 	"github.com/nexussacco/mpesa/internal/handler"
 	"github.com/nexussacco/mpesa/internal/middleware"
+	"github.com/nexussacco/mpesa/internal/savingsclient"
 	"github.com/nexussacco/mpesa/internal/store"
 	"github.com/nexussacco/mpesa/internal/workflowclient"
 )
@@ -109,6 +110,25 @@ func main() {
 		Events: inboundEvents,
 	}
 
+	// Phase-4 B2C surface. SavingsClient is nil-safe — when the
+	// base URL isn't configured the result handler still records
+	// the outbound state; the reconciler picks up finalize later.
+	outboundStore := store.NewOutboundRequestStore(pool.Pool)
+	var finalize handler.FinalizeClient
+	if cfg.SavingsBaseURL != "" {
+		finalize = savingsclient.New(cfg.SavingsBaseURL, cfg.InternalToken)
+	}
+	b2cH := &handler.B2CHandler{
+		DB:            pool,
+		Paybills:      paybills,
+		Outbound:      outboundStore,
+		Audit:         audit,
+		Workflow:      workflowclient.New(),
+		Finalize:      finalize,
+		InternalToken: cfg.InternalToken,
+		Logger:        logger,
+	}
+
 	allowList, err := middleware.NewIPAllowList(cfg.TrustedIPs, logger)
 	if err != nil {
 		logger.Error("ip allow list", "err", err)
@@ -121,6 +141,7 @@ func main() {
 		Paybill:       paybillH,
 		Webhook:       webhookH,
 		InboundEvents: inboundH,
+		B2C:           b2cH,
 		TenantStore:   tenants,
 		Issuer:        issuer,
 		IPAllowList:   allowList,

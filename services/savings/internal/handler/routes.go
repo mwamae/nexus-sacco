@@ -66,6 +66,10 @@ func Routes(d Deps) http.Handler {
 	r.Route("/internal/v1", func(r chi.Router) {
 		r.Post("/pending-approvals/{approval_id}/resolve", d.Approvals.ResolveFromWorkflow)
 		r.Post("/loan-applications/{app_id}/resolve", d.LoanApp.ResolveFromWorkflow)
+		// Phase 4 — mpesa's B2C result handler calls this once
+		// Daraja confirms a disbursement landed on the member's
+		// phone. The handler does its own X-Internal-Token check.
+		r.Post("/loans/{loan_id}/finalize-disbursement", d.Loan.FinalizeDisbursement)
 	})
 
 	r.Route("/v1", func(r chi.Router) {

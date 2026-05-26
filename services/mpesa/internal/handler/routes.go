@@ -20,6 +20,7 @@ type Deps struct {
 	Paybill        *PaybillHandler
 	Webhook        *WebhookHandler
 	InboundEvents  *InboundEventsHandler
+	B2C            *B2CHandler
 	TenantStore    *store.TenantStore
 	Issuer         *auth.TokenIssuer
 	IPAllowList    *middleware.IPAllowList
@@ -48,6 +49,23 @@ func Routes(d Deps) http.Handler {
 		r.Post("/{paybill_id}/validation",   d.Webhook.Validation)
 		r.Post("/{paybill_id}/confirmation", d.Webhook.Confirmation)
 	})
+
+	// B2C result/timeout callbacks. Same auth shape (IP + token) as
+	// C2B. Daraja hits these after a B2C payment lands or times out.
+	if d.B2C != nil {
+		r.Route("/v1/mpesa/b2c", func(r chi.Router) {
+			r.Use(d.IPAllowList.Middleware)
+			r.Post("/{paybill_id}/result",  d.B2C.Result)
+			r.Post("/{paybill_id}/timeout", d.B2C.Timeout)
+			r.Post("/{paybill_id}/reverse", d.B2C.Reverse)
+
+			// Internal enqueue endpoint. Gated by X-Internal-Token
+			// inside the handler itself (no IP allow-list — internal
+			// services don't appear in the Safaricom-IPs list). The
+			// handler check is the only auth.
+			r.Post("/requests", d.B2C.Enqueue)
+		})
+	}
 
 	// ─────────── Admin / staff JWT routes ───────────
 	r.Route("/v1", func(r chi.Router) {

@@ -93,6 +93,26 @@ const (
 	ViaUnallocated      ResolvedVia = "unallocated"
 )
 
+// OutboundKind mirrors the mpesa_outbound_kind enum.
+type OutboundKind string
+
+const (
+	OutboundB2CDisbursement OutboundKind = "b2c_disbursement"
+	OutboundRefund          OutboundKind = "refund"
+)
+
+// OutboundStatus mirrors the mpesa_outbound_status enum (phase-4
+// added 'reversed').
+type OutboundStatus string
+
+const (
+	OutboundPending   OutboundStatus = "pending"
+	OutboundSent      OutboundStatus = "sent"
+	OutboundCompleted OutboundStatus = "completed"
+	OutboundFailed    OutboundStatus = "failed"
+	OutboundReversed  OutboundStatus = "reversed"
+)
+
 // InboundEvent is one C2B confirmation as stored. The raw Safaricom
 // payload is preserved verbatim in RawPayload so the resolver can be
 // re-run from history if its rules change.
