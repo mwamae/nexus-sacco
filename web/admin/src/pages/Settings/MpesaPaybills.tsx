@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import {
   listMpesaPaybills,
+  createMpesaPaybill,
   testMpesaAuth,
   rotateMpesaCredential,
   listMpesaInboundEvents,
@@ -26,6 +27,8 @@ import {
   type ApiMpesaPaybill,
   type ApiMpesaInboundEvent,
   type MpesaCredentialKind,
+  type MpesaEnvironment,
+  type MpesaPaybillPurpose,
   type MpesaTestAuthResult,
 } from '../../api/client';
 import { Badge } from '../../components/Badge';
@@ -40,6 +43,7 @@ export default function MpesaPaybills() {
   const [paybills, setPaybills] = useState<ApiMpesaPaybill[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<ApiMpesaPaybill | null>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
   const [rotateModal, setRotateModal] = useState<ApiMpesaPaybill | null>(null);
   const [testResults, setTestResults] = useState<Record<string, MpesaTestAuthResult & { busy?: boolean }>>({});
   const [eventsByPaybill, setEventsByPaybill] = useState<Record<string, ApiMpesaInboundEvent[]>>({});
@@ -94,17 +98,21 @@ export default function MpesaPaybills() {
             and watch live traffic. {!canEdit && '— Read-only (no tenant:settings:edit).'}
           </div>
         </div>
-        {/* Phase-1 ships the create flow via API only; the spec for
-            phase 5 doesn't ask for an Add modal in the UI yet. Hide
-            for now — the existing /v1/mpesa/paybills POST is what
-            operators script against. */}
+        {canEdit && (
+          <button className="btn btn-accent" onClick={() => setRegisterOpen(true)}>
+            + Register paybill
+          </button>
+        )}
       </div>
 
       {err && <div className="alert alert-error">{err}</div>}
       {!paybills && !err && <div className="empty">Loading…</div>}
       {paybills && paybills.length === 0 && (
         <div className="card"><div className="card-body">
-          No paybills registered yet. POST one to <code>/v1/mpesa/paybills</code> and refresh this page.
+          No paybills registered yet.
+          {canEdit
+            ? <> Click <strong>Register paybill</strong> above to add one.</>
+            : <> Ask a tenant admin (needs <code>tenant:settings:edit</code>) to register one.</>}
         </div></div>
       )}
 
@@ -195,6 +203,16 @@ export default function MpesaPaybills() {
           paybill={rotateModal}
           onClose={() => setRotateModal(null)}
           onSaved={async () => { setRotateModal(null); }}
+        />
+      )}
+      {registerOpen && (
+        <RegisterPaybillModal
+          onClose={() => setRegisterOpen(false)}
+          onCreated={async (p) => {
+            setRegisterOpen(false);
+            await load();
+            setSelected(p);
+          }}
         />
       )}
     </div>
@@ -387,6 +405,183 @@ function RotateCredentialsModal({ paybill, onClose, onSaved }: {
           />
         </Field>
       ))}
+    </ModalShell>
+  );
+}
+
+// ─────────── Register-paybill modal ───────────
+
+// Scope options, grouped by which purposes the backend permits them
+// for. The user picks freely; the form filters to the relevant set
+// when purpose changes (defensible defaults vs full freedom). The
+// backend doesn't enforce scope contents — keeping the UI list tight
+// is purely a UX choice so operators don't ship typos.
+const SCOPE_OPTIONS: { value: string; label: string; purposes: MpesaPaybillPurpose[] }[] = [
+  { value: 'member_deposits',   label: 'Member deposits',   purposes: ['collection', 'both'] },
+  { value: 'loan_repayment',    label: 'Loan repayment',    purposes: ['collection', 'both'] },
+  { value: 'fees',              label: 'Fees',              purposes: ['collection', 'both'] },
+  { value: 'loan_disbursement', label: 'Loan disbursement', purposes: ['disbursement', 'both'] },
+  { value: 'refund',            label: 'Refund',            purposes: ['disbursement', 'both'] },
+];
+
+function RegisterPaybillModal({ onClose, onCreated }: {
+  onClose: () => void;
+  onCreated: (p: ApiMpesaPaybill) => Promise<void> | void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [created, setCreated] = useState<ApiMpesaPaybill | null>(null);
+
+  const [label, setLabel] = useState('');
+  const [shortcode, setShortcode] = useState('');
+  const [purpose, setPurpose] = useState<MpesaPaybillPurpose>('collection');
+  const [environment, setEnvironment] = useState<MpesaEnvironment>('sandbox');
+  const [scope, setScope] = useState<string[]>(['member_deposits']);
+
+  const visibleScopes = useMemo(
+    () => SCOPE_OPTIONS.filter((s) => s.purposes.includes(purpose)),
+    [purpose],
+  );
+
+  // When purpose changes, drop any selected scopes that are no longer
+  // valid + auto-tick the first sensible default if the user hasn't
+  // chosen anything (avoids submitting an empty scope by accident).
+  useEffect(() => {
+    setScope((prev) => {
+      const visible = visibleScopes.map((s) => s.value);
+      const kept = prev.filter((s) => visible.includes(s));
+      if (kept.length === 0 && visible.length > 0) return [visible[0]];
+      return kept;
+    });
+  }, [visibleScopes]);
+
+  function toggleScope(v: string) {
+    setScope((prev) => (prev.includes(v) ? prev.filter((s) => s !== v) : [...prev, v]));
+  }
+
+  async function submit() {
+    setErr(null);
+    if (!label.trim() || !shortcode.trim()) {
+      setErr('Label and shortcode are required.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const p = await createMpesaPaybill({
+        label: label.trim(),
+        shortcode: shortcode.trim(),
+        purpose,
+        scope,
+        environment,
+      });
+      setCreated(p);
+    } catch (e) {
+      setErr(extractError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // After-create state shows the new paybill's webhook URLs so the
+  // operator can copy them into the Daraja portal before closing.
+  // Closing fires onCreated, which refreshes the list + auto-selects
+  // the new row.
+  if (created) {
+    return (
+      <ModalShell
+        title={`Registered · ${created.label}`}
+        submitLabel="Done"
+        onClose={() => void onCreated(created)}
+        onSubmit={() => void onCreated(created)}
+      >
+        <div className="alert alert-success" style={{ marginTop: 0 }}>
+          Paybill <strong>{created.shortcode}</strong> registered. Copy
+          the Daraja portal URLs below before closing — the webhook
+          token is embedded and grants ingress to the C2B handler.
+        </div>
+        <DarajaURLsPanel paybill={created} />
+        <p className="muted tiny" style={{ marginTop: 12 }}>
+          Next steps: open the row's <strong>Rotate creds</strong>
+          {' '}modal to paste the Daraja consumer key + secret (plus
+          initiator name/password for B2C), then <strong>Test auth</strong>
+          {' '}to confirm OAuth round-trip works.
+        </p>
+      </ModalShell>
+    );
+  }
+
+  return (
+    <ModalShell
+      title="Register paybill"
+      busy={busy}
+      submitLabel="Register"
+      onClose={onClose}
+      onSubmit={submit}
+    >
+      <p className="muted tiny" style={{ marginTop: 0 }}>
+        Registers a new Safaricom paybill / till for this tenant. Daraja
+        credentials come in a separate step via Rotate creds — this form
+        only persists the metadata + generates the webhook token.
+      </p>
+      {err && <div className="alert alert-error">{err}</div>}
+
+      <Field label="Label" hint="Human-readable name (e.g. 'Sandbox C2B + B2C').">
+        <input
+          className="input"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="Sandbox paybill"
+          autoFocus
+        />
+      </Field>
+
+      <Field label="Shortcode" hint="Safaricom paybill / till number.">
+        <input
+          className="input mono"
+          value={shortcode}
+          onChange={(e) => setShortcode(e.target.value)}
+          placeholder="600000"
+        />
+      </Field>
+
+      <Field label="Purpose" hint="C2B = incoming. B2C = outgoing. Both = same shortcode handles both flows.">
+        <select
+          className="input"
+          value={purpose}
+          onChange={(e) => setPurpose(e.target.value as MpesaPaybillPurpose)}
+        >
+          <option value="collection">Collection (C2B)</option>
+          <option value="disbursement">Disbursement (B2C)</option>
+          <option value="both">Both (C2B + B2C)</option>
+        </select>
+      </Field>
+
+      <Field label="Environment" hint="Production paybills must have MPESA_TRUSTED_IPS set on the mpesa service.">
+        <select
+          className="input"
+          value={environment}
+          onChange={(e) => setEnvironment(e.target.value as MpesaEnvironment)}
+        >
+          <option value="sandbox">Sandbox</option>
+          <option value="production">Production</option>
+        </select>
+      </Field>
+
+      <Field label="Scope" hint="What this paybill is allowed to handle. Filtered by purpose.">
+        <div style={{ display: 'grid', gap: 6 }}>
+          {visibleScopes.map((s) => (
+            <label key={s.value} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={scope.includes(s.value)}
+                onChange={() => toggleScope(s.value)}
+              />
+              <span>{s.label}</span>
+              <code className="muted tiny">{s.value}</code>
+            </label>
+          ))}
+        </div>
+      </Field>
     </ModalShell>
   );
 }

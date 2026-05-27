@@ -65,9 +65,14 @@ type Paybill struct {
 	// it into the Daraja portal; thereafter it's surfaced only via
 	// the explicit "rotate token" path (phase 3).
 	WebhookToken string     `json:"webhook_token,omitempty"`
-	CreatedBy    *uuid.UUID `json:"created_by,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	// IsDefault flags the paybill the loan-disburse picker uses when
+	// no explicit paybill is named. At most one paybill per tenant
+	// per purpose should carry this flag; enforced by partial UNIQUE
+	// index in migration 0007.
+	IsDefault bool       `json:"is_default"`
+	CreatedBy *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // InboundStatus mirrors the mpesa_inbound_status enum: the lifecycle

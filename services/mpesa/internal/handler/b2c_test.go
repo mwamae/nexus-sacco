@@ -31,11 +31,31 @@ import (
 	"github.com/nexussacco/mpesa/internal/workflowclient"
 )
 
-type fakeFinalize struct{ count atomic.Int32 }
+type fakeFinalize struct {
+	count        atomic.Int32
+	reverseCount atomic.Int32
+	// reverseErr lets tests inject the savings-side error (or nil for
+	// the happy path). Default is nil — savings returned 200.
+	reverseErr error
+	// lastReverseReceipt captures the mpesa_reversal_receipt the
+	// caller passed; tests can assert on the value the handler
+	// surfaced from the Daraja envelope.
+	lastReverseReceipt string
+	lastReverseLoanID  uuid.UUID
+}
 
 func (f *fakeFinalize) FinalizeDisbursement(_ context.Context, _ uuid.UUID, _ string) error {
 	f.count.Add(1)
 	return nil
+}
+
+func (f *fakeFinalize) ReverseDisbursement(
+	_ context.Context, loanID uuid.UUID, mpesaReceipt, _ string,
+) error {
+	f.reverseCount.Add(1)
+	f.lastReverseReceipt = mpesaReceipt
+	f.lastReverseLoanID = loanID
+	return f.reverseErr
 }
 
 func TestB2C_Enqueue_Idempotent(t *testing.T) {
@@ -85,7 +105,7 @@ func TestB2C_Enqueue_RejectsWithoutInternalToken(t *testing.T) {
 	srv := newB2CSrv(h)
 	defer srv.Close()
 
-	url := srv.URL + "/v1/mpesa/b2c/requests"
+	url := srv.URL + "/v1/mpesa/b2c/requests" // staff/internal route — stays under /v1/mpesa
 	body := map[string]any{
 		"paybill_id":    paybill.ID,
 		"msisdn":        "254712345678",
@@ -244,10 +264,12 @@ func newB2CHandler(t *testing.T, dbPool *db.Pool, finalize FinalizeClient, inter
 
 func newB2CSrv(h *B2CHandler) *httptest.Server {
 	r := chi.NewRouter()
+	// Internal enqueue keeps /v1/mpesa prefix; Daraja-facing routes
+	// dropped the prefix per Safaricom's no-"mpesa"-in-URL rule.
 	r.Post("/v1/mpesa/b2c/requests", h.Enqueue)
-	r.Post("/v1/mpesa/b2c/{paybill_id}/result", h.Result)
-	r.Post("/v1/mpesa/b2c/{paybill_id}/timeout", h.Timeout)
-	r.Post("/v1/mpesa/b2c/{paybill_id}/reverse", h.Reverse)
+	r.Post("/v1/b2c/{paybill_id}/result", h.Result)
+	r.Post("/v1/b2c/{paybill_id}/timeout", h.Timeout)
+	r.Post("/v1/b2c/{paybill_id}/reverse", h.Reverse)
 	return httptest.NewServer(r)
 }
 
@@ -266,7 +288,9 @@ func postEnqueue(t *testing.T, srv *httptest.Server, body map[string]any, token 
 		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("enqueue: status %d body %s", resp.StatusCode, raw)
 	}
-	var env struct{ Data map[string]any `json:"data"` }
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
 	_ = json.NewDecoder(resp.Body).Decode(&env)
 	return env.Data
 }
@@ -274,7 +298,7 @@ func postEnqueue(t *testing.T, srv *httptest.Server, body map[string]any, token 
 func postResult(t *testing.T, srv *httptest.Server, paybillID uuid.UUID, token string, body map[string]any) *http.Response {
 	t.Helper()
 	buf, _ := json.Marshal(body)
-	url := fmt.Sprintf("%s/v1/mpesa/b2c/%s/result?token=%s", srv.URL, paybillID, token)
+	url := fmt.Sprintf("%s/v1/b2c/%s/result?token=%s", srv.URL, paybillID, token)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(buf))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -283,6 +307,99 @@ func postResult(t *testing.T, srv *httptest.Server, paybillID uuid.UUID, token s
 	}
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
+}
+
+func postReverse(t *testing.T, srv *httptest.Server, paybillID uuid.UUID, token string, body map[string]any) *http.Response {
+	t.Helper()
+	buf, _ := json.Marshal(body)
+	url := fmt.Sprintf("%s/v1/b2c/%s/reverse?token=%s", srv.URL, paybillID, token)
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(buf))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// TestB2C_ReverseCallback_LoanDisbursement_HandsOffToSavings is the
+// integration test for Fix 2 — it asserts the mpesa reverse webhook
+// (a) marks the outbound row 'reversed', (b) creates the wf task,
+// and (c) calls savings.ReverseDisbursement out-of-tx. Combined with
+// the dispatcher loadcreds_test.go (which proves Fix 1 — encrypted
+// credentials decrypt cleanly), this ties both fixes end-to-end:
+// signed dispatch fires + reversal hands off to savings.
+func TestB2C_ReverseCallback_LoanDisbursement_HandsOffToSavings(t *testing.T) {
+	pool, tenantID, _ := openTestPool(t)
+	dbPool := &db.Pool{Pool: pool}
+	paybill := seedTestPaybill(t, dbPool, tenantID, false, false)
+
+	// Source_ref must be a valid UUID — the reverse handler parses
+	// it as the loan_id when source_module='loan.disbursement'.
+	loanID := uuid.New()
+	convID := "AG_REV_" + fmt.Sprint(time.Now().UnixNano())
+	var outboundID uuid.UUID
+	_ = dbPool.WithTenantTx(context.Background(), tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `
+			INSERT INTO mpesa_outbound_requests
+				(tenant_id, paybill_id, kind, msisdn, amount,
+				 source_module, source_ref, status,
+				 daraja_conversation_id, daraja_originator_id)
+			VALUES ($1, $2, 'b2c_disbursement', '254712345678', 1000,
+			        'loan.disbursement', $3, 'sent', $4, 'orig-rev-1')
+			RETURNING id
+		`, tenantID, paybill.ID, loanID.String(), convID).Scan(&outboundID)
+	})
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM mpesa_outbound_requests WHERE id = $1`, outboundID)
+	})
+
+	finalizer := &fakeFinalize{}
+	h := newB2CHandler(t, dbPool, finalizer, "secret-token")
+	srv := newB2CSrv(h)
+	defer srv.Close()
+
+	resultBody := map[string]any{
+		"Result": map[string]any{
+			"ResultCode":     0,
+			"ResultDesc":     "Transaction reversed",
+			"ConversationID": convID,
+		},
+	}
+	resp := postReverse(t, srv, paybill.ID, paybill.WebhookToken, resultBody)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("reverse callback: status %d body %s", resp.StatusCode, raw)
+	}
+
+	// Outbound row marked reversed.
+	var status string
+	_ = pool.QueryRow(context.Background(),
+		`SELECT status::text FROM mpesa_outbound_requests WHERE id = $1`, outboundID,
+	).Scan(&status)
+	if status != "reversed" {
+		t.Errorf("outbound status: want reversed, got %q", status)
+	}
+
+	// ReverseDisbursement was invoked exactly once.
+	if finalizer.reverseCount.Load() != 1 {
+		t.Errorf("savings ReverseDisbursement: want 1 call, got %d", finalizer.reverseCount.Load())
+	}
+
+	// Audit trail recorded the handoff outcome (one entry with
+	// action=mpesa.b2c.reverse_handoff).
+	var auditCount int
+	_ = pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM audit_log
+		 WHERE tenant_id = $1
+		   AND target_id = $2
+		   AND action = 'mpesa.b2c.reverse_handoff'
+	`, tenantID, outboundID.String()).Scan(&auditCount)
+	if auditCount != 1 {
+		t.Errorf("audit handoff entry: want 1, got %d", auditCount)
+	}
 }
 
 // silence unused-import warnings when this file is the only consumer

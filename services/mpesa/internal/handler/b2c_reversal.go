@@ -10,7 +10,9 @@
 //      reconciler runs the same code path).
 //
 // For phase 4 we expose one public callback URL the Daraja portal
-// can be configured with: POST /v1/mpesa/b2c/{paybill_id}/reverse.
+// can be configured with: POST /v1/b2c/{paybill_id}/reverse.
+// (No /mpesa segment — Safaricom's portal refuses URLs containing
+// that substring.)
 // The handler:
 //   • Looks up the outbound row by conversation_id
 //   • Flips status to 'reversed', stamps the raw payload
@@ -18,9 +20,13 @@
 //     or cancel the disbursement.
 //
 // Loan rollback (flipping the loan back to pending_disbursement)
-// happens via the savings finalize-reversal endpoint — phase 5
-// scope. For now the wf task carries enough context for staff to
-// trigger that step manually.
+// happens via the savings /internal/v1/loans/{id}/reverse-disbursement
+// endpoint. The call fires OUTSIDE the persistence tx (savings owns
+// its own tx + posting outbox) and is best-effort — the wf task
+// remains the durable handle so an operator can finish the job
+// manually if the HTTP call fails. Daraja ALWAYS sees a 200, even
+// when the savings call errors, because telling Safaricom to retry
+// would compound the bounce.
 
 package handler
 
@@ -68,10 +74,11 @@ func (h *B2CHandler) Reverse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		outboundID uuid.UUID
-		amount     string
-		msisdn     string
-		sourceRef  string
+		outboundID   uuid.UUID
+		amount       string
+		msisdn       string
+		sourceRef    string
+		sourceModule string
 	)
 	err = h.DB.WithTenantTx(r.Context(), paybillTenant, func(tx pgx.Tx) error {
 		out, err := h.Outbound.ByConversationIDTx(r.Context(), tx, env.Result.ConversationID)
@@ -85,6 +92,7 @@ func (h *B2CHandler) Reverse(w http.ResponseWriter, r *http.Request) {
 		amount = out.Amount.StringFixed(2)
 		msisdn = out.MSISDN
 		sourceRef = out.SourceRef
+		sourceModule = out.SourceModule
 		if err := h.Outbound.MarkReversedTx(r.Context(), tx, out.ID, body); err != nil {
 			return err
 		}
@@ -93,6 +101,22 @@ func (h *B2CHandler) Reverse(w http.ResponseWriter, r *http.Request) {
 		// 0007; if a tenant predates the migration the task just
 		// doesn't get queued — log + continue).
 		if h.Workflow != nil {
+			ctxMap := map[string]any{
+				"outbound_id":   out.ID,
+				"source_module": out.SourceModule,
+				"source_ref":    out.SourceRef,
+				"amount":        out.Amount.StringFixed(2),
+				"msisdn":        out.MSISDN,
+				"reversal_desc": env.Result.ResultDesc,
+			}
+			// loan_id when source_ref is a parseable UUID + module is
+			// the loan-disbursement source. Lets the staff inbox UI
+			// deep-link to the loan profile from the reversal task.
+			if out.SourceModule == "loan.disbursement" {
+				if lid, perr := uuid.Parse(out.SourceRef); perr == nil {
+					ctxMap["loan_id"] = lid.String()
+				}
+			}
 			_, err := h.Workflow.CreateInstanceTx(r.Context(), tx, workflowclient.CreateInstanceInput{
 				TenantID:    paybillTenant,
 				ProcessKind: "mpesa_b2c_reversal",
@@ -101,14 +125,7 @@ func (h *B2CHandler) Reverse(w http.ResponseWriter, r *http.Request) {
 				Summary: fmt.Sprintf("M-PESA B2C reversal · KES %s to %s",
 					out.Amount.StringFixed(2), out.MSISDN),
 				SourceURL: "/accounting/mpesa-reversal?outbound=" + out.ID.String(),
-				Context: map[string]any{
-					"outbound_id":    out.ID,
-					"source_module":  out.SourceModule,
-					"source_ref":     out.SourceRef,
-					"amount":         out.Amount.StringFixed(2),
-					"msisdn":         out.MSISDN,
-					"reversal_desc":  env.Result.ResultDesc,
-				},
+				Context:   ctxMap,
 			})
 			if err != nil && !errors.Is(err, workflowclient.ErrDefinitionNotFound) {
 				return err
@@ -131,6 +148,49 @@ func (h *B2CHandler) Reverse(w http.ResponseWriter, r *http.Request) {
 		"msisdn":     msisdn,
 		"source_ref": sourceRef,
 	})
+
+	// Hand off to savings (loan rollback). Only attempt for the
+	// loan-disbursement source_module; refund flows don't have a
+	// savings-side counterpart. Failure is logged + audited but does
+	// NOT change the Daraja-facing response — the wf task is the
+	// durable handle and the reconciler retries on its own schedule.
+	if h.Finalize != nil && sourceModule == "loan.disbursement" && sourceRef != "" {
+		if loanID, perr := uuid.Parse(sourceRef); perr == nil {
+			reason := env.Result.ResultDesc
+			if reason == "" {
+				reason = "Safaricom reversal"
+			}
+			// Daraja's reversal envelope carries the original
+			// TransactionID in Result.TransactionID — surface it to
+			// savings as the mpesa_reversal_receipt for audit
+			// correlation with mpesa_outbound_requests.
+			mpesaReceipt := env.Result.TransactionID
+			if mpesaReceipt == "" {
+				mpesaReceipt = env.Result.ConversationID
+			}
+			if rerr := h.Finalize.ReverseDisbursement(
+				r.Context(), loanID, mpesaReceipt, reason,
+			); rerr != nil {
+				h.Logger.Error("loan reverse-disbursement",
+					"loan_id", loanID, "outbound_id", outboundID, "err", rerr)
+				h.audit(r, paybillTenant, outboundID, "mpesa.b2c.reverse_handoff", map[string]any{
+					"loan_id":                loanID.String(),
+					"mpesa_reversal_receipt": mpesaReceipt,
+					"error":                  rerr.Error(),
+				})
+				// Best-effort: the wf task is the human safety net.
+			} else {
+				h.Logger.Info("loan reverse-disbursement",
+					"loan_id", loanID, "outbound_id", outboundID,
+					"mpesa_reversal_receipt", mpesaReceipt)
+				h.audit(r, paybillTenant, outboundID, "mpesa.b2c.reverse_handoff", map[string]any{
+					"loan_id":                loanID.String(),
+					"mpesa_reversal_receipt": mpesaReceipt,
+				})
+			}
+		}
+	}
+
 	writeDaraja(w, darajaResult{ResultCode: 0, ResultDesc: "Received"})
 
 	// Silence an "import unused" warning for chi when no other

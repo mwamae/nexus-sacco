@@ -217,13 +217,18 @@ func TestCredentialsTable_NoSelectForAppRole(t *testing.T) {
 	}
 	defer appPool.Close()
 
+	// Migration 0009 grants column-level SELECT on every non-secret
+	// column so INSERT … RETURNING works on the write path. The
+	// threat model — "no bulk read of ciphertext" — is pinned by
+	// asserting that selecting the ciphertext column specifically
+	// still fails with permission-denied.
 	err = appPool.WithTenantTx(context.Background(), tenantA, func(tx pgx.Tx) error {
-		var c int
+		var ct []byte
 		return tx.QueryRow(context.Background(),
-			`SELECT count(*) FROM mpesa_paybill_credentials`).Scan(&c)
+			`SELECT ciphertext FROM mpesa_paybill_credentials LIMIT 1`).Scan(&ct)
 	})
 	if err == nil {
-		t.Fatal("expected permission denied on SELECT for nexus_app, but query succeeded")
+		t.Fatal("expected permission denied on SELECT ciphertext for nexus_app, but query succeeded")
 	}
 	if !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("want permission-denied error, got: %v", err)

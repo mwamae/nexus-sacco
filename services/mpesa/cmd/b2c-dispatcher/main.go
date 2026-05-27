@@ -33,6 +33,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/nexussacco/mpesa/internal/config"
+	"github.com/nexussacco/mpesa/internal/crypto"
 	"github.com/nexussacco/mpesa/internal/daraja"
 	"github.com/nexussacco/mpesa/internal/db"
 	"github.com/nexussacco/mpesa/internal/domain"
@@ -78,24 +79,47 @@ func main() {
 		logger.Warn("MPESA_INITIATOR_CERT_PEM is empty — B2C dispatcher will skip rows until configured")
 	}
 
+	// Credential sealer. The dispatcher reads ciphertext from
+	// mpesa_paybill_credentials + Decrypts before handing the values
+	// to Daraja. config.Load already validated the master key length;
+	// NewSealer errors here would be programming bugs, not operator
+	// misconfiguration, so we exit instead of degrading.
+	sealer, err := crypto.NewSealer(cfg.KMSMasterKeyID, cfg.KMSMasterKey)
+	if err != nil {
+		logger.Error("init credential sealer", "err", err)
+		os.Exit(1)
+	}
+	// Round-trip a known plaintext through the Sealer before entering
+	// the poll loop. Catches misconfigured key material (right length,
+	// wrong bytes) + envelope-codec regressions at startup instead of
+	// during the first credential rotation in production.
+	if err := sealerPingRoundTrip(sealer); err != nil {
+		logger.Error("sealer round-trip ping failed", "err", err,
+			"kms_active_key_id", cfg.KMSMasterKeyID,
+			"hint", "MPESA_KMS_MASTER_KEY must be the SAME hex string that sealed the existing credential rows")
+		os.Exit(1)
+	}
+
 	d := &dispatcher{
-		pool:           pool,
-		darajaClient:   daraja.NewClient(cfg.DarajaBaseURL, daraja.Sandbox),
-		outboundStore:  store.NewOutboundRequestStore(pool.Pool),
-		paybillStore:   store.NewPaybillStore(pool.Pool),
-		credStore:      store.NewCredentialStore(pool.Pool),
-		audit:          store.NewAuditStore(pool.Pool),
-		encoder:        encoder,
-		resultURL:      cfg.B2CResultURL,
-		timeoutURL:     cfg.B2CTimeoutURL,
-		logger:         logger,
-		rateLimiters:   map[uuid.UUID]*tokenBucket{},
+		pool:            pool,
+		darajaClient:    daraja.NewClient(cfg.DarajaBaseURL, daraja.Sandbox),
+		outboundStore:   store.NewOutboundRequestStore(pool.Pool),
+		paybillStore:    store.NewPaybillStore(pool.Pool),
+		credStore:       store.NewCredentialStore(pool.Pool),
+		audit:           store.NewAuditStore(pool.Pool),
+		encoder:         encoder,
+		sealer:          sealer,
+		resultURL:       cfg.B2CResultURL,
+		timeoutURL:      cfg.B2CTimeoutURL,
+		logger:          logger,
+		rateLimiters:    map[uuid.UUID]*tokenBucket{},
 		rateLimitPerMin: rateLimitFromEnv(),
 	}
 	workerID := uuid.New()
 	logger.Info("mpesa b2c-dispatcher starting",
 		"worker_id", workerID, "env", cfg.Env, "once", *once,
-		"rate_limit_per_min", d.rateLimitPerMin)
+		"rate_limit_per_min", d.rateLimitPerMin,
+		"kms_active_key_id", cfg.KMSMasterKeyID)
 
 	busy := durationMs("MPESA_B2C_POLL_INTERVAL_MS", 1000)
 	idle := durationMs("MPESA_B2C_IDLE_INTERVAL_MS", 5000)
@@ -124,6 +148,7 @@ type dispatcher struct {
 	credStore     *store.CredentialStore
 	audit         *store.AuditStore
 	encoder       *daraja.SecurityCredentialEncoder
+	sealer        *crypto.Sealer
 	resultURL     string
 	timeoutURL    string
 	logger        *slog.Logger
@@ -268,29 +293,56 @@ func (d *dispatcher) dispatch(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID
 	return nil
 }
 
-// loadCreds reads the four credential rows the B2C path needs.
-// Each is decrypted inline using the platform sealer (delegated to
-// the credential store's ReadTx + the platform-level Sealer wired
-// at startup). For phase 4 the dispatcher uses RAW reads via the
-// SECURITY DEFINER fn and skips decryption — the credential store
-// gives us back cipherbytes; we'd need the sealer here too.
+// loadCreds reads + decrypts the four credential rows the B2C path
+// needs. The credential store returns ciphertext + the key id stamped
+// in the envelope header; we hand the ciphertext to the platform
+// sealer (wired at startup from MPESA_KMS_MASTER_KEY) which picks the
+// right master key by id.
 //
-// SCOPE NOTE: the credentials currently come back as ciphertext; a
-// real dispatcher needs the Sealer to decrypt. This binary is wired
-// at the env layer (MPESA_KMS_MASTER_KEY); for phase 4 we use a
-// stub that takes the raw value. Phase 5 will wire the Sealer in.
-func (d *dispatcher) loadCreds(ctx context.Context, tx pgx.Tx, paybillID uuid.UUID) (consumerKey, consumerSecret, initiatorName, initiatorPassword string, err error) {
-	// Each call returns the ciphertext + key_id. Phase 5: decrypt via Sealer.
-	_, ck, e1 := d.credStore.ReadTx(ctx, tx, paybillID, domain.CredConsumerKey)
-	_, cs, e2 := d.credStore.ReadTx(ctx, tx, paybillID, domain.CredConsumerSecret)
-	_, in, e3 := d.credStore.ReadTx(ctx, tx, paybillID, domain.CredInitiatorName)
-	_, ip, e4 := d.credStore.ReadTx(ctx, tx, paybillID, domain.CredInitiatorPassword)
-	for _, e := range []error{e1, e2, e3, e4} {
+// Failure modes (all surface as a "failed" outbound row via
+// processOne's errOut path):
+//   - read error: SECURITY DEFINER fn refused, row missing
+//   - ErrUnknownKeyID: ciphertext was sealed under a key the current
+//     dispatcher process doesn't carry (rotation in progress, or
+//     stale ciphertext from a previous master). The reason text names
+//     the unknown key so an operator can re-seal via Settings →
+//     Rotate creds without grepping the codebase.
+//   - other Decrypt errors (ErrBadCiphertext, ErrAuthFailed): rare;
+//     surfaced verbatim so the operator sees what happened.
+func (d *dispatcher) loadCreds(ctx context.Context, tx pgx.Tx, paybillID uuid.UUID) (
+	consumerKey, consumerSecret, initiatorName, initiatorPassword string, err error,
+) {
+	loadOne := func(kind domain.CredentialKind) (string, error) {
+		_, ct, e := d.credStore.ReadTx(ctx, tx, paybillID, kind)
 		if e != nil {
-			return "", "", "", "", fmt.Errorf("read credential: %w", e)
+			return "", fmt.Errorf("read %s: %w", kind, e)
 		}
+		pt, e := d.sealer.Decrypt(ct)
+		if e != nil {
+			if errors.Is(e, crypto.ErrUnknownKeyID) {
+				stampedKey, _ := crypto.KeyIDOf(ct)
+				return "", fmt.Errorf(
+					"decrypt %s: credential sealed with unknown key %q — re-seal via Settings → Rotate creds",
+					kind, stampedKey,
+				)
+			}
+			return "", fmt.Errorf("decrypt %s: %w", kind, e)
+		}
+		return string(pt), nil
 	}
-	return string(ck), string(cs), string(in), string(ip), nil
+	if consumerKey, err = loadOne(domain.CredConsumerKey); err != nil {
+		return
+	}
+	if consumerSecret, err = loadOne(domain.CredConsumerSecret); err != nil {
+		return
+	}
+	if initiatorName, err = loadOne(domain.CredInitiatorName); err != nil {
+		return
+	}
+	if initiatorPassword, err = loadOne(domain.CredInitiatorPassword); err != nil {
+		return
+	}
+	return
 }
 
 // defaultRemark returns a B2C "Remarks" value when the row doesn't
@@ -418,6 +470,26 @@ func rateLimitFromEnv() int {
 		}
 	}
 	return 30 // sandbox default
+}
+
+// sealerPingRoundTrip encrypts then decrypts a known plaintext and
+// asserts the output matches. Catches misconfigured key bytes, codec
+// regressions, and rotation-id mismatches BEFORE the dispatcher
+// touches a real credential row.
+func sealerPingRoundTrip(s *crypto.Sealer) error {
+	const probe = "dispatcher-ping"
+	ct, err := s.Encrypt([]byte(probe))
+	if err != nil {
+		return fmt.Errorf("encrypt probe: %w", err)
+	}
+	pt, err := s.Decrypt(ct)
+	if err != nil {
+		return fmt.Errorf("decrypt probe: %w", err)
+	}
+	if string(pt) != probe {
+		return fmt.Errorf("round-trip mismatch: got %q, want %q", pt, probe)
+	}
+	return nil
 }
 
 func newLogger(level, env string) *slog.Logger {

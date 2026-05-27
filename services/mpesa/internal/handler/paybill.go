@@ -104,6 +104,36 @@ func (h *PaybillHandler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.Created(w, out)
 }
 
+// ─────────── GET /v1/mpesa/paybills ───────────
+
+// List returns every paybill registered for the current tenant.
+// Permission gate (tenant:settings:view) is applied at the router.
+// The response intentionally includes the webhook_token: the Settings
+// UI's "copy Daraja URLs" panel needs it to compose the per-paybill
+// callback URLs the operator pastes into the Safaricom portal. The
+// same tenant scope that lets a user view this list lets them rotate
+// the token, so visibility is gated consistently.
+func (h *PaybillHandler) List(w http.ResponseWriter, r *http.Request) {
+	tenantID, _ := middleware.TenantIDFrom(r)
+	var out []domain.Paybill
+	err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
+		list, err := h.Paybills.ListByTenantTx(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		out = list
+		return nil
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if out == nil {
+		out = []domain.Paybill{}
+	}
+	httpx.OK(w, out)
+}
+
 // ─────────── POST /v1/mpesa/paybills/{id}/credentials ───────────
 
 type putCredentialReq struct {

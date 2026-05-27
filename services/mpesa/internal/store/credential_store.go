@@ -33,18 +33,20 @@ type PutCredentialInput struct {
 // PutTx inserts a credential or replaces the previous value for the
 // same (paybill_id, kind). The ciphertext is opaque to this store —
 // envelope encryption happens in the handler before the call.
+//
+// Goes through the SECURITY DEFINER function mpesa_credentials_write
+// (migration 0011) because ON CONFLICT DO UPDATE needs table-level
+// SELECT — which migration 0002 deliberately revoked from nexus_app
+// to prevent bulk reads of ciphertext. The function runs as the
+// table owner, does the upsert internally, and returns only the
+// metadata columns the caller audits. Row tenant_id is asserted
+// against the caller's session GUC inside the function for defense
+// in depth.
 func (s *CredentialStore) PutTx(ctx context.Context, tx pgx.Tx, in PutCredentialInput) (*domain.CredentialMetadata, error) {
 	var m domain.CredentialMetadata
 	err := tx.QueryRow(ctx, `
-		INSERT INTO mpesa_paybill_credentials
-		  (tenant_id, paybill_id, kind, key_id, ciphertext, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (paybill_id, kind) DO UPDATE
-		  SET key_id     = EXCLUDED.key_id,
-		      ciphertext = EXCLUDED.ciphertext,
-		      updated_at = now(),
-		      created_by = COALESCE(EXCLUDED.created_by, mpesa_paybill_credentials.created_by)
-		RETURNING id, paybill_id, kind, key_id, updated_at
+		SELECT out_id, out_paybill_id, out_kind, out_key_id, out_updated_at
+		  FROM mpesa_credentials_write($1, $2, $3, $4, $5, $6)
 	`, in.TenantID, in.PaybillID, in.Kind, in.KeyID, in.Ciphertext, in.CreatedBy).Scan(
 		&m.ID, &m.PaybillID, &m.Kind, &m.KeyID, &m.UpdatedAt,
 	)

@@ -6467,6 +6467,23 @@ export async function listMpesaPaybills(): Promise<ApiMpesaPaybill[]> {
   return [];
 }
 
+export type CreateMpesaPaybillInput = {
+  label: string;
+  shortcode: string;
+  purpose: MpesaPaybillPurpose;
+  scope: string[];
+  environment: MpesaEnvironment;
+};
+
+// createMpesaPaybill posts to /v1/mpesa/paybills. Requires
+// tenant:settings:edit. Returns the registered paybill including the
+// generated webhook_token — surface that to the operator immediately
+// so they can copy it into the Daraja portal.
+export async function createMpesaPaybill(in_: CreateMpesaPaybillInput): Promise<ApiMpesaPaybill> {
+  const r = await api.post('/v1/mpesa/paybills', in_);
+  return r.data?.data ?? r.data;
+}
+
 export type MpesaTestAuthResult = {
   ok: boolean;
   expires_at?: string;
@@ -6532,9 +6549,13 @@ export function mpesaDarajaWebhookURLs(paybill: ApiMpesaPaybill, originOverride?
   const t = encodeURIComponent(paybill.webhook_token);
   const id = paybill.id;
   return {
-    validation:   `${origin}/api/v1/mpesa/c2b/${id}/validation?token=${t}`,
-    confirmation: `${origin}/api/v1/mpesa/c2b/${id}/confirmation?token=${t}`,
-    b2cResult:    `${origin}/api/v1/mpesa/b2c/${id}/result?token=${t}`,
-    b2cTimeout:   `${origin}/api/v1/mpesa/b2c/${id}/timeout?token=${t}`,
+    // Daraja's portal rejects URLs that contain the literal substring
+    // "mpesa", so the Safaricom-facing routes live at /v1/c2b/* and
+    // /v1/b2c/* — no /mpesa segment. The /api prefix is the ingress
+    // entrypoint and stays the same.
+    validation:   `${origin}/api/v1/c2b/${id}/validation?token=${t}`,
+    confirmation: `${origin}/api/v1/c2b/${id}/confirmation?token=${t}`,
+    b2cResult:    `${origin}/api/v1/b2c/${id}/result?token=${t}`,
+    b2cTimeout:   `${origin}/api/v1/b2c/${id}/timeout?token=${t}`,
   };
 }

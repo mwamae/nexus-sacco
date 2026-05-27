@@ -1,18 +1,22 @@
 // B2C handlers — phase 4.
 //
-// Three routes:
+// Three routes (Daraja-facing ones moved out of /v1/mpesa/* so
+// Safaricom's portal accepts them — the portal refuses URLs that
+// contain the substring "mpesa"):
 //
 //   POST /v1/mpesa/b2c/requests               (internal-token gated)
-//     Loan disbursement / refund flows call this to enqueue an
-//     outbound payment. Body carries paybill_id + msisdn + amount +
-//     idempotency keys. Returns the row (created or pre-existing).
+//     Staff/internal — loan disbursement / refund flows call this to
+//     enqueue an outbound payment. Body carries paybill_id + msisdn +
+//     amount + idempotency keys. Returns the row (created or
+//     pre-existing). Keeps the /v1/mpesa prefix because it's not
+//     given to Safaricom.
 //
-//   POST /v1/mpesa/b2c/{paybill_id}/result    (public, paybill token)
+//   POST /v1/b2c/{paybill_id}/result          (public, paybill token)
 //     Daraja's success/failure callback. We persist the raw body and
 //     update the outbound row's final status. On success we ALSO
 //     trigger the savings-side finalize HTTP via the savingsclient.
 //
-//   POST /v1/mpesa/b2c/{paybill_id}/timeout   (public, paybill token)
+//   POST /v1/b2c/{paybill_id}/timeout         (public, paybill token)
 //     Daraja's queue-timeout callback. Marks the row 'failed' with
 //     a retry hint; the dispatcher's normal retry path handles it.
 
@@ -41,23 +45,26 @@ import (
 	"github.com/nexussacco/mpesa/internal/workflowclient"
 )
 
-// FinalizeClient is the surface the result handler uses to hand off
-// to savings (or whichever module owns the source_module of the
-// outbound row). Kept as an interface so tests can mock the
-// completion call.
+// FinalizeClient is the surface the result + reverse handlers use to
+// hand off to savings (or whichever module owns the source_module of
+// the outbound row). Kept as an interface so tests can mock the
+// completion calls. The two methods are paired: forward (Result OK)
+// triggers FinalizeDisbursement; reversal (Reverse webhook or Result
+// non-zero with reversal semantics) triggers ReverseDisbursement.
 type FinalizeClient interface {
 	FinalizeDisbursement(ctx context.Context, loanID uuid.UUID, mpesaReceipt string) error
+	ReverseDisbursement(ctx context.Context, loanID uuid.UUID, mpesaReversalReceipt, reason string) error
 }
 
 type B2CHandler struct {
-	DB             *db.Pool
-	Paybills       *store.PaybillStore
-	Outbound       *store.OutboundRequestStore
-	Audit          *store.AuditStore
-	Workflow       *workflowclient.Client
-	Finalize       FinalizeClient // nil-safe (logged + retried by reconciler)
-	InternalToken  string         // gates /v1/mpesa/b2c/requests
-	Logger         *slog.Logger
+	DB            *db.Pool
+	Paybills      *store.PaybillStore
+	Outbound      *store.OutboundRequestStore
+	Audit         *store.AuditStore
+	Workflow      *workflowclient.Client
+	Finalize      FinalizeClient // nil-safe (logged + retried by reconciler)
+	InternalToken string         // gates /v1/mpesa/b2c/requests
+	Logger        *slog.Logger
 }
 
 // ─────────── POST /v1/mpesa/b2c/requests (internal) ───────────
@@ -140,15 +147,15 @@ func (h *B2CHandler) Enqueue(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	httpx.OK(w, map[string]any{
-		"id":             out.ID,
-		"status":         out.Status,
-		"inserted":       inserted,
-		"source_ref":     out.SourceRef,
-		"source_module":  out.SourceModule,
+		"id":            out.ID,
+		"status":        out.Status,
+		"inserted":      inserted,
+		"source_ref":    out.SourceRef,
+		"source_module": out.SourceModule,
 	})
 }
 
-// ─────────── POST /v1/mpesa/b2c/{paybill_id}/result (public) ───────────
+// ─────────── POST /v1/b2c/{paybill_id}/result (public) ───────────
 
 // Daraja's result envelope. The actual payload has a deep nesting
 // (Result.ResultParameters.ResultParameter[]) that carries the
@@ -156,13 +163,13 @@ func (h *B2CHandler) Enqueue(w http.ResponseWriter, r *http.Request) {
 // commonly-used top-level fields.
 type b2cResultEnvelope struct {
 	Result struct {
-		ResultType                  int    `json:"ResultType"`
-		ResultCode                  int    `json:"ResultCode"`
-		ResultDesc                  string `json:"ResultDesc"`
-		OriginatorConversationID    string `json:"OriginatorConversationID"`
-		ConversationID              string `json:"ConversationID"`
-		TransactionID               string `json:"TransactionID"`
-		ResultParameters            struct {
+		ResultType               int    `json:"ResultType"`
+		ResultCode               int    `json:"ResultCode"`
+		ResultDesc               string `json:"ResultDesc"`
+		OriginatorConversationID string `json:"OriginatorConversationID"`
+		ConversationID           string `json:"ConversationID"`
+		TransactionID            string `json:"TransactionID"`
+		ResultParameters         struct {
 			ResultParameter []struct {
 				Key   string      `json:"Key"`
 				Value interface{} `json:"Value"`
@@ -274,7 +281,7 @@ func (h *B2CHandler) Result(w http.ResponseWriter, r *http.Request) {
 	writeDaraja(w, darajaResult{ResultCode: 0, ResultDesc: "Received"})
 }
 
-// ─────────── POST /v1/mpesa/b2c/{paybill_id}/timeout (public) ───────────
+// ─────────── POST /v1/b2c/{paybill_id}/timeout (public) ───────────
 
 func (h *B2CHandler) Timeout(w http.ResponseWriter, r *http.Request) {
 	paybillID, _, ok := h.authWebhook(r)

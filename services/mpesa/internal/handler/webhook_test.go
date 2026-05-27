@@ -362,7 +362,7 @@ func newWebhookSrv(t *testing.T, dbPool *db.Pool) *httptest.Server {
 		Logger:         logger,
 	}
 	r := chi.NewRouter()
-	r.Route("/v1/mpesa/c2b", func(r chi.Router) {
+	r.Route("/v1/c2b", func(r chi.Router) {
 		r.Use(allow.Middleware)
 		r.Post("/{paybill_id}/validation", h.Validation)
 		r.Post("/{paybill_id}/confirmation", h.Confirmation)
@@ -372,7 +372,7 @@ func newWebhookSrv(t *testing.T, dbPool *db.Pool) *httptest.Server {
 
 func postC2B(t *testing.T, base, hook string, paybillID uuid.UUID, token string, body []byte) *http.Response {
 	t.Helper()
-	url := fmt.Sprintf("%s/v1/mpesa/c2b/%s/%s?token=%s", base, paybillID, hook, token)
+	url := fmt.Sprintf("%s/v1/c2b/%s/%s?token=%s", base, paybillID, hook, token)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)

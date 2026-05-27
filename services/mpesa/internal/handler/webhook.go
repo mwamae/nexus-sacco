@@ -3,16 +3,21 @@
 // Two routes, both PUBLIC (no JWT bearer; the only credentials are
 // the IP allow-list + the per-paybill webhook_token in the URL):
 //
-//   POST /v1/mpesa/c2b/{paybill_id}/validation
+//   POST /v1/c2b/{paybill_id}/validation
 //     Safaricom asks "is this account number known?" We default to
 //     accept (ResultCode 0). Per-paybill strict_validation flips us
 //     into rejecting unknown accounts with C2B00012.
 //
-//   POST /v1/mpesa/c2b/{paybill_id}/confirmation
+//   POST /v1/c2b/{paybill_id}/confirmation
 //     Safaricom hands us the finished transaction. Persist the raw
 //     body verbatim; run the resolver; write the audit + reconciliation
 //     workflow task if unallocated; always 200 on persist (Safaricom
 //     would otherwise retry into a busy loop).
+//
+// URL note: Daraja's portal refuses callback URLs that contain the
+// substring "mpesa", so these public routes live OUTSIDE the
+// /v1/mpesa/* admin namespace. Internal/staff routes (paybills CRUD,
+// events list, b2c requests enqueue) keep the /v1/mpesa prefix.
 //
 // Idempotency: phase 1's (tenant_id, transaction_id) UNIQUE + an
 // ON CONFLICT DO NOTHING upsert absorb Safaricom retries.
@@ -81,7 +86,7 @@ type darajaResult struct {
 	ResultDesc string `json:"ResultDesc"`
 }
 
-// ─────────── /v1/mpesa/c2b/{paybill_id}/validation ───────────
+// ─────────── /v1/c2b/{paybill_id}/validation ───────────
 
 func (h *WebhookHandler) Validation(w http.ResponseWriter, r *http.Request) {
 	paybillID, ok := paybillFromPath(r)
@@ -148,7 +153,7 @@ func (h *WebhookHandler) Validation(w http.ResponseWriter, r *http.Request) {
 	writeDaraja(w, darajaResult{ResultCode: 0, ResultDesc: "Accepted"})
 }
 
-// ─────────── /v1/mpesa/c2b/{paybill_id}/confirmation ───────────
+// ─────────── /v1/c2b/{paybill_id}/confirmation ───────────
 
 func (h *WebhookHandler) Confirmation(w http.ResponseWriter, r *http.Request) {
 	paybillID, ok := paybillFromPath(r)

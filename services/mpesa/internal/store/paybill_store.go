@@ -41,14 +41,36 @@ type CreatePaybillInput struct {
 
 const paybillCols = `id, tenant_id, label, shortcode, purpose, scope, environment, status,
 		distribution_policy_id, strict_validation, allow_msisdn_fallback, webhook_token,
-		created_by, created_at, updated_at`
+		is_default, created_by, created_at, updated_at`
 
 func scanPaybill(row pgx.Row, p *domain.Paybill) error {
 	return row.Scan(
 		&p.ID, &p.TenantID, &p.Label, &p.Shortcode, &p.Purpose, &p.Scope, &p.Environment, &p.Status,
 		&p.DistributionPolicyID, &p.StrictValidation, &p.AllowMSISDNFallback, &p.WebhookToken,
-		&p.CreatedBy, &p.CreatedAt, &p.UpdatedAt,
+		&p.IsDefault, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt,
 	)
+}
+
+// ListByTenantTx returns all paybills for the current tenant, ordered
+// by created_at. Used by the Settings UI to enumerate registered
+// paybills + by the loan-disburse picker to find the default
+// disbursement paybill.
+func (s *PaybillStore) ListByTenantTx(ctx context.Context, tx pgx.Tx) ([]domain.Paybill, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT `+paybillCols+` FROM mpesa_paybills ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Paybill
+	for rows.Next() {
+		var p domain.Paybill
+		if err := scanPaybill(rows, &p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 func (s *PaybillStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreatePaybillInput) (*domain.Paybill, error) {
@@ -86,7 +108,7 @@ func (s *PaybillStore) ByIDTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*do
 }
 
 // ByIDAndToken is the webhook entry-point lookup. Safaricom hits us
-// at /v1/mpesa/c2b/{paybill_id}/... with no tenant subdomain, so the
+// at /v1/c2b/{paybill_id}/... with no tenant subdomain, so the
 // handler can't set app.tenant_id before the lookup. The query goes
 // through a SECURITY DEFINER function (migration 0004) that bypasses
 // RLS for this one (id, token) pair; once we have the tenant_id, the

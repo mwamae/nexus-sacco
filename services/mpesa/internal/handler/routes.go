@@ -89,38 +89,58 @@ func Routes(d Deps) http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok","posting_outbox_lag_seconds":` + lagText(lag) + `}`))
 	})
 
-	// ─────────── Public webhooks (no JWT, IP allow-list + token) ───────────
-	r.Route("/v1/mpesa/c2b", func(r chi.Router) {
+	// ─────────── Daraja-facing webhooks (no "mpesa" in URL) ───────────
+	//
+	// Safaricom's Daraja portal refuses validation/confirmation/result
+	// URLs that contain the literal substring "mpesa". To comply, the
+	// public webhook surface lives at /v1/c2b/* and /v1/b2c/* — the
+	// staff/internal routes stay under /v1/mpesa/* (different prefix,
+	// no shadowing).
+	r.Route("/v1/c2b", func(r chi.Router) {
 		r.Use(d.IPAllowList.Middleware)
 		r.Post("/{paybill_id}/validation", d.Webhook.Validation)
 		r.Post("/{paybill_id}/confirmation", d.Webhook.Confirmation)
 	})
 
 	if d.B2C != nil {
-		r.Route("/v1/mpesa/b2c", func(r chi.Router) {
+		r.Route("/v1/b2c", func(r chi.Router) {
 			r.Use(d.IPAllowList.Middleware)
 			r.Post("/{paybill_id}/result", d.B2C.Result)
 			r.Post("/{paybill_id}/timeout", d.B2C.Timeout)
 			r.Post("/{paybill_id}/reverse", d.B2C.Reverse)
-			r.Post("/requests", d.B2C.Enqueue)
 		})
 	}
 
-	r.Route("/v1", func(r chi.Router) {
-		r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
+	// ─────────── Staff + internal routes (keep "mpesa" prefix) ───────────
+	//
+	// Not exposed to Safaricom — these are admin UI calls + service-to-
+	// service handoffs. The /v1/mpesa/c2b/events route is the staff
+	// read surface and the /v1/mpesa/b2c/requests route is the
+	// internal-token-gated enqueue path (savings → mpesa).
+	r.Route("/v1/mpesa", func(r chi.Router) {
+		// Internal enqueue — gated by X-Internal-Token inside the
+		// handler; sits outside the JWT group so service-to-service
+		// callers don't need a tenant subdomain.
+		if d.B2C != nil {
+			r.Post("/b2c/requests", d.B2C.Enqueue)
+		}
+
+		// JWT + tenant-scoped admin endpoints.
 		r.Group(func(r chi.Router) {
+			r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
 			r.Use(middleware.Authenticated(d.Issuer))
 			r.Use(middleware.RequireTenant)
 
+			r.With(middleware.RequirePermission("tenant:settings:view")).
+				Get("/paybills", d.Paybill.List)
 			r.With(middleware.RequirePermission("tenant:settings:edit")).
-				Post("/mpesa/paybills", d.Paybill.Create)
+				Post("/paybills", d.Paybill.Create)
 			r.With(middleware.RequirePermission("mpesa:credentials:rotate")).
-				Post("/mpesa/paybills/{id}/credentials", d.Paybill.PutCredential)
+				Post("/paybills/{id}/credentials", d.Paybill.PutCredential)
 			r.With(middleware.RequirePermission("tenant:settings:view")).
-				Get("/mpesa/paybills/{id}/test-auth", d.Paybill.TestAuth)
-
+				Get("/paybills/{id}/test-auth", d.Paybill.TestAuth)
 			r.With(middleware.RequirePermission("tenant:settings:view")).
-				Get("/mpesa/c2b/events", d.InboundEvents.List)
+				Get("/c2b/events", d.InboundEvents.List)
 		})
 	})
 	return r

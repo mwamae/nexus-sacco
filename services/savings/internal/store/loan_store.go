@@ -84,16 +84,16 @@ func scanLoan(row pgx.Row) (*domain.Loan, error) {
 // offer. Status starts as 'pending_disbursement'; balances are all zero
 // until DisburseTx is called.
 type CreateLoanInput struct {
-	ApplicationID         uuid.UUID
-	CounterpartyID              uuid.UUID
-	ProductID             uuid.UUID
-	Principal             decimal.Decimal
-	InterestRatePct       decimal.Decimal
-	InterestMethod        domain.LoanInterestMethod
-	RepaymentMethod       domain.LoanRepaymentMethod
-	TermMonths            int
-	GracePeriodMonths     int
-	InstallmentCount      int
+	ApplicationID     uuid.UUID
+	CounterpartyID    uuid.UUID
+	ProductID         uuid.UUID
+	Principal         decimal.Decimal
+	InterestRatePct   decimal.Decimal
+	InterestMethod    domain.LoanInterestMethod
+	RepaymentMethod   domain.LoanRepaymentMethod
+	TermMonths        int
+	GracePeriodMonths int
+	InstallmentCount  int
 }
 
 func (s *LoanStore) CreateOnAcceptanceTx(ctx context.Context, tx pgx.Tx, in CreateLoanInput) (*domain.Loan, error) {
@@ -143,12 +143,12 @@ func (s *LoanStore) GetByApplicationTx(ctx context.Context, tx pgx.Tx, appID uui
 }
 
 type LoanListFilter struct {
-	Status    string
-	CounterpartyID  *uuid.UUID
-	ProductID *uuid.UUID
-	Q         string
-	Limit     int
-	Offset    int
+	Status         string
+	CounterpartyID *uuid.UUID
+	ProductID      *uuid.UUID
+	Q              string
+	Limit          int
+	Offset         int
 }
 
 type LoanListItem struct {
@@ -173,15 +173,18 @@ func (s *LoanStore) ListTx(ctx context.Context, tx pgx.Tx, f LoanListFilter) ([]
 	}
 	if f.CounterpartyID != nil {
 		where += fmt.Sprintf(" AND l.counterparty_id = $%d", idx)
-		args = append(args, *f.CounterpartyID); idx++
+		args = append(args, *f.CounterpartyID)
+		idx++
 	}
 	if f.ProductID != nil {
 		where += fmt.Sprintf(" AND l.product_id = $%d", idx)
-		args = append(args, *f.ProductID); idx++
+		args = append(args, *f.ProductID)
+		idx++
 	}
 	if f.Q != "" {
 		where += fmt.Sprintf(" AND (cd.full_name ILIKE $%d OR cd.member_no ILIKE $%d OR cd.cp_number ILIKE $%d OR l.loan_no ILIKE $%d)", idx, idx, idx, idx)
-		args = append(args, "%"+f.Q+"%"); idx++
+		args = append(args, "%"+f.Q+"%")
+		idx++
 	}
 	var total int
 	if err := tx.QueryRow(ctx,
@@ -338,6 +341,58 @@ func (s *LoanStore) PostTxnTx(ctx context.Context, tx pgx.Tx, in PostLoanInput) 
 		&t.PostedAt, &t.InitiatedBy, &t.AuthorizedBy,
 	)
 	return &t, err
+}
+
+// UnwindDisbursementTx reverses MarkDisbursedTx. Used by the M-PESA
+// reversal flow when a B2C disbursement bounces — the loan goes back
+// to 'pending_disbursement' and the cached balances + next-due fields
+// are cleared so a fresh disburse later starts from a clean slate.
+//
+// The caller must verify there is no repayment activity (this
+// function does NOT — that's a handler-level invariant check, since
+// the activity-check is also what decides whether we can auto-unwind
+// vs needing manual reconciliation). The schedule rows are deleted;
+// disbursement + fee_charge loan_transactions rows are kept for
+// audit history, and the handler posts a reversing GL entry so the
+// books balance.
+func (s *LoanStore) UnwindDisbursementTx(
+	ctx context.Context, tx pgx.Tx, loanID uuid.UUID,
+) (*domain.Loan, error) {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM loan_repayment_schedule WHERE loan_id = $1`, loanID,
+	); err != nil {
+		return nil, fmt.Errorf("delete schedule: %w", err)
+	}
+	row := tx.QueryRow(ctx, `
+		UPDATE loans SET
+			status = 'pending_disbursement',
+			disbursement_channel = NULL,
+			disbursement_target_account_id = NULL,
+			disbursement_ref = NULL,
+			net_disbursed = 0,
+			total_fees_deducted = 0,
+			disbursed_at = NULL,
+			disbursed_by = NULL,
+			principal_disbursed = 0,
+			principal_balance = 0,
+			interest_balance = 0,
+			fees_charged = 0,
+			fees_balance = 0,
+			penalty_balance = 0,
+			next_installment_due_at = NULL,
+			next_installment_amount = 0,
+			first_due_date = NULL,
+			-- The handler guards against unwinding a loan with
+			-- repayment activity, so last_repayment_at SHOULD already
+			-- be NULL on the rows that reach this point. Clear it
+			-- defensively so a follow-up disburse doesn't inherit
+			-- stale state.
+			last_repayment_at = NULL
+		WHERE id = $1
+		RETURNING `+loanCols,
+		loanID,
+	)
+	return scanLoan(row)
 }
 
 // MarkDisbursedTx atomically flips the loan to 'active', stamps

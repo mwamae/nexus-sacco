@@ -70,6 +70,11 @@ func Routes(d Deps) http.Handler {
 		// Daraja confirms a disbursement landed on the member's
 		// phone. The handler does its own X-Internal-Token check.
 		r.Post("/loans/{loan_id}/finalize-disbursement", d.Loan.FinalizeDisbursement)
+		// Inverse of the above: mpesa's B2C reverse handler calls
+		// this when Safaricom bounces a disbursement we'd marked
+		// sent. Flips the loan back to pending_disbursement + posts
+		// a reversing GL entry. Same internal-token gate.
+		r.Post("/loans/{loan_id}/reverse-disbursement", d.Loan.ReverseDisbursement)
 	})
 
 	r.Route("/v1", func(r chi.Router) {

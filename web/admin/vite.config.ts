@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => {
   const savingsTarget = env.VITE_SAVINGS_TARGET || 'http://localhost:8084';
   const notificationTarget = env.VITE_NOTIFICATION_TARGET || 'http://localhost:8085';
   const accountingTarget = env.VITE_ACCOUNTING_TARGET || 'http://localhost:8086';
+  const mpesaTarget = env.VITE_MPESA_TARGET || 'http://localhost:8087';
 
   // More specific keys must come before the catch-all so vite-proxy
   // routes /api/v1/members* to the member service, not identity.
@@ -385,6 +386,26 @@ export default defineConfig(({ mode }) => {
         },
         '/api/v1/wht-certificate': {
           target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/mpesa': {
+          target: mpesaTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        // Daraja-facing webhook routes — Safaricom refuses URLs that
+        // contain "mpesa", so the C2B + B2C webhook endpoints live at
+        // /v1/c2b/* and /v1/b2c/* with no /mpesa segment. Proxy them
+        // through to the mpesa service so dev calls (curl, sandbox
+        // simulator) reach the right backend.
+        '/api/v1/c2b': {
+          target: mpesaTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/b2c': {
+          target: mpesaTarget,
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
