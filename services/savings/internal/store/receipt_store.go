@@ -76,18 +76,23 @@ func nextSerialTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, tillCode s
 // has already resolved the till_session vs virtual_till split based
 // on the channel.
 type CreateReceiptInput struct {
-	TenantID        uuid.UUID
-	CounterpartyID  uuid.UUID
-	Channel         domain.ReceiptChannel
-	ChannelRef      *string
-	ChannelAmount   decimal.Decimal
-	ValueDate       time.Time
-	Narration       *string
-	CashierUserID   uuid.UUID
-	TillSessionID   *uuid.UUID // set when Channel==cash
-	VirtualTillID   *uuid.UUID // set when Channel!=cash
-	TillCode        string     // for the serial; comes from the till_session.till.code or virtual_till.display
-	Lines           []CreateReceiptLineInput
+	TenantID       uuid.UUID
+	CounterpartyID uuid.UUID
+	Channel        domain.ReceiptChannel
+	ChannelRef     *string
+	ChannelAmount  decimal.Decimal
+	ValueDate      time.Time
+	Narration      *string
+	CashierUserID  uuid.UUID
+	TillSessionID  *uuid.UUID // set when Channel==cash
+	VirtualTillID  *uuid.UUID // set when Channel!=cash
+	TillCode       string     // for the serial; comes from the till_session.till.code or virtual_till.display
+	// HeaderStatus is the value to use for the receipts.status column.
+	// Defaults to 'draft' when zero. The inline-money panels (where
+	// every line is posted in the same tx as the receipt insert) set
+	// this to 'posted' so a follow-up status flip isn't needed.
+	HeaderStatus domain.ReceiptStatus
+	Lines        []CreateReceiptLineInput
 }
 
 type CreateReceiptLineInput struct {
@@ -97,6 +102,11 @@ type CreateReceiptLineInput struct {
 	TargetAccountID *uuid.UUID
 	FeeCode         *string
 	Narration       *string
+	// Status defaults to 'pending'. The inline-money panels set this
+	// to 'posted' + populate PostedTxnID so the row is posted-on-
+	// create and the Collection Desk read path sees it immediately.
+	Status      domain.ReceiptLineStatus
+	PostedTxnID *uuid.UUID
 }
 
 // CreateTx inserts the header + all lines in one tx, with serial
@@ -149,6 +159,10 @@ func (s *ReceiptStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateReceipt
 		return nil, err
 	}
 
+	headerStatus := in.HeaderStatus
+	if headerStatus == "" {
+		headerStatus = domain.ReceiptDraft
+	}
 	r := &domain.Receipt{
 		TenantID:       in.TenantID,
 		Serial:         serial,
@@ -161,20 +175,21 @@ func (s *ReceiptStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateReceipt
 		CashierUserID:  in.CashierUserID,
 		TillSessionID:  in.TillSessionID,
 		VirtualTillID:  in.VirtualTillID,
-		Status:         domain.ReceiptDraft,
+		Status:         headerStatus,
 	}
 	err = tx.QueryRow(ctx, `
 		INSERT INTO receipts (
 			tenant_id, serial, counterparty_id, channel, channel_ref, channel_amount,
-			value_date, narration, cashier_user_id, till_session_id, virtual_till_id, status
+			value_date, narration, cashier_user_id, till_session_id, virtual_till_id, status, posted_at
 		) VALUES (
 			$1, $2, $3, $4::receipt_channel, $5, $6,
-			$7, $8, $9, $10, $11, 'draft'
+			$7, $8, $9, $10, $11, $12::receipt_status,
+			CASE WHEN $12::receipt_status = 'posted' THEN now() ELSE NULL END
 		)
 		RETURNING id, created_at, updated_at
 	`,
 		r.TenantID, r.Serial, r.CounterpartyID, string(r.Channel), r.ChannelRef, r.ChannelAmount,
-		r.ValueDate, r.Narration, r.CashierUserID, r.TillSessionID, r.VirtualTillID,
+		r.ValueDate, r.Narration, r.CashierUserID, r.TillSessionID, r.VirtualTillID, string(headerStatus),
 	).Scan(&r.ID, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		if isUniqueViolation(err, "receipts_channel_ref_unique") && in.ChannelRef != nil {
@@ -184,19 +199,30 @@ func (s *ReceiptStore) CreateTx(ctx context.Context, tx pgx.Tx, in CreateReceipt
 	}
 
 	for _, li := range in.Lines {
+		lineStatus := li.Status
+		if lineStatus == "" {
+			lineStatus = domain.LinePending
+		}
 		var line domain.ReceiptLine
 		err := tx.QueryRow(ctx, `
 			INSERT INTO receipt_lines (
-				receipt_id, line_no, kind, amount, target_account_id, fee_code, narration, status
-			) VALUES ($1, $2, $3::receipt_line_kind, $4, $5, $6, $7, 'pending')
+				receipt_id, line_no, kind, amount, target_account_id, fee_code, narration,
+				status, posted_txn_id, posted_at
+			) VALUES (
+				$1, $2, $3::receipt_line_kind, $4, $5, $6, $7,
+				$8::receipt_line_status, $9,
+				CASE WHEN $8::receipt_line_status = 'posted' THEN now() ELSE NULL END
+			)
 			RETURNING id, receipt_id, line_no, kind::text, amount,
 			          target_account_id, fee_code, narration, status::text, created_at
-		`, r.ID, li.LineNo, string(li.Kind), li.Amount, li.TargetAccountID, li.FeeCode, li.Narration).
+		`, r.ID, li.LineNo, string(li.Kind), li.Amount, li.TargetAccountID, li.FeeCode, li.Narration,
+			string(lineStatus), li.PostedTxnID).
 			Scan(&line.ID, &line.ReceiptID, &line.LineNo, &line.Kind, &line.Amount,
 				&line.TargetAccountID, &line.FeeCode, &line.Narration, &line.Status, &line.CreatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("insert receipt line %d: %w", li.LineNo, err)
 		}
+		line.PostedTxnID = li.PostedTxnID
 		r.Lines = append(r.Lines, line)
 	}
 	return r, nil

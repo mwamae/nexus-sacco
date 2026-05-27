@@ -101,15 +101,17 @@ func main() {
 	notifyClient := notifier.New(cfg.NotificationURL, cfg.NotificationInternalToken, logger)
 	postingClient := posting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
 	shareH := &handler.ShareHandler{
-		DB:        pool,
-		Tenants:   tenants,
-		Members:   members,
+		DB:             pool,
+		Tenants:        tenants,
+		Members:        members,
 		Counterparties: counterparties,
-		Shares:    shareStore,
-		Approvals: approvalsStore,
-		Notifier:  notifyClient,
-		Posting:   postingClient,
-		Logger:    logger,
+		Shares:         shareStore,
+		Approvals:      approvalsStore,
+		Receipts:       receiptStore,
+		VirtualTills:   virtualTillStore,
+		Notifier:       notifyClient,
+		Posting:        postingClient,
+		Logger:         logger,
 	}
 	productH := &handler.ProductHandler{
 		DB:       pool,
@@ -117,16 +119,18 @@ func main() {
 		Logger:   logger,
 	}
 	depositH := &handler.DepositHandler{
-		DB:        pool,
-		Tenants:   tenants,
-		Members:   members,
+		DB:             pool,
+		Tenants:        tenants,
+		Members:        members,
 		Counterparties: counterparties,
-		Products:  productStore,
-		Deposits:  depositStore,
-		Approvals: approvalsStore,
-		Notifier:  notifyClient,
-		Posting:   postingClient,
-		Logger:    logger,
+		Products:       productStore,
+		Deposits:       depositStore,
+		Approvals:      approvalsStore,
+		Receipts:       receiptStore,
+		VirtualTills:   virtualTillStore,
+		Notifier:       notifyClient,
+		Posting:        postingClient,
+		Logger:         logger,
 	}
 	interestH := &handler.InterestHandler{
 		DB:                  pool,
@@ -182,16 +186,18 @@ func main() {
 		Logger:          logger,
 	}
 	loanRepayH := &handler.LoanRepaymentHandler{
-		DB:        pool,
-		Tenants:   tenants,
-		Members:   members,
+		DB:             pool,
+		Tenants:        tenants,
+		Members:        members,
 		Counterparties: counterparties,
-		Deposits:  depositStore,
-		Loans:     loanStore,
-		Approvals: approvalsStore,
-		Notifier:  notifyClient,
-		Posting:   postingClient,
-		Logger:    logger,
+		Deposits:       depositStore,
+		Loans:          loanStore,
+		Approvals:      approvalsStore,
+		Receipts:       receiptStore,
+		VirtualTills:   virtualTillStore,
+		Notifier:       notifyClient,
+		Posting:        postingClient,
+		Logger:         logger,
 	}
 	loanCollectH := &handler.LoanCollectionsHandler{
 		DB:          pool,
@@ -207,6 +213,7 @@ func main() {
 	}
 	loanReportsH := &handler.LoanReportsHandler{
 		DB:        pool,
+		Posting:   postingClient,
 		Reports:   loanReportsStore,
 		Loans:     loanStore,
 		Approvals: approvalsStore,

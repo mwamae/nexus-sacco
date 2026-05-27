@@ -74,6 +74,23 @@ func ErrNotFound(msg string) *APIError {
 func ErrConflict(msg string) *APIError {
 	return E(http.StatusConflict, CodeConflict, msg)
 }
+
+// ErrCashInlineBlocked is the 412 the inline money panels return
+// when an operator tries to record a cash transaction from outside
+// the Collection Desk. Carries a deep_link in Details so the UI can
+// route the user to /collect/receipts/new.
+func ErrCashInlineBlocked(memberID string) *APIError {
+	return &APIError{
+		Status:  http.StatusPreconditionFailed,
+		Code:    "cash_inline_blocked",
+		Message: "cash transactions must be recorded at the Collection Desk against an open till",
+		Details: map[string]any{
+			"deep_link":   "/collect/receipts/new?counterparty_id=" + memberID,
+			"reason":      "no_till_session",
+			"action":      "Open a till and use the Collection Desk to receipt cash.",
+		},
+	}
+}
 func ErrInternal() *APIError {
 	return E(http.StatusInternalServerError, CodeInternal, "an unexpected error occurred")
 }

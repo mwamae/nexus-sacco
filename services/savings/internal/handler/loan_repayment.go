@@ -12,7 +12,6 @@ package handler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -28,6 +27,8 @@ import (
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/posting"
+	"github.com/nexussacco/savings/internal/postingops"
+	"github.com/nexussacco/savings/internal/receiptops"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -39,9 +40,12 @@ type LoanRepaymentHandler struct {
 	Deposits       *store.DepositStore
 	Loans          *store.LoanStore
 	Approvals      *store.ApprovalsStore
-	Notifier       *notifier.Client
-	Posting        *posting.Client
-	Logger         *slog.Logger
+	// Receipts + VirtualTills drive the inline-panel receipt writes.
+	Receipts     *store.ReceiptStore
+	VirtualTills *store.VirtualTillStore
+	Notifier     *notifier.Client
+	Posting      *posting.Client
+	Logger       *slog.Logger
 }
 
 // ─────────── Repay ───────────
@@ -81,6 +85,21 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("channel is required"))
 		return
 	}
+	if strings.EqualFold(in.Channel, "cash") {
+		// Inline cash repayment is blocked — the Collection Desk owns
+		// every cash-touching path so the till session reconciles.
+		// UI hard-blocks Cash in the modal; this is the server-side
+		// hard stop. The loan_id is included in the deep link so the
+		// teller lands on a pre-filled receipt form.
+		err := httpx.ErrCashInlineBlocked(loanID.String())
+		err.Details = map[string]any{
+			"deep_link":   "/collect/receipts/new?loan_id=" + loanID.String(),
+			"reason":      "no_till_session",
+			"action":      "Open a till and use the Collection Desk to receipt cash repayments.",
+		}
+		httpx.WriteErr(w, r, err)
+		return
+	}
 	if in.Channel == "auto_savings" && in.DebitSavingsAcct == nil {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("debit_savings_account_id is required for channel='auto_savings'"))
 		return
@@ -106,17 +125,18 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 
 	var result *LoanRepayResult
 	var pending *domain.PendingApproval
+	var receipt *domain.Receipt
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
+		loan, err := h.Loans.GetTx(r.Context(), tx, loanID)
+		if err != nil {
+			return err
+		}
+		memberID := loan.CounterpartyID
 		if toggles.LoanRepayment {
-			loan, err := h.Loans.GetTx(r.Context(), tx, loanID)
-			if err != nil {
-				return err
-			}
-			memberID := loan.CounterpartyID
 			amount := in.Amount
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:            domain.ApprovalKindLoanRepayment,
@@ -131,20 +151,34 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 				return qerr
 			}
 			pending = pa
+			rec, rerr := h.writeInlineRepaymentReceipt(r.Context(), tx, tid, memberID, loanID, userID,
+				in.Channel, in.ChannelRef, amount, in.Narration,
+				domain.ReceiptDraft, domain.LinePending, nil)
+			if rerr != nil {
+				return rerr
+			}
+			if len(rec.Lines) > 0 {
+				if aerr := h.Receipts.AttachApprovalTx(r.Context(), tx, rec.Lines[0].ID, pa.ID); aerr != nil {
+					return aerr
+				}
+			}
+			receipt = rec
 			return nil
 		}
 		res, err := h.ExecuteRepaymentTx(r.Context(), tx, payload, userID)
 		if err != nil {
 			return err
 		}
-		// In-tx outbox post — the repayment splits across principal /
-		// interest / penalty / fees per the allocation; each non-zero
-		// piece becomes a credit line against the matching income or
-		// receivable account, balanced by a single cash-side debit.
-		// Failure here rolls back the repayment + surfaces 502.
 		if perr := h.postRepaymentToGLTx(r.Context(), tx, tid, res, in.Channel); perr != nil {
 			return perr
 		}
+		rec, rerr := h.writeInlineRepaymentReceipt(r.Context(), tx, tid, memberID, loanID, userID,
+			in.Channel, in.ChannelRef, res.Transaction.Amount, in.Narration,
+			domain.ReceiptPosted, domain.LinePosted, &res.Transaction.ID)
+		if rerr != nil {
+			return rerr
+		}
+		receipt = rec
 		result = res
 		return nil
 	})
@@ -156,12 +190,87 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 		writeLoanRepayErr(w, r, err)
 		return
 	}
+	_ = receipt // surfaced via /v1/receipts
 	if pending != nil {
 		writePendingResponse(w, r, pending)
 		return
 	}
 	h.emitRepayment(r, tid, userID, result)
 	httpx.Created(w, result)
+}
+
+// writeInlineRepaymentReceipt persists a single-line loan_repayment
+// receipt for the inline Repayment panel. Repayment channels that
+// can't ride the receipts table (auto_savings — funded by member's
+// savings, not external cash) silently skip the receipt write.
+func (h *LoanRepaymentHandler) writeInlineRepaymentReceipt(
+	ctx context.Context, tx pgx.Tx,
+	tenantID, memberID, loanID, userID uuid.UUID,
+	channel, channelRef string,
+	amount decimal.Decimal, narration string,
+	headerStatus domain.ReceiptStatus, lineStatus domain.ReceiptLineStatus,
+	postedTxnID *uuid.UUID,
+) (*domain.Receipt, error) {
+	if h.Receipts == nil || h.VirtualTills == nil {
+		return &domain.Receipt{}, nil
+	}
+	// Translate the repayment-side channel string to a ReceiptChannel.
+	// auto_savings funds from the member's own savings — there's no
+	// teller-side receipt for that.
+	rc := mapRepaymentChannelToReceipt(channel)
+	if rc == "" {
+		return &domain.Receipt{}, nil
+	}
+	lid := loanID
+	rec, err := receiptops.WriteTx(ctx, tx, receiptops.Deps{
+		Receipts:     h.Receipts,
+		VirtualTills: h.VirtualTills,
+	}, receiptops.WriteInput{
+		TenantID:       tenantID,
+		CounterpartyID: memberID,
+		CashierUserID:  userID,
+		Channel:        rc,
+		ChannelRef:     channelRef,
+		ChannelAmount:  amount,
+		Narration:      narration,
+		Source:         "inline_loan_repayment",
+		HeaderStatus:   headerStatus,
+		Lines: []receiptops.LineInput{{
+			Kind:            domain.LineLoanRepayment,
+			Amount:          amount,
+			TargetAccountID: &lid,
+			Status:          lineStatus,
+			PostedTxnID:     postedTxnID,
+		}},
+	})
+	if err != nil {
+		if errors.Is(err, receiptops.ErrUnsupportedChannel) {
+			return &domain.Receipt{}, nil
+		}
+		return nil, err
+	}
+	return rec, nil
+}
+
+// mapRepaymentChannelToReceipt converts the free-form repayment
+// channel string to a typed ReceiptChannel. "" returned for channels
+// that don't generate teller receipts.
+func mapRepaymentChannelToReceipt(channel string) domain.ReceiptChannel {
+	switch strings.ToLower(channel) {
+	case "mpesa":
+		return domain.RCMpesa
+	case "airtel_money":
+		return domain.RCAirtelMoney
+	case "bank", "bank_transfer":
+		return domain.RCBankTransfer
+	case "cheque":
+		return domain.RCCheque
+	case "standing_order":
+		return domain.RCStandingOrder
+	case "auto_savings", "payroll", "internal", "":
+		return ""
+	}
+	return ""
 }
 
 // postRepaymentToGL — auto-post per the SACCO accounting rules:
@@ -174,45 +283,24 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 //
 // We only emit the credit lines that are non-zero so the journal entry
 // stays clean.
-// postRepaymentToGLTx — outbox-insert variant of the repayment post.
-// Failure here rolls back the repayment. See deposit.go for context.
+// postRepaymentToGLTx — wrapper, body moved into postingops.
+// The approval executor calls postingops.PostLoanRepaymentTx directly.
 func (h *LoanRepaymentHandler) postRepaymentToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *LoanRepayResult, channel string) error {
-	if h.Posting == nil || result == nil {
+	if result == nil {
 		return nil
 	}
-	cashAcct := repaymentCashAccount(channel)
-	lines := []posting.Line{
-		{AccountCode: cashAcct, Debit: result.Transaction.Amount, Narration: "Cash received"},
-	}
-	a := result.Allocation
-	if !a.Principal.IsZero() {
-		lines = append(lines, posting.Line{
-			AccountCode: "1100", Credit: a.Principal, Narration: "Principal repaid",
-		})
-	}
-	if !a.Interest.IsZero() {
-		lines = append(lines, posting.Line{
-			AccountCode: "4000", Credit: a.Interest, Narration: "Loan interest income",
-		})
-	}
-	if !a.Penalty.IsZero() {
-		lines = append(lines, posting.Line{
-			AccountCode: "4030", Credit: a.Penalty, Narration: "Penalty income",
-		})
-	}
-	if !a.Fees.IsZero() {
-		lines = append(lines, posting.Line{
-			AccountCode: "4010", Credit: a.Fees, Narration: "Loan fees income",
-		})
-	}
-	narration := fmt.Sprintf("Repayment on loan %s", result.Loan.LoanNo)
-	return h.Posting.PostTx(ctx, tx, posting.PostInput{
-		TenantID:     tenantID,
-		EntryDate:    time.Now(),
-		SourceModule: "savings.loans.repayment",
-		SourceRef:    result.Transaction.ID.String(),
-		Narration:    narration,
-		Lines:        lines,
+	return postingops.PostLoanRepaymentTx(ctx, tx, postingops.Deps{
+		Posting: h.Posting,
+	}, postingops.LoanRepaymentInput{
+		TenantID:  tenantID,
+		TxnID:     result.Transaction.ID,
+		LoanNo:    result.Loan.LoanNo,
+		Amount:    result.Transaction.Amount,
+		Principal: result.Allocation.Principal,
+		Interest:  result.Allocation.Interest,
+		Penalty:   result.Allocation.Penalty,
+		Fees:      result.Allocation.Fees,
+		Channel:   channel,
 	})
 }
 

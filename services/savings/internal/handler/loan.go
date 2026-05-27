@@ -28,6 +28,7 @@ import (
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/posting"
+	"github.com/nexussacco/savings/internal/postingops"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -606,40 +607,22 @@ var _ = errors.New
 // tx — schedule, loan_transactions, MarkDisbursedTx, application
 // status flip all unwind. Handler surfaces 502 + gl_post_failed.
 func (h *LoanHandler) postLoanDisbursementToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *LoanDisbursementResult, channel string) error {
-	if h.Posting == nil || result == nil {
+	if result == nil {
 		return nil
 	}
-	principal := result.Loan.Principal
-	net := result.NetDisbursed
-	if net.IsZero() && len(result.FeeGLLines) == 0 {
-		// No fees deducted — net falls back to principal so the
-		// cash leg still balances the DR.
-		net = principal
-	}
-
-	cashAcct := h.resolveDisbursementCashAcctTx(ctx, tx, channel, result.Loan)
-	narration := fmt.Sprintf("Loan %s disbursement via %s",
-		result.Loan.LoanNo, channel)
-	cashNarration := "Cash disbursed"
-	if strings.ToLower(channel) == "internal" || strings.ToLower(channel) == "savings" {
-		cashNarration = "Credited to member savings (" + cashAcct + ")"
-	}
-
-	lines := []posting.Line{
-		{AccountCode: "1100", Debit: principal, Narration: "Loan receivable created"},
-		{AccountCode: cashAcct, Credit: net, Narration: cashNarration},
-	}
-	// FeeGLLines is already aggregated by gl_credit_code and sorted by
-	// code (see the executor), so we can append verbatim.
-	lines = append(lines, result.FeeGLLines...)
-
-	return h.Posting.PostTx(ctx, tx, posting.PostInput{
-		TenantID:     tenantID,
-		EntryDate:    time.Now(),
-		SourceModule: "savings.loans.disbursement",
-		SourceRef:    result.Disbursement.ID.String(),
-		Narration:    narration,
-		Lines:        lines,
+	return postingops.PostLoanDisbursementTx(ctx, tx, postingops.Deps{
+		Posting:         h.Posting,
+		Deposits:        h.Deposits,
+		DepositProducts: h.DepositProducts,
+	}, postingops.LoanDisbursementInput{
+		TenantID:           tenantID,
+		DisbursementTxnID:  result.Disbursement.ID,
+		LoanNo:             result.Loan.LoanNo,
+		Principal:          result.Loan.Principal,
+		NetDisbursed:       result.NetDisbursed,
+		FeeGLLines:         result.FeeGLLines,
+		Channel:            channel,
+		LoanForCashResolve: result.Loan,
 	})
 }
 

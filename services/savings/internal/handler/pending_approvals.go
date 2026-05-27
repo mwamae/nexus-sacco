@@ -25,11 +25,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
 
 	"github.com/nexussacco/savings/internal/db"
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/postingops"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -561,6 +563,23 @@ func (h *PendingApprovalsHandler) ListSettingsChanges(w http.ResponseWriter, r *
 	httpx.OK(w, map[string]any{"changes": out})
 }
 
+// readWriteoffThroughProvisionTx reads the tenant_operations toggle
+// added in migration 0038. Defaults to false (direct write-off) when
+// the row is missing for some reason.
+func readWriteoffThroughProvisionTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var v bool
+	err := tx.QueryRow(ctx,
+		`SELECT writeoff_through_provision FROM tenant_operations LIMIT 1`,
+	).Scan(&v)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return v, nil
+}
+
 // ─────────── Dispatcher ───────────
 
 // executePayloadTx looks up the executor for the kind, unmarshals the
@@ -584,6 +603,13 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		if err != nil {
 			return nil, nil, err
 		}
+		// Post the JE inside the executor tx. The wrapper calls
+		// postingops.PostDepositTx; the executor tx is committed by
+		// the caller (Approve / ResolveFromWorkflow), so a posting
+		// error here rolls the executor back as expected.
+		if perr := h.Deposit.postDepositToGLTx(ctx, tx, pa.TenantID, res, p.Channel); perr != nil {
+			return nil, nil, perr
+		}
 		txnID := res.Transaction.ID
 		return res, &txnID, nil
 
@@ -598,6 +624,9 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		res, err := h.Deposit.ExecuteWithdrawalTx(ctx, tx, p, makerID)
 		if err != nil {
 			return nil, nil, err
+		}
+		if perr := h.Deposit.postWithdrawalToGLTx(ctx, tx, pa.TenantID, res, p.Channel); perr != nil {
+			return nil, nil, perr
 		}
 		txnID := res.Transaction.ID
 		return res, &txnID, nil
@@ -614,6 +643,13 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		if err != nil {
 			return nil, nil, err
 		}
+		// Inter-account JE: DR from-liability / CR to-liability.
+		// The DepositHandler now exposes a thin wrapper that calls
+		// postingops.PostDepositTransferTx with the resolved product
+		// ids.
+		if perr := h.Deposit.postDepositTransferToGLTx(ctx, tx, pa.TenantID, res); perr != nil {
+			return nil, nil, perr
+		}
 		txnID := res.From.Transaction.ID
 		return res, &txnID, nil
 
@@ -628,6 +664,9 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		res, err := h.Share.ExecuteSharePurchaseTx(ctx, tx, p, makerID)
 		if err != nil {
 			return nil, nil, err
+		}
+		if perr := h.Share.postSharePurchaseToGLTx(ctx, tx, pa.TenantID, res, p.PaymentChannel); perr != nil {
+			return nil, nil, perr
 		}
 		txnID := res.Transaction.ID
 		return res, &txnID, nil
@@ -644,6 +683,14 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		if err != nil {
 			return nil, nil, err
 		}
+		// TODO(finance-signoff): share transfers between members have
+		// no GL post today — neither the inline path nor the executor
+		// touches journal_entries. The accounting question is whether
+		// the equity movement should hit a "Member Share Capital
+		// (member A)" → "Member Share Capital (member B)" split or
+		// stay equity-neutral. Defer pending CoA decision. The receipt
+		// + share_transactions rows are persisted so reconciliation
+		// can spot the gap.
 		txnID := res.From.Transaction.ID
 		return res, &txnID, nil
 
@@ -658,6 +705,11 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		res, err := h.Share.ExecuteShareBonusTx(ctx, tx, p, makerID)
 		if err != nil {
 			return nil, nil, err
+		}
+		// Bonus issue: one batched JE for the whole run
+		// (DR Retained Earnings / CR Member Share Capital).
+		if perr := h.Share.postBonusIssueToGLTx(ctx, tx, pa.TenantID, res, p.Reason); perr != nil {
+			return nil, nil, perr
 		}
 		// Bonus issue affects many ledger rows — no single result_txn_id.
 		return res, nil, nil
@@ -689,6 +741,9 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		if err != nil {
 			return nil, nil, err
 		}
+		if perr := h.Loan.postLoanDisbursementToGLTx(ctx, tx, pa.TenantID, res, p.Channel); perr != nil {
+			return nil, nil, perr
+		}
 		txnID := res.Disbursement.ID
 		return res, &txnID, nil
 
@@ -703,6 +758,9 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		res, err := h.LoanRepay.ExecuteRepaymentTx(ctx, tx, p, makerID)
 		if err != nil {
 			return nil, nil, err
+		}
+		if perr := h.LoanRepay.postRepaymentToGLTx(ctx, tx, pa.TenantID, res, p.Channel); perr != nil {
+			return nil, nil, perr
 		}
 		txnID := res.Transaction.ID
 		return res, &txnID, nil
@@ -719,6 +777,24 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		if err != nil {
 			return nil, nil, err
 		}
+		// Settlement JE — same legs as a repayment but tagged with a
+		// distinct source_module ("savings.loans.settle") so reports
+		// can split settlements out from ongoing repayments.
+		if perr := postingops.PostLoanSettleTx(ctx, tx, postingops.Deps{
+			Posting: h.LoanRepay.Posting,
+		}, postingops.LoanSettleInput{
+			TenantID:  pa.TenantID,
+			TxnID:     res.Transaction.ID,
+			LoanNo:    res.Loan.LoanNo,
+			Amount:    res.Transaction.Amount,
+			Principal: res.Allocation.Principal,
+			Interest:  res.Allocation.Interest,
+			Penalty:   res.Allocation.Penalty,
+			Fees:      res.Allocation.Fees,
+			Channel:   p.Channel,
+		}); perr != nil {
+			return nil, nil, perr
+		}
 		txnID := res.Transaction.ID
 		return res, &txnID, nil
 
@@ -733,6 +809,31 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		res, err := h.LoanRepay.ExecuteReverseTx(ctx, tx, p, makerID)
 		if err != nil {
 			return nil, nil, err
+		}
+		// Reverse the JE that the original repayment posted. We
+		// don't have the original repayment's allocation here, so
+		// the reversal JE uses the reversal txn's own components.
+		// dedup key is "reverse:<original_txn_id>".
+		origTxnID := uuid.Nil
+		if res.Reversal.ReversesTxnID != nil {
+			origTxnID = *res.Reversal.ReversesTxnID
+		}
+		if perr := postingops.PostLoanRepaymentReversalTx(ctx, tx, postingops.Deps{
+			Posting: h.LoanRepay.Posting,
+		}, postingops.LoanRepaymentReversalInput{
+			TenantID:      pa.TenantID,
+			ReversalTxnID: res.Reversal.ID,
+			OriginalTxnID: origTxnID,
+			LoanNo:        res.Loan.LoanNo,
+			Amount:        res.Reversal.Amount,
+			Principal:     res.Reversal.PrincipalComponent,
+			Interest:      res.Reversal.InterestComponent,
+			Penalty:       res.Reversal.PenaltyComponent,
+			Fees:          res.Reversal.FeeComponent,
+			Channel:       "", // reversal channel isn't carried; default = teller (1000)
+			Reason:        p.Reason,
+		}); perr != nil {
+			return nil, nil, perr
 		}
 		txnID := res.Reversal.ID
 		return res, &txnID, nil
@@ -749,10 +850,29 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		if err != nil {
 			return nil, nil, err
 		}
+		// Read the tenant's writeoff_through_provision toggle: false =
+		// direct write-off (DR 5020 / CR 1100), true = consume the
+		// accrued provision allowance (DR 2900 / CR 1100).
+		throughProvision, terr := readWriteoffThroughProvisionTx(ctx, tx)
+		if terr != nil {
+			return nil, nil, terr
+		}
 		var txnID *uuid.UUID
 		if res.Writeoff.WriteoffTxnID != nil {
 			id := *res.Writeoff.WriteoffTxnID
 			txnID = &id
+			if perr := postingops.PostLoanWriteoffTx(ctx, tx, postingops.Deps{
+				Posting: h.LoanReports.Posting,
+			}, postingops.LoanWriteoffInput{
+				TenantID:         pa.TenantID,
+				TxnID:            id,
+				LoanNo:           res.Loan.LoanNo,
+				Amount:           res.Writeoff.TotalWrittenOff,
+				Reason:           p.Reason,
+				ThroughProvision: throughProvision,
+			}); perr != nil {
+				return nil, nil, perr
+			}
 		}
 		return res, txnID, nil
 
@@ -800,6 +920,29 @@ func (h *PendingApprovalsHandler) executePayloadTx(
 		if res.Restructuring.DiscountWriteoffTxnID != nil {
 			id := *res.Restructuring.DiscountWriteoffTxnID
 			txnID = &id
+			// Settlement discount = waiver of an outstanding receivable
+			// component. Defaults to waiving interest (4000) — the
+			// LoanCollect handler doesn't expose which component on
+			// the result, so until that surface is added we mark
+			// "interest" as the most-common case + the reconciliation
+			// query (source_module=savings.loans.settlement_discount)
+			// gives operators the row to inspect manually.
+			discountAmt := decimal.Zero
+			if res.Restructuring.DiscountAmount != nil {
+				discountAmt = *res.Restructuring.DiscountAmount
+			}
+			if perr := postingops.PostLoanSettlementDiscountTx(ctx, tx, postingops.Deps{
+				Posting: h.Collection.Posting,
+			}, postingops.LoanSettlementDiscountInput{
+				TenantID:        pa.TenantID,
+				DiscountTxnID:   id,
+				LoanNo:          res.Loan.LoanNo,
+				DiscountAmount:  discountAmt,
+				WaivedComponent: "interest",
+				Reason:          p.Reason,
+			}); perr != nil {
+				return nil, nil, perr
+			}
 		}
 		return res, txnID, nil
 

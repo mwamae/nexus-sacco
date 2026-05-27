@@ -887,7 +887,9 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 function ShareBuyModal({ counterpartyId, onClose, onSaved }: { counterpartyId: string; onClose: () => void; onSaved: () => Promise<void> | void }) {
   const [shares, setShares] = useState(1);
-  const [channel, setChannel] = useState<SharePaymentChannel>('cash');
+  // Cash is blocked from inline panels — the server returns 412 with
+  // a deep_link to Collection Desk. Default to mpesa instead.
+  const [channel, setChannel] = useState<SharePaymentChannel>('mpesa');
   const [ref, setRef] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -904,10 +906,13 @@ function ShareBuyModal({ counterpartyId, onClose, onSaved }: { counterpartyId: s
         } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>
       {err && <div className="alert alert-error">{err}</div>}
+      <div className="alert alert-info" style={{ marginBottom: 8 }}>
+        Paying in cash? <a href={`/collect/receipts/new?counterparty_id=${counterpartyId}`}>Open Collection Desk</a> instead — cash must be receipted against an open till.
+      </div>
       <Field label="Shares"><input className="input" type="number" min={1} value={shares} onChange={(e) => setShares(parseInt(e.target.value, 10) || 0)} /></Field>
       <Field label="Payment channel">
         <select className="input" value={channel} onChange={(e) => setChannel(e.target.value as SharePaymentChannel)}>
-          {(['cash', 'mpesa', 'airtel_money', 'bank_transfer', 'payroll', 'standing_order'] as SharePaymentChannel[]).map((c) => (
+          {(['mpesa', 'airtel_money', 'bank_transfer', 'payroll', 'standing_order'] as SharePaymentChannel[]).map((c) => (
             <option key={c} value={c}>{SHARE_CHANNEL_LABELS[c]}</option>
           ))}
         </select>
@@ -1104,7 +1109,8 @@ function OpenAccountModal({ counterpartyId, products, onClose, onSaved }: {
 
 function DepDepositModal({ it, currency, onClose, onSaved }: { it: MemberDepositItem; currency: string; onClose: () => void; onSaved: () => Promise<void> | void }) {
   const [amount, setAmount] = useState('');
-  const [channel, setChannel] = useState<DepositChannel>('cash');
+  // Cash inline is server-side blocked; default to mpesa.
+  const [channel, setChannel] = useState<DepositChannel>('mpesa');
   const [ref, setRef] = useState('');
   const [narr, setNarr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1121,13 +1127,16 @@ function DepDepositModal({ it, currency, onClose, onSaved }: { it: MemberDeposit
         } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>
       {err && <div className="alert alert-error">{err}</div>}
+      <div className="alert alert-info" style={{ marginBottom: 8 }}>
+        Receiving cash? <a href={`/collect/receipts/new?counterparty_id=${it.account.counterparty_id}`}>Open Collection Desk</a> — cash must be receipted against an open till.
+      </div>
       <p className="muted tiny" style={{ marginTop: 0 }}>
         {it.product.name} · Current balance <strong>{currency} {fmtMoney(it.account.current_balance)}</strong>
       </p>
       <Field label={`Amount (${currency})`}><input className="input mono" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" /></Field>
       <Field label="Channel">
         <select className="input" value={channel} onChange={(e) => setChannel(e.target.value as DepositChannel)}>
-          {(['cash', 'mpesa', 'airtel_money', 'bank_transfer', 'standing_order', 'payroll'] as DepositChannel[]).map((c) => (
+          {(['mpesa', 'airtel_money', 'bank_transfer', 'standing_order', 'payroll'] as DepositChannel[]).map((c) => (
             <option key={c} value={c}>{DEP_CHANNEL_LABELS[c]}</option>
           ))}
         </select>
@@ -1167,7 +1176,7 @@ function DepWithdrawModal({ it, currency, onClose, onSaved }: { it: MemberDeposi
       <Field label={`Amount (${currency})`}><input className="input mono" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
       <Field label="Payout channel">
         <select className="input" value={channel} onChange={(e) => setChannel(e.target.value as DepositChannel)}>
-          {(['mpesa', 'airtel_money', 'bank_transfer', 'cash', 'internal'] as DepositChannel[]).map((c) => (
+          {(['mpesa', 'airtel_money', 'bank_transfer', 'internal'] as DepositChannel[]).map((c) => (
             <option key={c} value={c}>{DEP_CHANNEL_LABELS[c]}</option>
           ))}
         </select>

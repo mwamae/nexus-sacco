@@ -36,6 +36,7 @@ import (
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/posting"
+	"github.com/nexussacco/savings/internal/receiptops"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -278,16 +279,14 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 			return err
 		}
 
-		// Resolve channel → till context.
-		var (
-			tillSessionID *uuid.UUID
-			virtualTillID *uuid.UUID
-			tillCode      string
-		)
+		// Resolve cash till session up front — for cash, the caller
+		// must already have a till open. Non-cash channels are
+		// resolved inside receiptops.WriteTx (lazy-create virtual
+		// till). The receipt header itself is written by receiptops;
+		// the lines after that are still annotated per-kind below
+		// for the approval-queueing loop.
+		var tillSessionID *uuid.UUID
 		if in.Channel == domain.RCCash {
-			// Cash requires an open till session for THIS user. If none,
-			// the desk should have caught this client-side already; the
-			// 412 is the server-side hard stop.
 			var sid, tid uuid.UUID
 			var code string
 			err := tx.QueryRow(r.Context(), `
@@ -303,61 +302,52 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 				return err
 			}
 			tillSessionID = &sid
-			tillCode = code
-		} else {
-			vt, vErr := h.VirtualTills.EnsureForChannelTx(r.Context(), tx, tenantID, in.Channel)
-			if vErr != nil {
-				return vErr
-			}
-			virtualTillID = &vt.ID
-			tillCode = string(in.Channel) // "mpesa", "bank_transfer", etc. — short slug for the serial
 		}
 
-		// Build the store input + create the receipt with N lines.
-		var channelRef *string
-		if in.ChannelRef != "" {
-			s := in.ChannelRef
-			channelRef = &s
-		}
-		var narration *string
-		if in.Narration != "" {
-			s := in.Narration
-			narration = &s
-		}
-		lineInputs := make([]store.CreateReceiptLineInput, 0, len(in.Lines))
-		for i, l := range in.Lines {
-			var n *string
-			if l.Narration != "" {
-				s := l.Narration
-				n = &s
+		// Build receiptops line inputs. Lines default to 'pending'
+		// status — the loop below either flips them to posted (fee /
+		// welfare direct-post) or attaches an approval id.
+		opsLines := make([]receiptops.LineInput, 0, len(in.Lines))
+		for _, l := range in.Lines {
+			fee := ""
+			if l.FeeCode != nil {
+				fee = *l.FeeCode
 			}
-			lineInputs = append(lineInputs, store.CreateReceiptLineInput{
-				LineNo:          i + 1,
+			n := ""
+			if l.Narration != "" {
+				n = l.Narration
+			}
+			opsLines = append(opsLines, receiptops.LineInput{
 				Kind:            l.Kind,
 				Amount:          l.Amount,
 				TargetAccountID: l.TargetAccountID,
-				FeeCode:         l.FeeCode,
+				FeeCode:         fee,
 				Narration:       n,
 			})
 		}
-		r2, cerr := h.Receipts.CreateTx(r.Context(), tx, store.CreateReceiptInput{
+		r2, cerr := receiptops.WriteTx(r.Context(), tx, receiptops.Deps{
+			Receipts:     h.Receipts,
+			VirtualTills: h.VirtualTills,
+		}, receiptops.WriteInput{
 			TenantID:       tenantID,
 			CounterpartyID: in.CounterpartyID,
+			CashierUserID:  userID,
 			Channel:        in.Channel,
-			ChannelRef:     channelRef,
+			ChannelRef:     in.ChannelRef,
 			ChannelAmount:  in.ChannelAmount,
 			ValueDate:      valueDate,
-			Narration:      narration,
-			CashierUserID:  userID,
+			Narration:      in.Narration,
+			Source:         "collection_desk",
 			TillSessionID:  tillSessionID,
-			VirtualTillID:  virtualTillID,
-			TillCode:       tillCode,
-			Lines:          lineInputs,
+			Lines:          opsLines,
 		})
 		if cerr != nil {
 			if errors.Is(cerr, store.ErrDuplicateReceipt) {
 				// Surface the existing receipt id so the UI can render
 				// the "duplicate — continue anyway?" dialog with a link.
+				return httpx.ErrConflict(cerr.Error())
+			}
+			if errors.Is(cerr, receiptops.ErrCashRequiresTill) {
 				return httpx.ErrConflict(cerr.Error())
 			}
 			return cerr

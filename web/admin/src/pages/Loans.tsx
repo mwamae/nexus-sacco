@@ -1355,6 +1355,9 @@ function RepayModal({ loan, accounts, onClose, onPosted }: {
     <ModalShell title={`Record repayment · ${loan.loan_no}`} busy={busy} onClose={onClose} onSubmit={submit} submitLabel="Post repayment"
       disabled={!amount || parseFloat(amount) <= 0 || !channel || (channel === 'auto_savings' && !debitAcct)}>
       {err && <div className="alert alert-error">{err}</div>}
+      <div className="alert alert-info" style={{ marginBottom: 8 }}>
+        Receiving cash at the counter? <a href={`/collect/receipts/new?loan_id=${loan.id}`}>Open Collection Desk</a> instead — cash must be receipted against an open till.
+      </div>
       <p className="muted tiny" style={{ marginTop: 0 }}>
         Outstanding: principal {currency} {fmt(loan.principal_balance)} · interest {currency} {fmt(loan.interest_balance)} · fees {currency} {fmt(loan.fees_balance)} · penalty {currency} {fmt(loan.penalty_balance)}
       </p>

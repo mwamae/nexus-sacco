@@ -24,6 +24,7 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -32,7 +33,11 @@ type LoanReportsHandler struct {
 	Reports   *store.LoanReportsStore
 	Loans     *store.LoanStore
 	Approvals *store.ApprovalsStore
-	Logger    *slog.Logger
+	// Posting fires the write-off JE (direct OR through-provision per
+	// tenant_operations.writeoff_through_provision). Optional in
+	// tests; nil disables the JE write.
+	Posting *posting.Client
+	Logger  *slog.Logger
 }
 
 // ─────────── Portfolio summary ───────────

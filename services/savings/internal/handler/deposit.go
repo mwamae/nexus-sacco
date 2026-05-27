@@ -24,6 +24,8 @@ import (
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/posting"
+	"github.com/nexussacco/savings/internal/postingops"
+	"github.com/nexussacco/savings/internal/receiptops"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -35,9 +37,12 @@ type DepositHandler struct {
 	Products       *store.DepositProductStore
 	Deposits       *store.DepositStore
 	Approvals      *store.ApprovalsStore
-	Notifier       *notifier.Client
-	Posting        *posting.Client
-	Logger         *slog.Logger
+	// Receipts + VirtualTills drive the inline-panel receipt writes.
+	Receipts     *store.ReceiptStore
+	VirtualTills *store.VirtualTillStore
+	Notifier     *notifier.Client
+	Posting      *posting.Client
+	Logger       *slog.Logger
 
 	// DuplicateLookback is how far back we look for a same-channel-ref
 	// duplicate before flagging a deposit. Default 10 minutes.
@@ -388,6 +393,17 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("valid channel is required"))
 		return
 	}
+	if in.Channel == domain.DepChannelCash {
+		// Inline cash is blocked — deposit a teller's drawer takes via
+		// the Collection Desk. The UI hard-blocks Cash in the inline
+		// modal; this is the server-side hard stop for direct API.
+		var memberStr string
+		if _, acct, _, lerr := h.loadProductAccount(r.Context(), nil, accountID); lerr == nil && acct != nil {
+			memberStr = acct.CounterpartyID.String()
+		}
+		httpx.WriteErr(w, r, httpx.ErrCashInlineBlocked(memberStr))
+		return
+	}
 	if in.ValueDate != "" {
 		if _, err := time.Parse("2006-01-02", in.ValueDate); err != nil {
 			httpx.WriteErr(w, r, httpx.ErrBadRequest("value_date must be YYYY-MM-DD"))
@@ -413,17 +429,18 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 
 	var result *DepositResult
 	var pending *domain.PendingApproval
+	var receipt *domain.Receipt
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
+		_, acct, _, lerr := h.loadProductAccount(r.Context(), tx, accountID)
+		if lerr != nil {
+			return lerr
+		}
+		memberID := acct.CounterpartyID
 		if toggles.Deposit {
-			_, acct, _, lerr := h.loadProductAccount(r.Context(), tx, accountID)
-			if lerr != nil {
-				return lerr
-			}
-			memberID := acct.CounterpartyID
 			amount := in.Amount
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:             domain.ApprovalKindDeposit,
@@ -438,6 +455,18 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 				return qerr
 			}
 			pending = pa
+			rec, rerr := h.writeInlineDepositReceipt(r.Context(), tx, tid, memberID, accountID, userID,
+				in.Channel, in.ChannelRef, amount, in.Narration,
+				domain.ReceiptDraft, domain.LinePending, nil)
+			if rerr != nil {
+				return rerr
+			}
+			if len(rec.Lines) > 0 {
+				if aerr := h.Receipts.AttachApprovalTx(r.Context(), tx, rec.Lines[0].ID, pa.ID); aerr != nil {
+					return aerr
+				}
+			}
+			receipt = rec
 			return nil
 		}
 		res, err := h.ExecuteDepositTx(r.Context(), tx, payload, userID)
@@ -451,6 +480,13 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 		if perr := h.postDepositToGLTx(r.Context(), tx, tid, res, in.Channel); perr != nil {
 			return perr
 		}
+		rec, rerr := h.writeInlineDepositReceipt(r.Context(), tx, tid, memberID, accountID, userID,
+			in.Channel, in.ChannelRef, res.Transaction.Amount, in.Narration,
+			domain.ReceiptPosted, domain.LinePosted, &res.Transaction.ID)
+		if rerr != nil {
+			return rerr
+		}
+		receipt = rec
 		result = res
 		return nil
 	})
@@ -462,12 +498,59 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 		writeDepositErr(w, r, err)
 		return
 	}
+	_ = receipt // surfaced via /v1/receipts
 	if pending != nil {
 		writePendingResponse(w, r, pending)
 		return
 	}
 	h.emitDeposit(r, tid, userID, result, "DEPOSIT_RECEIVED")
 	httpx.Created(w, result)
+}
+
+// writeInlineDepositReceipt persists a single-line savings_deposit
+// receipt for the inline Deposit panel. Skipped silently when the
+// receipt deps aren't wired or when the channel isn't representable
+// on the receipts table (internal / payroll / direct_debit).
+func (h *DepositHandler) writeInlineDepositReceipt(
+	ctx context.Context, tx pgx.Tx,
+	tenantID, memberID, accountID, userID uuid.UUID,
+	channel domain.DepositChannel, channelRef string,
+	amount decimal.Decimal, narration string,
+	headerStatus domain.ReceiptStatus, lineStatus domain.ReceiptLineStatus,
+	postedTxnID *uuid.UUID,
+) (*domain.Receipt, error) {
+	if h.Receipts == nil || h.VirtualTills == nil {
+		return &domain.Receipt{}, nil
+	}
+	accID := accountID
+	rec, err := receiptops.WriteTx(ctx, tx, receiptops.Deps{
+		Receipts:     h.Receipts,
+		VirtualTills: h.VirtualTills,
+	}, receiptops.WriteInput{
+		TenantID:       tenantID,
+		CounterpartyID: memberID,
+		CashierUserID:  userID,
+		Channel:        domain.ReceiptChannel(channel),
+		ChannelRef:     channelRef,
+		ChannelAmount:  amount,
+		Narration:      narration,
+		Source:         "inline_deposit",
+		HeaderStatus:   headerStatus,
+		Lines: []receiptops.LineInput{{
+			Kind:            domain.LineSavingsDeposit,
+			Amount:          amount,
+			TargetAccountID: &accID,
+			Status:          lineStatus,
+			PostedTxnID:     postedTxnID,
+		}},
+	})
+	if err != nil {
+		if errors.Is(err, receiptops.ErrUnsupportedChannel) {
+			return &domain.Receipt{}, nil
+		}
+		return nil, err
+	}
+	return rec, nil
 }
 
 // ─────────── Withdrawal ───────────
@@ -499,6 +582,23 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("valid channel is required"))
 		return
 	}
+	if in.Channel == domain.DepChannelCash {
+		// Inline cash withdrawal is blocked — cash leaving the drawer
+		// MUST be paired with a teller's open till. The UI hard-blocks
+		// Cash in the inline modal; this is the server-side hard stop.
+		var memberStr string
+		if _, acct, _, lerr := h.loadProductAccount(r.Context(), nil, accountID); lerr == nil && acct != nil {
+			memberStr = acct.CounterpartyID.String()
+		}
+		httpx.WriteErr(w, r, httpx.ErrCashInlineBlocked(memberStr))
+		return
+	}
+	// NOTE: withdrawals don't write a receipts row today — the
+	// receipt_line_kind enum has no 'withdrawal' value (the receipts
+	// table is designed for incoming money + fee/welfare). Extending
+	// the enum is out of scope here; the GL post still lands and the
+	// withdrawal is visible via deposit_transactions. See receiptops
+	// docs for the rationale.
 	userID, _ := middleware.UserIDFrom(r)
 	tid, _ := middleware.TenantIDFrom(r)
 	payload := WithdrawalPayload{
@@ -687,48 +787,60 @@ func depositLiabilityCode(segment domain.DepositSegment, productType domain.Depo
 // errors) is removed — the post-after-commit pattern was the bug
 // the refactor closes.
 func (h *DepositHandler) postDepositToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *DepositResult, ch domain.DepositChannel) error {
-	if h.Posting == nil || result == nil {
+	if result == nil {
 		return nil
 	}
-	amount := result.Transaction.Amount
-	cashAcct := channelCashAccount(ch)
-	liabAcct := h.resolveLiabilityAcctTx(ctx, tx, result.Account.ProductID)
-	narration := fmt.Sprintf("Deposit %s to a/c %s",
-		amount.StringFixed(2), result.Account.AccountNo)
-	return h.Posting.PostTx(ctx, tx, posting.PostInput{
-		TenantID:     tenantID,
-		EntryDate:    time.Now(),
-		SourceModule: "savings.deposits",
-		SourceRef:    result.Transaction.ID.String(),
-		Narration:    narration,
-		Lines: []posting.Line{
-			{AccountCode: cashAcct, Debit: amount, Narration: "Cash received"},
-			{AccountCode: liabAcct, Credit: amount, Narration: "Member savings credited"},
-		},
+	return postingops.PostDepositTx(ctx, tx, postingops.Deps{
+		Posting:         h.Posting,
+		DepositProducts: h.Products,
+	}, postingops.DepositInput{
+		TenantID:  tenantID,
+		TxnID:     result.Transaction.ID,
+		Amount:    result.Transaction.Amount,
+		AccountNo: result.Account.AccountNo,
+		ProductID: result.Account.ProductID,
+		Channel:   ch,
 	})
 }
 
-// postWithdrawalToGLTx — outbox-insert variant of the withdrawal post.
-// See postDepositToGLTx for the contract.
-func (h *DepositHandler) postWithdrawalToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *WithdrawalResult, ch domain.DepositChannel) error {
-	if h.Posting == nil || result == nil {
+// postDepositTransferToGLTx — wrapper for the inter-account
+// transfer JE (DR from-liability / CR to-liability, no cash leg).
+// Called from the approval executor; inline deposit-transfer is not
+// implemented today so the inline path doesn't need this wrapper.
+func (h *DepositHandler) postDepositTransferToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *DepTransferResult) error {
+	if result == nil {
 		return nil
 	}
-	amount := result.Transaction.Amount
-	cashAcct := channelCashAccount(ch)
-	liabAcct := h.resolveLiabilityAcctTx(ctx, tx, result.Account.ProductID)
-	narration := fmt.Sprintf("Withdrawal %s from a/c %s",
-		amount.StringFixed(2), result.Account.AccountNo)
-	return h.Posting.PostTx(ctx, tx, posting.PostInput{
-		TenantID:     tenantID,
-		EntryDate:    time.Now(),
-		SourceModule: "savings.deposits",
-		SourceRef:    result.Transaction.ID.String(),
-		Narration:    narration,
-		Lines: []posting.Line{
-			{AccountCode: liabAcct, Debit: amount, Narration: "Member savings debited"},
-			{AccountCode: cashAcct, Credit: amount, Narration: "Cash paid out"},
-		},
+	return postingops.PostDepositTransferTx(ctx, tx, postingops.Deps{
+		Posting:         h.Posting,
+		DepositProducts: h.Products,
+	}, postingops.DepositTransferInput{
+		TenantID:      tenantID,
+		FromTxnID:     result.From.Transaction.ID,
+		ToTxnID:       result.To.Transaction.ID,
+		Amount:        result.From.Transaction.Amount,
+		FromAccountNo: result.From.Account.AccountNo,
+		ToAccountNo:   result.To.Account.AccountNo,
+		FromProductID: result.From.Account.ProductID,
+		ToProductID:   result.To.Account.ProductID,
+	})
+}
+
+// postWithdrawalToGLTx — wrapper, body moved into postingops.
+func (h *DepositHandler) postWithdrawalToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *WithdrawalResult, ch domain.DepositChannel) error {
+	if result == nil {
+		return nil
+	}
+	return postingops.PostWithdrawalTx(ctx, tx, postingops.Deps{
+		Posting:         h.Posting,
+		DepositProducts: h.Products,
+	}, postingops.DepositInput{
+		TenantID:  tenantID,
+		TxnID:     result.Transaction.ID,
+		Amount:    result.Transaction.Amount,
+		AccountNo: result.Account.AccountNo,
+		ProductID: result.Account.ProductID,
+		Channel:   ch,
 	})
 }
 

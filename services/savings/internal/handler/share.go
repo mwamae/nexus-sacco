@@ -26,19 +26,26 @@ import (
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/posting"
+	"github.com/nexussacco/savings/internal/postingops"
+	"github.com/nexussacco/savings/internal/receiptops"
 	"github.com/nexussacco/savings/internal/store"
 )
 
 type ShareHandler struct {
-	DB        *db.Pool
-	Tenants   *store.TenantStore
+	DB             *db.Pool
+	Tenants        *store.TenantStore
 	Members        *store.MemberStore
 	Counterparties *store.CounterpartyStore
-	Shares    *store.ShareStore
-	Approvals *store.ApprovalsStore
-	Notifier  *notifier.Client
-	Posting   *posting.Client
-	Logger    *slog.Logger
+	Shares         *store.ShareStore
+	Approvals      *store.ApprovalsStore
+	// Receipts + VirtualTills drive the inline-panel receipt writes
+	// added in the receiptops PR — every share-buy now leaves a row
+	// in receipts/receipt_lines so Today's receipts sees the event.
+	Receipts     *store.ReceiptStore
+	VirtualTills *store.VirtualTillStore
+	Notifier     *notifier.Client
+	Posting      *posting.Client
+	Logger       *slog.Logger
 }
 
 // ─────────── Helpers ───────────
@@ -377,6 +384,14 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid payment_channel"))
 		return
 	}
+	// Inline cash is blocked — telephone-style "type the amount and
+	// submit" can't be reconciled against a teller's drawer. The UI
+	// hard-blocks the Cash option in the modal; the 412 here is the
+	// server-side hard stop for any direct API caller.
+	if in.PaymentChannel == domain.ChannelCash {
+		httpx.WriteErr(w, r, httpx.ErrCashInlineBlocked(memberID.String()))
+		return
+	}
 	userID, _ := middleware.UserIDFrom(r)
 	if userID == uuid.Nil {
 		httpx.WriteErr(w, r, httpx.ErrUnauthorized("user identity required"))
@@ -385,7 +400,7 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 	tid, _ := middleware.TenantIDFrom(r)
 
 	payload := SharePurchasePayload{
-		CounterpartyID:       memberID,
+		CounterpartyID: memberID,
 		Shares:         in.Shares,
 		PaymentChannel: in.PaymentChannel,
 		PaymentRef:     in.PaymentRef,
@@ -393,17 +408,18 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 	}
 	var result *SharePostResult
 	var pending *domain.PendingApproval
+	var receipt *domain.Receipt
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
+		policy, err := h.Tenants.SharePolicyTx(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		amount := policy.ParValue.Mul(decimal.NewFromInt(int64(in.Shares)))
 		if toggles.SharePurchase {
-			policy, err := h.Tenants.SharePolicyTx(r.Context(), tx)
-			if err != nil {
-				return err
-			}
-			amount := policy.ParValue.Mul(decimal.NewFromInt(int64(in.Shares)))
 			m := memberID
 			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
 				Kind:            domain.ApprovalKindSharePurchase,
@@ -417,6 +433,22 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 				return qerr
 			}
 			pending = pa
+			// Write a pending receipt + line so Today's receipts sees
+			// the inline panel's queue immediately. The line's
+			// approval_id is set from the just-queued pa; the line
+			// flips to 'posted' when the approval executor fires.
+			rec, rerr := h.writeInlineShareReceipt(r.Context(), tx, tid, memberID, userID,
+				in.PaymentChannel, in.PaymentRef, amount, in.Narration,
+				domain.ReceiptDraft, domain.LinePending, nil)
+			if rerr != nil {
+				return rerr
+			}
+			if len(rec.Lines) > 0 {
+				if aerr := h.Receipts.AttachApprovalTx(r.Context(), tx, rec.Lines[0].ID, pa.ID); aerr != nil {
+					return aerr
+				}
+			}
+			receipt = rec
 			return nil
 		}
 		res, err := h.ExecuteSharePurchaseTx(r.Context(), tx, payload, userID)
@@ -429,6 +461,16 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 		if perr := h.postSharePurchaseToGLTx(r.Context(), tx, tid, res, in.PaymentChannel); perr != nil {
 			return perr
 		}
+		// Write a posted receipt + posted line so the inline path
+		// is visible to Today's receipts alongside Collection Desk
+		// receipts (the bug this PR closes).
+		rec, rerr := h.writeInlineShareReceipt(r.Context(), tx, tid, memberID, userID,
+			in.PaymentChannel, in.PaymentRef, res.Transaction.Amount, in.Narration,
+			domain.ReceiptPosted, domain.LinePosted, &res.Transaction.ID)
+		if rerr != nil {
+			return rerr
+		}
+		receipt = rec
 		result = res
 		return nil
 	})
@@ -440,6 +482,7 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 		writeBusinessErr(w, r, err)
 		return
 	}
+	_ = receipt // surfaced via /v1/receipts; not in this endpoint's response shape
 	if pending != nil {
 		writePendingResponse(w, r, pending)
 		return
@@ -467,48 +510,82 @@ func shareChannelCashAccount(ch domain.PaymentChannel) string {
 	}
 }
 
-// postSharePurchaseToGLTx — outbox-insert variant called inside the
-// share-purchase tx. Failure here rolls back the share write +
-// surfaces 502 to the caller. See deposit.go::postDepositToGLTx for
-// the full rationale on the post-after-commit refactor.
+// postSharePurchaseToGLTx — thin wrapper over postingops.PostShareBuyTx.
+// Body moved out so the approval executor (pending_approvals.go) can
+// call the same JE logic when an approved purchase fires.
 func (h *ShareHandler) postSharePurchaseToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, result *SharePostResult, ch domain.PaymentChannel) error {
-	if h.Posting == nil || result == nil {
+	if result == nil {
 		return nil
 	}
-	amount := result.Transaction.Amount
-	if amount.IsZero() {
-		return nil
-	}
-	cashAcct := shareChannelCashAccount(ch)
-	narration := fmt.Sprintf("Share purchase %d shares · %s",
-		result.Transaction.SharesDelta, result.Account.AccountNo)
-	if err := h.Posting.PostTx(ctx, tx, posting.PostInput{
-		TenantID:     tenantID,
-		EntryDate:    time.Now(),
-		SourceModule: "savings.shares.purchase",
-		SourceRef:    result.Transaction.ID.String(),
-		Narration:    narration,
-		Lines: []posting.Line{
-			{AccountCode: cashAcct, Debit: amount, Narration: "Payment received"},
-			{AccountCode: "3000", Credit: amount, Narration: "Member share capital"},
-		},
+	if err := postingops.PostShareBuyTx(ctx, tx, postingops.Deps{
+		Posting: h.Posting,
+		Shares:  h.Shares,
+	}, postingops.ShareBuyInput{
+		TenantID:       tenantID,
+		TxnID:          result.Transaction.ID,
+		Amount:         result.Transaction.Amount,
+		SharesDelta:    result.Transaction.SharesDelta,
+		AccountNo:      result.Account.AccountNo,
+		PaymentChannel: ch,
 	}); err != nil {
 		return err
 	}
-	// Stamp the share_transactions row with its own ID as the JE handle
-	// (single-txn-per-JE pattern — source_ref IS the txn ID). Makes the
-	// reconciliation query "WHERE journal_entry_id IS NULL" cleanly
-	// identify the by-design no-GL cases (transfer) without false
-	// positives.
-	if h.Posting.Disabled {
-		return nil
+	// Mirror the in-memory journal_entry_id stamp so the HTTP response
+	// reflects what postingops persisted to the row.
+	if h.Posting != nil && !h.Posting.Disabled {
+		jeID := result.Transaction.ID
+		result.Transaction.JournalEntryID = &jeID
 	}
-	if err := h.Shares.UpdateJournalEntryIDTx(ctx, tx, result.Transaction.ID, result.Transaction.ID); err != nil {
-		return err
-	}
-	jeID := result.Transaction.ID
-	result.Transaction.JournalEntryID = &jeID
 	return nil
+}
+
+// writeInlineShareReceipt persists a single-line receipt for a
+// share purchase fired from the Member 360 inline panel. Skipped
+// silently when the receipt deps aren't wired (test setups,
+// channels that can't ride the receipts table like 'internal' /
+// 'payroll'). Returns the persisted receipt for caller-side
+// AttachApprovalTx wiring when an approval was queued.
+func (h *ShareHandler) writeInlineShareReceipt(
+	ctx context.Context, tx pgx.Tx,
+	tenantID, memberID, userID uuid.UUID,
+	channel domain.PaymentChannel, paymentRef string,
+	amount decimal.Decimal, narration string,
+	headerStatus domain.ReceiptStatus, lineStatus domain.ReceiptLineStatus,
+	postedTxnID *uuid.UUID,
+) (*domain.Receipt, error) {
+	if h.Receipts == nil || h.VirtualTills == nil {
+		return &domain.Receipt{}, nil
+	}
+	rec, err := receiptops.WriteTx(ctx, tx, receiptops.Deps{
+		Receipts:     h.Receipts,
+		VirtualTills: h.VirtualTills,
+	}, receiptops.WriteInput{
+		TenantID:       tenantID,
+		CounterpartyID: memberID,
+		CashierUserID:  userID,
+		Channel:        domain.ReceiptChannel(channel),
+		ChannelRef:     paymentRef,
+		ChannelAmount:  amount,
+		Narration:      narration,
+		Source:         "inline_share_purchase",
+		HeaderStatus:   headerStatus,
+		Lines: []receiptops.LineInput{{
+			Kind:        domain.LineSharePurchase,
+			Amount:      amount,
+			Status:      lineStatus,
+			PostedTxnID: postedTxnID,
+		}},
+	})
+	if err != nil {
+		// Channels like 'internal' / 'payroll' aren't representable on
+		// the receipts table. Skip the receipt write silently rather
+		// than fail the share purchase.
+		if errors.Is(err, receiptops.ErrUnsupportedChannel) {
+			return &domain.Receipt{}, nil
+		}
+		return nil, err
+	}
+	return rec, nil
 }
 
 // ─────────── Transfer ───────────
@@ -1136,42 +1213,20 @@ func (h *ShareHandler) postBonusIssueToGLTx(
 	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
 	result *ShareBonusResult, reason string,
 ) error {
-	if h.Posting == nil || h.Posting.Disabled || result == nil {
+	if result == nil {
 		return nil
 	}
-	if result.TotalBonusShares <= 0 {
-		return nil
-	}
-	amount := result.ParValue.Mul(decimal.NewFromInt(int64(result.TotalBonusShares)))
-	if amount.LessThanOrEqual(decimal.Zero) {
-		return nil
-	}
-	jeID := uuid.New()
-	narration := fmt.Sprintf("Bonus issue · %s%% · %d shares · %s",
-		result.PctApplied.String(), result.TotalBonusShares, reason)
-	if err := h.Posting.PostTx(ctx, tx, posting.PostInput{
-		TenantID:     tenantID,
-		EntryDate:    time.Now(),
-		SourceModule: "savings.shares.bonus",
-		SourceRef:    jeID.String(),
-		Narration:    narration,
-		Lines: []posting.Line{
-			{AccountCode: "3010", Debit: amount, Narration: "Bonus issue appropriation"},
-			{AccountCode: "3000", Credit: amount, Narration: "Member share capital - bonus shares"},
-		},
-	}); err != nil {
-		return err
-	}
-	// Stamp the same JE handle on every per-member txn so on-call can
-	// SELECT * FROM share_transactions WHERE journal_entry_id = $jeID
-	// to recover the per-member breakdown that this batched JE rolls
-	// up.
-	for _, txnID := range result.TxnIDs {
-		if err := h.Shares.UpdateJournalEntryIDTx(ctx, tx, txnID, jeID); err != nil {
-			return err
-		}
-	}
-	return nil
+	return postingops.PostShareBonusTx(ctx, tx, postingops.Deps{
+		Posting: h.Posting,
+		Shares:  h.Shares,
+	}, postingops.ShareBonusInput{
+		TenantID:         tenantID,
+		ParValue:         result.ParValue,
+		TotalBonusShares: result.TotalBonusShares,
+		PctApplied:       result.PctApplied,
+		Reason:           reason,
+		TxnIDs:           result.TxnIDs,
+	})
 }
 
 // validateOffsettingAccountTx confirms the operator-provided
