@@ -31,6 +31,7 @@ package postingcheck
 
 import (
 	"go/ast"
+	"go/token"
 	"regexp"
 	"strings"
 
@@ -262,6 +263,132 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	})
 
+	// Rule 5 — R-OPEN-1 (opening_required). A handler function
+	// whose body references a struct field named Opening<X> (the
+	// repo convention for opening-deposit / opening-share /
+	// opening-contribution amounts) must go through at least one of:
+	//   • Approvals.QueueTx        (queues a maker-checker gate)
+	//   • receiptops.WriteTx       (writes a receipt header + line)
+	//   • postingops.Post*Tx       (writes the in-tx GL outbox)
+	//   • finance/executor.PostOpeningDepositTx (the cross-module
+	//     sanctioned helper)
+	// Skipping ALL of those is the bug — the original Open handler
+	// observed OpeningDeposit then wrote a deposit_transactions row
+	// without any of the three. R-OPEN-1 catches the shape so the
+	// regression can't return.
+	insp.Preorder([]ast.Node{(*ast.FuncDecl)(nil)}, func(n ast.Node) {
+		fn := n.(*ast.FuncDecl)
+		if fn.Body == nil {
+			return
+		}
+		pos := pass.Fset.Position(fn.Pos())
+		if !handlerPathRE.MatchString(pos.Filename) {
+			return
+		}
+		if strings.HasSuffix(pos.Filename, "_test.go") {
+			return
+		}
+		// Acknowledged-gap suppression — same convention Rule 1 uses.
+		// `// postingcheck:ignore <reason>` above the function decl
+		// silences this rule. The application Create handler is the
+		// canonical case: it persists OpeningShareAmount /
+		// OpeningBosaAmount on the application row; the actual
+		// money post happens in activateIndividualTx via
+		// finance/executor.PostOpeningDepositTx (which R-OPEN-2
+		// covers).
+		if fn.Doc != nil && ignoreCommentRE.MatchString(fn.Doc.Text()) {
+			return
+		}
+		// The function-body comments (above the field-observing line)
+		// also satisfy the ignore — covers cases where the rationale
+		// is local to the observing statement rather than function-
+		// wide. Walk the function's CommentMap once.
+		if hasInlineIgnore(pass, fn) {
+			return
+		}
+		var (
+			observesOpening bool
+			openingFieldPos ast.Node
+			satisfied       bool
+		)
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.SelectorExpr:
+				// Field access whose selector matches Opening<X>.
+				if openingFieldRE.MatchString(x.Sel.Name) {
+					observesOpening = true
+					if openingFieldPos == nil {
+						openingFieldPos = x
+					}
+				}
+			case *ast.CallExpr:
+				sel, ok := x.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				name := sel.Sel.Name
+				// receiptops.WriteTx — the receipt writer
+				// postingops.Post*Tx — the GL outbox writers
+				// PostOpeningDepositTx — the cross-module sanctioned helper
+				// QueueTx — Approvals.QueueTx (queue the maker-checker gate)
+				// executeDepositInlineTx — savings's handler-level seam
+				if name == "WriteTx" || name == "QueueTx" || name == "PostOpeningDepositTx" ||
+					name == "executeDepositInlineTx" || openingPostHelperRE.MatchString(name) {
+					satisfied = true
+				}
+			}
+			return true
+		})
+		if observesOpening && !satisfied {
+			pass.Reportf(openingFieldPos.Pos(),
+				"opening_required: %s observes an Opening* input but doesn't call any of {Approvals.QueueTx, receiptops.WriteTx, postingops.Post*Tx, executor.PostOpeningDepositTx}. "+
+					"Opening-money inputs MUST go through approval / receipt / GL — pick one. "+
+					"See services/savings/internal/handler/deposit.go::Open for the canonical composition.",
+				fn.Name.Name)
+		}
+	})
+
+	// Rule 6 — R-OPEN-2 (no raw subledger INSERTs outside sanctioned
+	// writers). The store layer is the only place that owns the
+	// subledger transaction tables; everywhere else must route
+	// through CreateAccountTx / PostTxnTx / finance/executor.
+	// Sanctioned writers:
+	//   services/savings/internal/store/
+	//   services/finance/executor/
+	// The pre-fix application_store.go was the case study — it
+	// INSERTed directly into deposit_transactions, bypassing every
+	// shared primitive.
+	insp.Preorder([]ast.Node{(*ast.BasicLit)(nil)}, func(n ast.Node) {
+		lit := n.(*ast.BasicLit)
+		if lit.Kind.String() != "STRING" {
+			return
+		}
+		pos := pass.Fset.Position(lit.Pos())
+		if !servicesPathRE.MatchString(pos.Filename) {
+			return
+		}
+		if strings.HasSuffix(pos.Filename, "_test.go") {
+			return
+		}
+		if sanctionedWriterPathRE.MatchString(pos.Filename) {
+			return
+		}
+		// handler/ files are covered by Rule 2 (posting_raw_sql),
+		// which emits a more specific "use the store" diagnostic.
+		// Skip them here to keep the two rules complementary.
+		if handlerPathRE.MatchString(pos.Filename) {
+			return
+		}
+		if !subledgerInsertRE.MatchString(lit.Value) {
+			return
+		}
+		pass.Reportf(lit.Pos(),
+			"opening_no_raw_insert: SQL %q writes a subledger transaction table from outside the sanctioned writers. "+
+				"Route through services/savings/internal/store/ or services/finance/executor/ — those are the only packages that own these tables. "+
+				"See finance/executor/PostOpeningDepositTx for the opening-deposit path; services/savings/internal/store/deposit_store.go::PostTxnTx for the standard-deposit path.",
+			truncSQL(lit.Value))
+	})
+
 	return nil, nil
 }
 
@@ -269,6 +396,71 @@ func run(pass *analysis.Pass) (interface{}, error) {
 // subdirectory). Broader than handlerPathRE because the DryRun rule
 // applies to handlers, stores, cmd binaries, executors — everywhere.
 var servicesPathRE = regexp.MustCompile(`/services/[^/]+/.+\.go$`)
+
+// openingFieldRE matches money-moving struct field selectors. Tight
+// closed list — `OpeningBalance` on a bank statement or till session
+// is metadata, not a money-moving handler input, so flagging it would
+// false-positive on the accounting handlers. Add new field names
+// here as new opening-money flows land.
+var openingFieldRE = regexp.MustCompile(`^(OpeningDeposit|OpeningShareAmount|OpeningBosaAmount|OpeningContribution)$`)
+
+// openingPostHelperRE matches the repo's helper convention for
+// opening-deposit posting (postOpeningDepositToGLTx, etc.) and the
+// other post*ToGLTx helpers a handler might compose with the
+// opening flow.
+var openingPostHelperRE = regexp.MustCompile(`^post[A-Z].*Tx$|^Post[A-Z].*Tx$`)
+
+// subledgerInsertRE matches an SQL string that writes (INSERT or
+// UPDATE) to one of the three subledger transaction tables.
+// Case-insensitive; allows leading whitespace/newlines from
+// multi-line SQL literals.
+var subledgerInsertRE = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+(deposit_transactions|share_transactions|loan_transactions)\b`)
+
+// sanctionedWriterPathRE matches the two packages that legitimately
+// write subledger transaction tables.
+var sanctionedWriterPathRE = regexp.MustCompile(`/services/(savings/internal/store|finance/executor)/`)
+
+// hasInlineIgnore returns true when any comment positioned inside
+// the function body carries the postingcheck:ignore marker. Comments
+// aren't part of the AST visited by ast.Inspect; we walk every
+// CommentGroup in every file the pass owns and check position.
+func hasInlineIgnore(pass *analysis.Pass, fn *ast.FuncDecl) bool {
+	if fn.Body == nil {
+		return false
+	}
+	bodyStart := fn.Body.Lbrace
+	bodyEnd := fn.Body.Rbrace
+	for _, file := range pass.Files {
+		for _, cg := range file.Comments {
+			if cg.Pos() < bodyStart || cg.End() > bodyEnd {
+				continue
+			}
+			if ignoreCommentRE.MatchString(cg.Text()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// (token import previously needed; kept for compatibility if hooks
+// later want positional checks beyond what pass.Files provides.)
+var _ token.Pos
+
+// truncSQL keeps the diagnostic legible — long multi-line INSERT
+// statements would otherwise scroll the analyzer output off-screen.
+func truncSQL(s string) string {
+	s = strings.TrimSpace(strings.Trim(s, "`\""))
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	if len(s) > 80 {
+		s = s[:77] + "..."
+	}
+	return s
+}
 
 // isTrueLit reports whether the expression is the Go literal `true`.
 func isTrueLit(e ast.Expr) bool {

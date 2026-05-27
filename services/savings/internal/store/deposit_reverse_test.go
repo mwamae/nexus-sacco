@@ -68,10 +68,12 @@ func TestReverseDepositRoundTrip(t *testing.T) {
 	uniq := time.Now().UnixNano()
 
 	// Open a fresh deposit account so the test doesn't perturb seed data.
-	acct, _, err := ds.OpenAccountTx(ctx, tx, OpenInput{
+	// OpenAccountTx was split into CreateAccountTx (just the account
+	// row) + handler-side opening-deposit composition — the test only
+	// needs the account.
+	acct, err := ds.CreateAccountTx(ctx, tx, OpenInput{
 		CounterpartyID: cpID,
 		ProductID:      productID,
-		OpeningDeposit: decimal.Zero,
 		CreatedBy:      uuid.New(),
 	}, fmt.Sprintf("DPA-REV-%d", uniq))
 	if err != nil {

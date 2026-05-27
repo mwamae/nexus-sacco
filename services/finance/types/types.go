@@ -64,6 +64,40 @@ type DepositInput struct {
 	ExternalValidationRef string
 }
 
+// PostOpeningDepositInput parameters for executor.PostOpeningDepositTx.
+//
+// Distinct from DepositInput because the opening flow has different
+// invariants: the account row was just created (zero balance), the
+// channel is optional (BOSA openings from application activation
+// don't carry one — Channel="" routes to the internal-transfer GL
+// shape), and a fixed liability code can be passed by the caller to
+// override the per-product default (the application path knows the
+// segment without re-loading the product).
+type PostOpeningDepositInput struct {
+	TenantID    uuid.UUID
+	AccountID   uuid.UUID
+	// CounterpartyID + ProductID stamped on the deposit_transactions
+	// row. CounterpartyID is required; ProductID drives the default
+	// liability-code lookup when LiabilityAccountCode is empty.
+	CounterpartyID uuid.UUID
+	ProductID      uuid.UUID
+	Amount         decimal.Decimal
+	// Channel is optional. Empty means "no external cash leg" — the
+	// JE debits the internal-transfer suspense (1099) instead of a
+	// channel cash account; the receipt skip is the caller's
+	// responsibility.
+	Channel     string
+	ChannelRef  string
+	Narration   string
+	ValueDate   time.Time
+	InitiatedBy uuid.UUID
+	// LiabilityAccountCode lets the application path pass the
+	// already-resolved BOSA code (2050) without a product lookup.
+	// When empty, the executor reads deposit_products.code → liability
+	// via the same map savings handlers use.
+	LiabilityAccountCode string
+}
+
 // PostFeeInput parameters for executor.PostFeeTx.
 type PostFeeInput struct {
 	TenantID     uuid.UUID

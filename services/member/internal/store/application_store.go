@@ -20,6 +20,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	financeexec "github.com/nexussacco/finance/executor"
+	financetypes "github.com/nexussacco/finance/types"
+
 	"github.com/nexussacco/member/internal/domain"
 )
 
@@ -790,10 +793,20 @@ func (s *ApplicationStore) PostOpeningContributionsTx(
 	}
 
 	// ─── Opening BOSA deposit ───
+	// Routes through finance/executor.PostOpeningDepositTx so the GL
+	// outbox gets the matching JE row. No approval — the application
+	// approval IS the deposit approval. No receipt — the application
+	// fee process already issued its own receipt; this is just the
+	// accounting movement (per the choice flagged in the
+	// open-deposit-fix PR).
+	//
+	// Account creation stays inline here because savings's
+	// CreateAccountTx lives in a sibling module — and the BOSA
+	// account opening is a minor INSERT next to the rest of the
+	// activate sequence. The big change vs the previous version is
+	// that the *deposit* now goes through the sanctioned executor
+	// instead of raw SQL.
 	if app.OpeningBosaAmount.GreaterThan(decimal.Zero) {
-		// Resolve the tenant's seeded BOSA product. PR 1's seeded MD
-		// row is the canonical target; tenants who configured their
-		// own land on whichever has the earliest created_at.
 		var bosaProductID uuid.UUID
 		err := tx.QueryRow(ctx, `
 			SELECT id FROM deposit_products
@@ -803,7 +816,6 @@ func (s *ApplicationStore) PostOpeningContributionsTx(
 		if err != nil {
 			return fmt.Errorf("locate BOSA product: %w", err)
 		}
-		// Open the BOSA deposit account.
 		bosaAcctNo, err := nextSavingsSeq(ctx, tx, "deposit_account", "DPA")
 		if err != nil {
 			return fmt.Errorf("allocate BOSA deposit account_no: %w", err)
@@ -822,43 +834,29 @@ func (s *ApplicationStore) PostOpeningContributionsTx(
 		if err != nil {
 			return fmt.Errorf("insert BOSA deposit account: %w", err)
 		}
-		// Post the opening_balance txn.
-		memberID, err := resolveMemberIDForOpening(ctx, tx, result.CounterpartyID)
+
+		// Post the opening deposit via the sanctioned executor —
+		// writes deposit_transactions + posting_outbox in one tx.
+		// Channel is empty (no teller event); LiabilityAccountCode
+		// is forced to 2050 (BOSA) so the executor doesn't re-read
+		// the product we just resolved.
+		opening, err := financeexec.PostOpeningDepositTx(ctx, tx, financetypes.PostOpeningDepositInput{
+			TenantID:             app.TenantID,
+			AccountID:            bosaAcctID,
+			CounterpartyID:       result.CounterpartyID,
+			ProductID:            bosaProductID,
+			Amount:               app.OpeningBosaAmount,
+			Channel:              "",
+			Narration:            "Opening BOSA contribution · " + app.ApplicationNo,
+			InitiatedBy:          actorID,
+			LiabilityAccountCode: "2050",
+		})
 		if err != nil {
-			return fmt.Errorf("resolve member for BOSA opening: %w", err)
-		}
-		txnNo, err := nextSavingsSeq(ctx, tx, "deposit_txn", "DPT")
-		if err != nil {
-			return fmt.Errorf("allocate deposit txn_no: %w", err)
-		}
-		var depTxnID uuid.UUID
-		err = tx.QueryRow(ctx, `
-			INSERT INTO deposit_transactions (
-			  tenant_id, account_id, counterparty_id, member_id, txn_no, txn_type,
-			  amount, balance_after, narration, initiated_by
-			) VALUES (
-			  current_tenant_id(), $1, $2, $3, $4, 'opening_balance'::deposit_txn_type,
-			  $5, $5, $6, $7
-			)
-			RETURNING id
-		`, bosaAcctID, result.CounterpartyID, memberID, txnNo,
-			app.OpeningBosaAmount, "Opening BOSA contribution · "+app.ApplicationNo, actorID,
-		).Scan(&depTxnID)
-		if err != nil {
-			return fmt.Errorf("insert opening BOSA txn: %w", err)
-		}
-		// Bump the cached balance.
-		if _, err := tx.Exec(ctx, `
-			UPDATE deposit_accounts
-			   SET current_balance = $2, available_balance = $2,
-			       last_deposit_at = now(), last_activity_at = now()
-			 WHERE id = $1
-		`, bosaAcctID, app.OpeningBosaAmount); err != nil {
-			return fmt.Errorf("bump deposit_accounts running balance: %w", err)
+			return fmt.Errorf("post opening BOSA deposit: %w", err)
 		}
 		result.BosaAccountID = &bosaAcctID
 		result.BosaAccountNo = &bosaAcctNo
-		result.OpeningBosaTxnID = &depTxnID
+		result.OpeningBosaTxnID = &opening.TxnID
 	}
 	return nil
 }

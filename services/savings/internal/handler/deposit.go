@@ -100,10 +100,20 @@ type openAcctReq struct {
 	GroupOrgID           *uuid.UUID               `json:"group_org_id"`
 }
 
+// openAcctResp documents the three valid shapes:
+//
+//   • {account, product}                              — no opening deposit
+//   • {account, product, opening_transaction}         — opening posted immediately (toggle off)
+//   • {account, product, pending_approval}            — opening queued for approval (toggle on)
+//
+// The UI's Open-account modal renders the pending-approval banner
+// when pending_approval is present — same pattern the Deposit modal
+// uses.
 type openAcctResp struct {
-	Account     domain.DepositAccount      `json:"account"`
-	Product     domain.DepositProduct      `json:"product"`
-	OpeningTxn  *domain.DepositTransaction `json:"opening_transaction,omitempty"`
+	Account         domain.DepositAccount      `json:"account"`
+	Product         domain.DepositProduct      `json:"product"`
+	OpeningTxn      *domain.DepositTransaction `json:"opening_transaction,omitempty"`
+	PendingApproval *domain.PendingApproval    `json:"pending_approval,omitempty"`
 }
 
 func (h *DepositHandler) Open(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +124,14 @@ func (h *DepositHandler) Open(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.CounterpartyID == uuid.Nil || in.ProductID == uuid.Nil {
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("counterparty_id and product_id are required"))
+		return
+	}
+	// Cash-on-open is blocked — cash must be receipted at the
+	// Collection Desk against an open till session. Open the account
+	// here first (no opening deposit), then receipt the cash via the
+	// desk. Mirrors the Deposit/Withdraw/Repay hard-block.
+	if in.OpeningDeposit.GreaterThan(decimal.Zero) && in.OpeningChannel != nil && *in.OpeningChannel == domain.DepChannelCash {
+		httpx.WriteErr(w, r, httpx.ErrCashInlineBlocked(in.CounterpartyID.String()))
 		return
 	}
 	userID, _ := middleware.UserIDFrom(r)
@@ -183,16 +201,15 @@ func (h *DepositHandler) Open(w http.ResponseWriter, r *http.Request) {
 			return httpx.ErrBadRequest("opening_channel is required when opening_deposit > 0")
 		}
 
+		// ─── Phase 1 — account creation. Always immediate, no approval,
+		//     no GL. The account exists in 'active' with zero balance.
 		accountNo, err := nextSeqExport(r.Context(), tx, "deposit_account", "DPA")
 		if err != nil {
 			return err
 		}
-		acct, openingTxn, err := h.Deposits.OpenAccountTx(r.Context(), tx, store.OpenInput{
-			CounterpartyID:             in.CounterpartyID,
+		acct, err := h.Deposits.CreateAccountTx(r.Context(), tx, store.OpenInput{
+			CounterpartyID:       in.CounterpartyID,
 			ProductID:            in.ProductID,
-			OpeningDeposit:       in.OpeningDeposit,
-			OpeningChannel:       in.OpeningChannel,
-			OpeningChannelRef:    in.OpeningChannelRef,
 			FixedTermMonths:      in.FixedTermMonths,
 			FixedInterestRatePct: in.FixedInterestRatePct,
 			GoalTargetAmount:     in.GoalTargetAmount,
@@ -206,14 +223,66 @@ func (h *DepositHandler) Open(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		_ = h.Counterparties.TouchActivityTx(r.Context(), tx, in.CounterpartyID)
-		resp = openAcctResp{Account: *acct, Product: *product, OpeningTxn: openingTxn}
+
+		// ─── Phase 2 — opening deposit (only when > 0). Routes through
+		//     the same executeDepositInlineTx the standalone Deposit
+		//     handler uses, so approval/receipt/GL behaviour stays in
+		//     lock-step between Open and Deposit.
+		resp = openAcctResp{Account: *acct, Product: *product}
+		if !in.OpeningDeposit.GreaterThan(decimal.Zero) {
+			return nil
+		}
+		channel := domain.DepChannelInternal
+		if in.OpeningChannel != nil {
+			channel = *in.OpeningChannel
+		}
+		payload := DepositPayload{
+			AccountID:  acct.ID,
+			Amount:     in.OpeningDeposit,
+			Channel:    channel,
+			ChannelRef: strPtrOrEmpty(in.OpeningChannelRef),
+			Narration:  "Opening deposit · " + accountNo,
+		}
+		toggles, terr := h.Approvals.GetTogglesTx(r.Context(), tx)
+		if terr != nil {
+			return terr
+		}
+		res, pending, _, derr := h.executeDepositInlineTx(r.Context(), tx, tid, payload, userID, toggles)
+		if derr != nil {
+			return derr
+		}
+		if pending != nil {
+			resp.PendingApproval = pending
+			return nil
+		}
+		if res != nil {
+			// Re-read the account so the response carries the
+			// post-deposit balance.
+			reloaded, gerr := h.Deposits.GetAccountTx(r.Context(), tx, acct.ID)
+			if gerr == nil && reloaded != nil {
+				resp.Account = *reloaded
+			}
+			resp.OpeningTxn = &res.Transaction
+		}
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, posting.ErrOutboxInsert) {
+			httpx.WriteErr(w, r, httpx.ErrGLPostFailed(err.Error()))
+			return
+		}
 		writeDepositErr(w, r, err)
 		return
 	}
 	httpx.Created(w, resp)
+}
+
+// strPtrOrEmpty unwraps a *string to its value or "".
+func strPtrOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // nextSeqExport exposes the package-local nextSeq for handler-side use.
@@ -435,59 +504,11 @@ func (h *DepositHandler) Deposit(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		_, acct, _, lerr := h.loadProductAccount(r.Context(), tx, accountID)
-		if lerr != nil {
-			return lerr
-		}
-		memberID := acct.CounterpartyID
-		if toggles.Deposit {
-			amount := in.Amount
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
-				Kind:             domain.ApprovalKindDeposit,
-				Title:            fmt.Sprintf("Deposit to a/c %s", acct.AccountNo),
-				SubjectMemberID:  &memberID,
-				SubjectAccountID: &accountID,
-				Amount:           &amount,
-				Payload:          payload,
-				MakerUserID:      userID,
-			})
-			if qerr != nil {
-				return qerr
-			}
-			pending = pa
-			rec, rerr := h.writeInlineDepositReceipt(r.Context(), tx, tid, memberID, accountID, userID,
-				in.Channel, in.ChannelRef, amount, in.Narration,
-				domain.ReceiptDraft, domain.LinePending, nil)
-			if rerr != nil {
-				return rerr
-			}
-			if len(rec.Lines) > 0 {
-				if aerr := h.Receipts.AttachApprovalTx(r.Context(), tx, rec.Lines[0].ID, pa.ID); aerr != nil {
-					return aerr
-				}
-			}
-			receipt = rec
-			return nil
-		}
-		res, err := h.ExecuteDepositTx(r.Context(), tx, payload, userID)
+		res, pend, rec, err := h.executeDepositInlineTx(r.Context(), tx, tid, payload, userID, toggles)
 		if err != nil {
 			return err
 		}
-		// Post-after-commit refactor — queue the GL entry into the
-		// outbox INSIDE the same tx as the business write. The
-		// dispatcher drains the outbox asynchronously; failures here
-		// roll back the deposit.
-		if perr := h.postDepositToGLTx(r.Context(), tx, tid, res, in.Channel); perr != nil {
-			return perr
-		}
-		rec, rerr := h.writeInlineDepositReceipt(r.Context(), tx, tid, memberID, accountID, userID,
-			in.Channel, in.ChannelRef, res.Transaction.Amount, in.Narration,
-			domain.ReceiptPosted, domain.LinePosted, &res.Transaction.ID)
-		if rerr != nil {
-			return rerr
-		}
-		receipt = rec
-		result = res
+		result, pending, receipt = res, pend, rec
 		return nil
 	})
 	if err != nil {
@@ -551,6 +572,81 @@ func (h *DepositHandler) writeInlineDepositReceipt(
 		return nil, err
 	}
 	return rec, nil
+}
+
+// executeDepositInlineTx is the shared toggle-aware path for inline
+// deposit composition. Both the standalone Deposit handler and the
+// Open handler's opening-deposit phase route through here so the
+// approval / receipt / GL behaviour stays in lock-step between them.
+//
+// Behaviour:
+//
+//   • toggles.Deposit = true  → queue a pending_approval, write a
+//                                receipt with header=draft / line=pending,
+//                                attach the approval id to the line.
+//                                Returns (nil, pendingApproval, receipt, nil).
+//
+//   • toggles.Deposit = false → run ExecuteDepositTx, post the GL via
+//                                postDepositToGLTx, write a receipt with
+//                                header=posted / line=posted.
+//                                Returns (result, nil, receipt, nil).
+//
+// Caller is responsible for the surrounding WithTenantTx + the
+// channel/cash validation that lives upstream of this seam. The
+// helper does NOT load product / account state — it trusts the
+// payload + the ExecuteDepositTx executor for that.
+func (h *DepositHandler) executeDepositInlineTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	payload DepositPayload, userID uuid.UUID, toggles *store.ApprovalToggles,
+) (*DepositResult, *domain.PendingApproval, *domain.Receipt, error) {
+	_, acct, _, lerr := h.loadProductAccount(ctx, tx, payload.AccountID)
+	if lerr != nil {
+		return nil, nil, nil, lerr
+	}
+	memberID := acct.CounterpartyID
+
+	if toggles != nil && toggles.Deposit {
+		amount := payload.Amount
+		pa, qerr := h.Approvals.QueueTx(ctx, tx, store.QueueInput{
+			Kind:             domain.ApprovalKindDeposit,
+			Title:            fmt.Sprintf("Deposit to a/c %s", acct.AccountNo),
+			SubjectMemberID:  &memberID,
+			SubjectAccountID: &payload.AccountID,
+			Amount:           &amount,
+			Payload:          payload,
+			MakerUserID:      userID,
+		})
+		if qerr != nil {
+			return nil, nil, nil, qerr
+		}
+		rec, rerr := h.writeInlineDepositReceipt(ctx, tx, tenantID, memberID, payload.AccountID, userID,
+			payload.Channel, payload.ChannelRef, amount, payload.Narration,
+			domain.ReceiptDraft, domain.LinePending, nil)
+		if rerr != nil {
+			return nil, nil, nil, rerr
+		}
+		if len(rec.Lines) > 0 {
+			if aerr := h.Receipts.AttachApprovalTx(ctx, tx, rec.Lines[0].ID, pa.ID); aerr != nil {
+				return nil, nil, nil, aerr
+			}
+		}
+		return nil, pa, rec, nil
+	}
+
+	res, err := h.ExecuteDepositTx(ctx, tx, payload, userID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if perr := h.postDepositToGLTx(ctx, tx, tenantID, res, payload.Channel); perr != nil {
+		return nil, nil, nil, perr
+	}
+	rec, rerr := h.writeInlineDepositReceipt(ctx, tx, tenantID, memberID, payload.AccountID, userID,
+		payload.Channel, payload.ChannelRef, res.Transaction.Amount, payload.Narration,
+		domain.ReceiptPosted, domain.LinePosted, &res.Transaction.ID)
+	if rerr != nil {
+		return nil, nil, nil, rerr
+	}
+	return res, nil, rec, nil
 }
 
 // ─────────── Withdrawal ───────────

@@ -24,18 +24,27 @@
 //
 // Usage:
 //
-//   inline-receipt-backfill                  # dry-run: counts only
-//   inline-receipt-backfill --apply          # actually insert receipts
+//   inline-receipt-backfill                     # dry-run: counts only
+//   inline-receipt-backfill --apply             # insert missing receipts
+//   inline-receipt-backfill --apply --gl-backfill  # ALSO queue missing GL outbox rows for opening_balance txns
 //   inline-receipt-backfill --since 2026-01-01  # cutoff date
 //   inline-receipt-backfill --tenant <slug>     # narrow to one tenant
 //
-// Safety: --apply is the explicit opt-in. Default exit is dry-run
-// with per-tenant counts printed to stdout.
+// Safety:
+//   • --apply is the explicit opt-in. Default exit is dry-run with
+//     per-tenant counts printed to stdout.
+//   • --gl-backfill defaults to OFF. Auditor signs off before
+//     flipping it on a tenant — replaying historical opening_balance
+//     txns through the GL outbox shifts the trial balance.
+//   • The opening_balance dedup keys on
+//     (source_module='savings.deposits.opening', source_ref=<txn_id>);
+//     accounting's UNIQUE constraint makes re-running safe.
 
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -59,6 +68,9 @@ type counts struct {
 	shareMissingReceipt   int
 	depositMissingReceipt int
 	loanMissingReceipt    int
+	openingMissingReceipt int
+	openingMissingGL      int
+	openingGLQueued       int
 	cashSkipped           int
 	createdReceipts       int
 	missingJEs            int
@@ -66,6 +78,8 @@ type counts struct {
 
 func main() {
 	apply := flag.Bool("apply", false, "actually insert synthetic receipts (default: dry-run, count only)")
+	glBackfill := flag.Bool("gl-backfill", false,
+		"ALSO queue missing GL outbox rows for opening_balance txns. Default OFF — auditor signs off before flipping. Requires --apply.")
 	sinceStr := flag.String("since", "2025-01-01", "ignore txns created before this date (YYYY-MM-DD)")
 	tenantSlug := flag.String("tenant", "", "narrow to a single tenant slug (default: all tenants)")
 	flag.Parse()
@@ -117,7 +131,7 @@ func main() {
 	grand := counts{}
 	for _, t := range tenants {
 		log := logger.With("tenant_slug", t.slug, "tenant_id", t.id)
-		c, err := runForTenant(ctx, pool, deps, t.id, since, *apply, log)
+		c, err := runForTenant(ctx, pool, deps, t.id, since, *apply, *glBackfill, log)
 		if err != nil {
 			log.Error("tenant backfill failed", "err", err)
 			continue
@@ -128,26 +142,39 @@ func main() {
 		fmt.Printf("  loan_transactions missing receipts:    %d\n", c.loanMissingReceipt)
 		fmt.Printf("  cash-channel txns skipped (no till):   %d\n", c.cashSkipped)
 		fmt.Printf("  subledger txns missing journal_entry:  %d  (NOT backfilled — needs auditor sign-off)\n", c.missingJEs)
+		fmt.Printf("  opening_balance txns missing receipts: %d\n", c.openingMissingReceipt)
+		fmt.Printf("  opening_balance txns missing GL row:   %d  (gl-backfill needed)\n", c.openingMissingGL)
 		if *apply {
 			fmt.Printf("  RECEIPTS CREATED:                      %d\n", c.createdReceipts)
+			if *glBackfill {
+				fmt.Printf("  OPENING GL ROWS QUEUED:                %d\n", c.openingGLQueued)
+			}
 		} else {
-			fmt.Printf("  (dry-run — pass --apply to insert receipts)\n")
+			fmt.Printf("  (dry-run — pass --apply to insert receipts; add --gl-backfill to queue opening GL rows)\n")
 		}
 		grand.shareMissingReceipt += c.shareMissingReceipt
 		grand.depositMissingReceipt += c.depositMissingReceipt
 		grand.loanMissingReceipt += c.loanMissingReceipt
+		grand.openingMissingReceipt += c.openingMissingReceipt
+		grand.openingMissingGL += c.openingMissingGL
+		grand.openingGLQueued += c.openingGLQueued
 		grand.cashSkipped += c.cashSkipped
 		grand.createdReceipts += c.createdReceipts
 		grand.missingJEs += c.missingJEs
 	}
 	fmt.Println("\n────────────── totals ──────────────")
-	fmt.Printf("share missing receipts:   %d\n", grand.shareMissingReceipt)
-	fmt.Printf("deposit missing receipts: %d\n", grand.depositMissingReceipt)
-	fmt.Printf("loan missing receipts:    %d\n", grand.loanMissingReceipt)
-	fmt.Printf("cash skipped:             %d\n", grand.cashSkipped)
-	fmt.Printf("missing journal entries:  %d\n", grand.missingJEs)
+	fmt.Printf("share missing receipts:    %d\n", grand.shareMissingReceipt)
+	fmt.Printf("deposit missing receipts:  %d\n", grand.depositMissingReceipt)
+	fmt.Printf("loan missing receipts:     %d\n", grand.loanMissingReceipt)
+	fmt.Printf("opening missing receipts:  %d\n", grand.openingMissingReceipt)
+	fmt.Printf("opening missing GL rows:   %d\n", grand.openingMissingGL)
+	fmt.Printf("cash skipped:              %d\n", grand.cashSkipped)
+	fmt.Printf("missing journal entries:   %d\n", grand.missingJEs)
 	if *apply {
-		fmt.Printf("RECEIPTS CREATED:         %d\n", grand.createdReceipts)
+		fmt.Printf("RECEIPTS CREATED:          %d\n", grand.createdReceipts)
+		if *glBackfill {
+			fmt.Printf("OPENING GL ROWS QUEUED:    %d\n", grand.openingGLQueued)
+		}
 	}
 }
 
@@ -180,7 +207,7 @@ func listTenants(ctx context.Context, pool *db.Pool, slug string) ([]tenantRow, 
 	return out, rows.Err()
 }
 
-func runForTenant(ctx context.Context, pool *db.Pool, deps receiptops.Deps, tenantID uuid.UUID, since time.Time, apply bool, log *slog.Logger) (counts, error) {
+func runForTenant(ctx context.Context, pool *db.Pool, deps receiptops.Deps, tenantID uuid.UUID, since time.Time, apply, glBackfill bool, log *slog.Logger) (counts, error) {
 	c := counts{}
 
 	// share_transactions: every 'purchase' txn since the cutoff that
@@ -353,7 +380,213 @@ func runForTenant(ctx context.Context, pool *db.Pool, deps receiptops.Deps, tena
 		return c, fmt.Errorf("missing-JE count: %w", err)
 	}
 
+	// ─── opening_balance walk ───
+	// deposit_transactions WHERE txn_type='opening_balance' that have
+	// no receipt + (optionally) no posting_outbox row. The pre-fix
+	// Open handler + the application_store BOSA path both produced
+	// these — neither wrote a receipt or queued the GL.
+	if err := pool.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT dt.id, dt.counterparty_id, dt.account_id, dt.amount,
+			       dt.channel, dt.channel_ref, dt.posted_at
+			  FROM deposit_transactions dt
+			 WHERE dt.tenant_id = $1
+			   AND dt.txn_type = 'opening_balance'
+			   AND dt.posted_at >= $2
+			   AND NOT EXISTS (
+			       SELECT 1 FROM receipt_lines rl WHERE rl.posted_txn_id = dt.id
+			   )
+		`, tenantID, since)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				txnID  uuid.UUID
+				cpID   uuid.UUID
+				acctID uuid.UUID
+				amount string
+				ch     *string
+				ref    *string
+				ts     time.Time
+			)
+			if err := rows.Scan(&txnID, &cpID, &acctID, &amount, &ch, &ref, &ts); err != nil {
+				return err
+			}
+			c.openingMissingReceipt++
+			chStr := strOrEmpty(ch)
+			rc := domain.ReceiptChannel("")
+			if chStr != "" {
+				rc = domain.ReceiptChannel(chStr)
+			}
+			if chStr == "cash" {
+				c.cashSkipped++
+				continue
+			}
+			if !apply {
+				continue
+			}
+			// Receipt write — best-effort. Channels not representable
+			// on the receipts table (internal/payroll/empty) silently
+			// skip via receiptops.ErrUnsupportedChannel.
+			if rc != "" {
+				if err := synthesiseReceipt(ctx, tx, deps, tenantID, cpID, txnID,
+					domain.LineSavingsDeposit, rc, strOrEmpty(ref), amount, ts,
+					"backfill_opening_balance", log); err != nil {
+					return err
+				}
+				c.createdReceipts++
+			}
+		}
+		return rows.Err()
+	}); err != nil {
+		return c, fmt.Errorf("opening_balance walk: %w", err)
+	}
+
+	// ─── opening_balance GL count + (optionally) backfill ───
+	// Reads opening_balance txns that have no posting_outbox row
+	// (source_module='savings.deposits.opening', source_ref=<txn_id>).
+	// Counts always; only writes when --gl-backfill is set.
+	if err := pool.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT dt.id, dt.tenant_id, dt.account_id, dt.counterparty_id,
+			       dt.amount, dt.channel::text, dt.narration, dt.posted_at,
+			       da.product_id
+			  FROM deposit_transactions dt
+			  JOIN deposit_accounts     da ON da.id = dt.account_id
+			 WHERE dt.tenant_id = $1
+			   AND dt.txn_type = 'opening_balance'
+			   AND dt.posted_at >= $2
+			   AND NOT EXISTS (
+			       SELECT 1 FROM posting_outbox po
+			        WHERE po.tenant_id    = dt.tenant_id
+			          AND po.payload->>'source_module' = 'savings.deposits.opening'
+			          AND po.payload->>'source_ref'    = dt.id::text
+			   )
+		`, tenantID, since)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				txnID     uuid.UUID
+				tID       uuid.UUID
+				acctID    uuid.UUID
+				cpID      uuid.UUID
+				amountStr string
+				channel   *string
+				narr      *string
+				ts        time.Time
+				productID uuid.UUID
+			)
+			if err := rows.Scan(&txnID, &tID, &acctID, &cpID, &amountStr, &channel, &narr, &ts, &productID); err != nil {
+				return err
+			}
+			c.openingMissingGL++
+			if !apply || !glBackfill {
+				continue
+			}
+			amt, parseErr := decimal.NewFromString(amountStr)
+			if parseErr != nil {
+				log.Warn("opening_balance gl-backfill: bad amount", "txn_id", txnID, "amount", amountStr)
+				continue
+			}
+			liab := openingLiabilityCode(strOrEmpty(channel))
+			cashAcct := openingCashCode(strOrEmpty(channel))
+			n := "Opening balance backfill"
+			if narr != nil && *narr != "" {
+				n = *narr
+			}
+			payload := buildOpeningOutboxPayload(tID, ts, txnID, n, cashAcct, liab, amt)
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO posting_outbox (tenant_id, payload)
+				VALUES ($1, $2::jsonb)
+			`, tID, payload); err != nil {
+				log.Warn("opening_balance gl-backfill: outbox insert failed",
+					"txn_id", txnID, "err", err)
+				continue
+			}
+			c.openingGLQueued++
+			_ = acctID
+			_ = cpID
+			_ = productID
+		}
+		return rows.Err()
+	}); err != nil {
+		return c, fmt.Errorf("opening_balance GL walk: %w", err)
+	}
+
 	return c, nil
+}
+
+// openingCashCode mirrors finance/executor's per-channel debit
+// account map. "" → 1099 (internal-suspense, for application-
+// activation BOSA openings with no teller event).
+func openingCashCode(channel string) string {
+	switch channel {
+	case "":
+		return "1099"
+	case "mpesa":
+		return "1030"
+	case "airtel_money":
+		return "1040"
+	case "bank_transfer", "standing_order", "direct_debit", "payroll":
+		return "1020"
+	}
+	return "1000"
+}
+
+// openingLiabilityCode falls back to ordinary savings (2000). The
+// backfill doesn't re-derive per-product; the operator can
+// post-process the outbox before dispatch if a tenant's BOSA
+// segment needs the 2050 code (a one-line UPDATE).
+func openingLiabilityCode(channel string) string {
+	_ = channel
+	return "2000"
+}
+
+// buildOpeningOutboxPayload mirrors the JSON shape posting.Client
+// writes when queuing an opening-deposit JE: tenant_id +
+// source_module + source_ref + lines. Accounting's dedup uses
+// (source_module, source_ref).
+func buildOpeningOutboxPayload(tenantID uuid.UUID, ts time.Time, txnID uuid.UUID, narr, cashAcct, liabAcct string, amount decimal.Decimal) []byte {
+	type line struct {
+		AccountCode string `json:"account_code"`
+		Debit       string `json:"debit,omitempty"`
+		Credit      string `json:"credit,omitempty"`
+		Narration   string `json:"narration,omitempty"`
+	}
+	type payload struct {
+		TenantID     string `json:"tenant_id"`
+		EntryDate    string `json:"entry_date,omitempty"`
+		ValueDate    string `json:"value_date,omitempty"`
+		SourceModule string `json:"source_module"`
+		SourceRef    string `json:"source_ref"`
+		Narration    string `json:"narration"`
+		Lines        []line `json:"lines"`
+	}
+	p := payload{
+		TenantID:     tenantID.String(),
+		EntryDate:    ts.Format("2006-01-02"),
+		ValueDate:    ts.Format("2006-01-02"),
+		SourceModule: "savings.deposits.opening",
+		SourceRef:    txnID.String(),
+		Narration:    narr,
+		Lines: []line{
+			{AccountCode: cashAcct, Debit: amount.StringFixed(2), Narration: "Opening cash leg (backfill)"},
+			{AccountCode: liabAcct, Credit: amount.StringFixed(2), Narration: "Member savings credited (backfill)"},
+		},
+	}
+	b, _ := jsonImportMarshal(p)
+	return b
+}
+
+// jsonImportMarshal is the actual marshaller — split out so the
+// import-encoding boundary is explicit.
+func jsonImportMarshal(v any) ([]byte, error) {
+	return json.Marshal(v)
 }
 
 // synthesiseReceipt is the single-line writer the backfill uses. We

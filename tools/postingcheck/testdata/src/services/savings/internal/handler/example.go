@@ -117,3 +117,41 @@ func BadDryRunAssign(c *FakeClient) {
 func FineDryRunFalse() *FakeClient {
 	return &FakeClient{DryRun: false}
 }
+
+// ─── Rule 5 positive: handler observes OpeningDeposit without
+//     calling any of {QueueTx, WriteTx, postXxxTx, executor.PostOpeningDepositTx}.
+type fakeOpenReq struct {
+	OpeningDeposit string
+}
+
+type fakeOpenHandler struct {
+	Approvals *fakeApprovals
+}
+
+type fakeApprovals struct{}
+
+func (fakeApprovals) QueueTx(_ context.Context, _ fakeTx, _ any) error { return nil }
+
+func (h *fakeOpenHandler) BadOpenNoApprovalNoReceiptNoGL(_ context.Context, _ fakeTx, in fakeOpenReq) error {
+	// Observes OpeningDeposit but does nothing else.
+	_ = in.OpeningDeposit // want "opening_required:"
+	return nil
+}
+
+// ─── Rule 5 negative: opening + QueueTx call ───
+func (h *fakeOpenHandler) FineOpenWithApproval(ctx context.Context, tx fakeTx, in fakeOpenReq) error {
+	_ = in.OpeningDeposit
+	return h.Approvals.QueueTx(ctx, tx, nil)
+}
+
+// ─── Rule 5 negative: opening + post helper call (post*Tx convention) ───
+func (h *fakeOpenHandler) FineOpenWithPostHelper(ctx context.Context, tx fakeTx, in fakeOpenReq) error {
+	_ = in.OpeningDeposit
+	return h.postOpeningDepositToGLTx(ctx, tx)
+}
+func (h *fakeOpenHandler) postOpeningDepositToGLTx(_ context.Context, _ fakeTx) error { return nil }
+
+// ─── Rule 5 negative: function doesn't observe any Opening* field ───
+func (h *fakeOpenHandler) FineNonOpening(_ context.Context, _ fakeTx) error {
+	return nil
+}

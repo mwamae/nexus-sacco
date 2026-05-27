@@ -89,9 +89,19 @@ type OpenInput struct {
 	CreatedBy            uuid.UUID
 }
 
-// OpenAccountTx creates an account row and, if OpeningDeposit > 0,
-// posts the opening_balance transaction.
-func (s *DepositStore) OpenAccountTx(ctx context.Context, tx pgx.Tx, in OpenInput, accountNo string) (*domain.DepositAccount, *domain.DepositTransaction, error) {
+// CreateAccountTx inserts the deposit_accounts row in 'active' status
+// with zero balances. The opening deposit (if any) is composed by
+// the handler via the same approval/receipt/GL path the standalone
+// Deposit endpoint uses — see services/savings/internal/handler/deposit.go::Open
+// for the composition. The previous combined OpenAccountTx wrote
+// both the account AND the opening deposit_transactions row, which
+// bypassed approvals + receipts + the GL outbox. That bug is fixed by
+// the split.
+//
+// OpenInput.OpeningDeposit + OpeningChannel + OpeningChannelRef are
+// IGNORED here — they're the handler's responsibility to compose. Kept
+// on the struct so the handler-side wiring stays a single pass.
+func (s *DepositStore) CreateAccountTx(ctx context.Context, tx pgx.Tx, in OpenInput, accountNo string) (*domain.DepositAccount, error) {
 	// Fixed deposits compute maturity at open time.
 	var matures *time.Time
 	if in.FixedTermMonths != nil && *in.FixedTermMonths > 0 {
@@ -129,33 +139,7 @@ func (s *DepositStore) OpenAccountTx(ctx context.Context, tx pgx.Tx, in OpenInpu
 		in.GuardianMemberID, in.GroupOrgID,
 		in.CreatedBy,
 	)
-	acct, err := scanAcct(row)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Opening deposit (optional).
-	if in.OpeningDeposit.GreaterThan(decimal.Zero) {
-		txn, err := s.PostTxnTx(ctx, tx, PostDepInput{
-			Account:     acct,
-			TxnType:     domain.TxnOpeningBalance,
-			Amount:      in.OpeningDeposit,
-			Channel:     in.OpeningChannel,
-			ChannelRef:  in.OpeningChannelRef,
-			Narration:   ptrStr("Opening balance"),
-			InitiatedBy: in.CreatedBy,
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		// Re-read the account so balances reflect the opening txn.
-		acct, err = s.GetAccountTx(ctx, tx, acct.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		return acct, txn, nil
-	}
-	return acct, nil, nil
+	return scanAcct(row)
 }
 
 func (s *DepositStore) GetAccountTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*domain.DepositAccount, error) {

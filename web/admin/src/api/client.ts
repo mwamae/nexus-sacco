@@ -2898,7 +2898,12 @@ export async function openDepositAccount(input: {
   goal_description?: string;
   guardian_member_id?: string;
   group_org_id?: string;
-}): Promise<{ account: DepositAccount; product: DepositProduct; opening_transaction?: DepositTransaction }> {
+}): Promise<{
+  account: DepositAccount;
+  product: DepositProduct;
+  opening_transaction?: DepositTransaction;
+  pending_approval?: PendingApproval;
+}> {
   const r = await api.post('/v1/deposit-accounts', input);
   return r.data.data;
 }

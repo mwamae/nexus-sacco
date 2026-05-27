@@ -1042,7 +1042,7 @@ function OpenAccountModal({ counterpartyId, products, onClose, onSaved }: {
         if (!product) { setErr('Pick a product'); return; }
         setErr(null); setBusy(true);
         try {
-          await openDepositAccount({
+          const r = await openDepositAccount({
             counterparty_id: counterpartyId,
             product_id: product.id,
             opening_deposit: openingDeposit,
@@ -1055,6 +1055,13 @@ function OpenAccountModal({ counterpartyId, products, onClose, onSaved }: {
             goal_description: product.product_type === 'goal' && goalDesc ? goalDesc : undefined,
             guardian_member_id: product.product_type === 'junior' && guardian ? guardian : undefined,
           });
+          if (r.pending_approval) {
+            // Opening deposit queued for approval — surface the
+            // same banner the Deposit modal uses. The account itself
+            // is already created (status=active, balance=0); the
+            // opening contribution lands once a checker approves.
+            alert(`Account opened. Opening deposit queued for approval (id: ${r.pending_approval.id.slice(0, 8)}…).`);
+          }
           await onSaved();
         } catch (e) { setErr(extractError(e)); } finally { setBusy(false); }
       }}>

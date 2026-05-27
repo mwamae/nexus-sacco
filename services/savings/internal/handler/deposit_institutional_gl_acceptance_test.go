@@ -166,16 +166,20 @@ func TestInstitutionalDepositOpen_PostsToOutboxLikeIndividual(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	// Step 1: open the account with zero opening deposit. The GL
-	// post path lives on the explicit /deposit endpoint, not on
-	// Open. (Whether Open SHOULD also post is its own question; this
-	// test verifies institutional + individual parity, not whether
-	// Open is GL-wired.)
+	// Step 1: open the account with a 500 mpesa opening deposit.
+	// Open now routes through the shared executeDepositInlineTx,
+	// which writes the receipt + queues the GL outbox row — same
+	// path the Deposit handler uses. (This test pre-dates that
+	// fix; it used to open with cash-channel and then a separate
+	// deposit. The cash hard-block introduced later forbids cash
+	// inline, and Open now exercises the full pipeline so the
+	// "open then separate deposit" two-step is no longer needed
+	// here.)
 	openBody := map[string]any{
-		"counterparty_id":     cpID,
-		"product_id":          productID,
-		"opening_deposit":     "500",
-		"opening_channel":     "cash",
+		"counterparty_id": cpID,
+		"product_id":      productID,
+		"opening_deposit": "500",
+		"opening_channel": "mpesa",
 	}
 	openStatus, openRaw := httpJSON(t, "POST", srv.URL+"/v1/deposit-accounts", openBody)
 	if openStatus != http.StatusCreated {

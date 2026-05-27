@@ -161,6 +161,12 @@ func (h *ApplicationHandler) Create(w http.ResponseWriter, r *http.Request) {
 		// registration-fee block. We trust positive decimals only;
 		// negative or unparseable strings are rejected, missing /
 		// empty values land as zero (no contribution captured).
+		//
+		// postingcheck:ignore Create only PERSISTS the opening amounts on
+		// the application row. The actual money post happens in
+		// ApplicationStore.activateIndividualTx via
+		// finance/executor.PostOpeningDepositTx on application
+		// approval (R-OPEN-2 enforces that path).
 		if s := strings.TrimSpace(req.OpeningShareAmount); s != "" {
 			v, perr := decimal.NewFromString(s)
 			if perr != nil || v.IsNegative() {
