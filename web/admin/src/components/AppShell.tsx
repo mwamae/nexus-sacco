@@ -96,6 +96,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         { href: '/fixed-assets',                 label: 'Fixed assets',      icon: 'bank',  show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/budgets',                      label: 'Budgets & variance', icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/sasra-return',      label: 'SASRA return',      icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
+        { href: '/accounting/system-health',     label: 'System health',     icon: 'check', show: !onPlatform && hasPermission('tenant:settings:view') },
       ],
     },
     {

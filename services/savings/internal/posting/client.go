@@ -24,9 +24,21 @@
 //                            (source_module, source_ref) so retries
 //                            from the dispatcher are safe.
 //
-// In-process composition (calling the accounting Engine directly
-// from PostTx, no HTTP hop) is deferred to a follow-up — see the
-// Step-0 brief that proposed Option B for context.
+// Dry-run posture (formerly "Disabled"): the previous version
+// silently skipped PostTx when BaseURL was empty. That hid the
+// bug where a freshly-started dev environment with no accounting
+// service appears to work but is quietly losing JEs. The new
+// posture:
+//
+//   • New() returns an error when BaseURL == "" UNLESS the env
+//     var SAVINGS_ALLOW_NO_ACCOUNTING=true is set (test-only
+//     escape; the integration tests + unit fixtures set it).
+//   • PostTx in DryRun mode logs a WARNING per call so every
+//     money event is visible in stderr — impossible to overlook
+//     during a dev session.
+//   • Production / dev paths never set DryRun. The postingcheck
+//     analyzer fails CI when any non-_test.go file assigns
+//     DryRun=true.
 
 package posting
 
@@ -39,6 +51,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,24 +64,59 @@ import (
 // caller, and the business write rolls back.
 var ErrOutboxInsert = errors.New("posting: outbox insert failed")
 
+// ErrNoAccountingURL is returned by New() when BaseURL is empty
+// AND SAVINGS_ALLOW_NO_ACCOUNTING is not "true". The server
+// binaries surface this with an actionable error message and
+// exit non-zero — failing fast beats a silent dev where every
+// money event is dropped.
+var ErrNoAccountingURL = errors.New(
+	"posting: ACCOUNTING_SERVICE_URL is empty. " +
+		"Set it to a reachable accounting service (default: http://localhost:8086) " +
+		"or set SAVINGS_ALLOW_NO_ACCOUNTING=true to bypass (tests only).",
+)
+
 type Client struct {
 	BaseURL       string
 	InternalToken string
 	HTTP          *http.Client
 	Logger        *slog.Logger
-	// Disabled — when true, every Post() is a no-op. Lets dev environments
-	// run without the accounting service while we wire integrations.
-	Disabled bool
+	// DryRun — when true, PostTx logs a WARNING per call and skips
+	// the outbox insert. Only set in tests via a struct literal
+	// (Posting.Client{DryRun: true}) or via the SAVINGS_ALLOW_NO_ACCOUNTING
+	// escape; production code MUST NEVER set this. The postingcheck
+	// analyzer enforces this — any non-test file that assigns
+	// DryRun=true fails CI.
+	DryRun bool
 }
 
-func New(baseURL, internalToken string, logger *slog.Logger) *Client {
+// New constructs a posting.Client. Returns ErrNoAccountingURL when
+// baseURL is empty AND the SAVINGS_ALLOW_NO_ACCOUNTING test escape
+// is not set; the binaries' main.go surfaces the error + exits.
+//
+// When the escape IS set, returns a Client with DryRun=true so the
+// per-call WARNING fires and every money event remains visible in
+// the logs.
+func New(baseURL, internalToken string, logger *slog.Logger) (*Client, error) {
+	if baseURL == "" {
+		if os.Getenv("SAVINGS_ALLOW_NO_ACCOUNTING") != "true" {
+			return nil, ErrNoAccountingURL
+		}
+		if logger != nil {
+			logger.Warn("posting.New: SAVINGS_ALLOW_NO_ACCOUNTING=true — running in dry-run mode; every money event will log a WARNING but no outbox row will be written. NEVER use this outside tests.")
+		}
+		return &Client{
+			InternalToken: internalToken,
+			HTTP:          &http.Client{Timeout: 8 * time.Second},
+			Logger:        logger,
+			DryRun:        true,
+		}, nil
+	}
 	return &Client{
 		BaseURL:       baseURL,
 		InternalToken: internalToken,
 		HTTP:          &http.Client{Timeout: 8 * time.Second},
 		Logger:        logger,
-		Disabled:      baseURL == "",
-	}
+	}, nil
 }
 
 // Line — single debit OR credit leg. Caller passes the chart-of-
@@ -117,7 +165,7 @@ type requestBody struct {
 // (source_module, source_ref)). Non-nil error means the caller should
 // surface a 5xx to its client and roll back the business write.
 func (c *Client) Post(ctx context.Context, in PostInput) error {
-	if c == nil || c.Disabled {
+	if c == nil || c.DryRun {
 		return ErrPostingDisabled
 	}
 	if len(in.Lines) < 2 {
@@ -197,19 +245,29 @@ type outboxPayload struct {
 // Returns nil on success; the dispatcher will pick up the row on
 // its next poll and HTTP-post it.
 //
-// When Disabled (dev / test), PostTx is a no-op — preserves
-// today's "no GL evidence in dev without a running accounting"
-// semantic. The test fixtures rely on this. In production
-// Disabled is never set; the dispatcher binary fails fast if the
-// accounting URL is empty.
+// Dry-run posture: when DryRun=true (test mode only, set via the
+// SAVINGS_ALLOW_NO_ACCOUNTING escape), PostTx logs a WARNING per
+// call + skips the outbox insert. Every dev session that's missing
+// accounting now emits a noisy WARN per money event — impossible
+// to overlook.
 //
-// Caller doesn't roll back on a Disabled return; only an actual
-// outbox-insert failure (disk full, constraint violation) returns
-// non-nil. Any return wrapping ErrOutboxInsert is the signal to
-// surface 502 + roll the business write back.
+// Caller doesn't roll back on a DryRun no-op; only an actual outbox-
+// insert failure (disk full, constraint violation) returns non-nil.
+// Any return wrapping ErrOutboxInsert is the signal to surface 502 +
+// roll the business write back.
 func (c *Client) PostTx(ctx context.Context, tx pgx.Tx, in PostInput) error {
-	if c == nil || c.Disabled {
-		return nil // dev / test — outbox stays empty
+	if c == nil {
+		return nil
+	}
+	if c.DryRun {
+		if c.Logger != nil {
+			c.Logger.Warn("posting.PostTx: DRY-RUN — outbox row skipped",
+				"source_module", in.SourceModule,
+				"source_ref", in.SourceRef,
+				"tenant_id", in.TenantID,
+				"hint", "Set ACCOUNTING_SERVICE_URL to a reachable accounting service to actually post.")
+		}
+		return nil
 	}
 	if len(in.Lines) < 2 {
 		return errors.New("posting: at least two lines required")

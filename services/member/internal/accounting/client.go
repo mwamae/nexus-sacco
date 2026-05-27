@@ -18,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,22 +31,51 @@ import (
 // gl_post_failed code; the business write must roll back.
 var ErrOutboxInsert = errors.New("accounting: outbox insert failed")
 
+// ErrNoAccountingURL is returned by New() when BaseURL is empty AND
+// SAVINGS_ALLOW_NO_ACCOUNTING is not "true". Mirrors the savings
+// posting client's fail-fast posture.
+var ErrNoAccountingURL = errors.New(
+	"accounting: ACCOUNTING_SERVICE_URL is empty. " +
+		"Set it to a reachable accounting service (default: http://localhost:8086) " +
+		"or set SAVINGS_ALLOW_NO_ACCOUNTING=true to bypass (tests only).",
+)
+
 type Client struct {
 	BaseURL       string
 	InternalToken string
 	HTTP          *http.Client
 	Logger        *slog.Logger
-	Disabled      bool
+	// DryRun — when true, PostTx logs a WARNING per call and skips
+	// the outbox insert. Test-only escape via SAVINGS_ALLOW_NO_ACCOUNTING;
+	// production must never set this. The postingcheck analyzer
+	// enforces it.
+	DryRun bool
 }
 
-func New(baseURL, internalToken string, logger *slog.Logger) *Client {
+// New constructs an accounting client. Returns ErrNoAccountingURL
+// when baseURL is empty AND SAVINGS_ALLOW_NO_ACCOUNTING is not set.
+// Binaries fail-fast on the error.
+func New(baseURL, internalToken string, logger *slog.Logger) (*Client, error) {
+	if baseURL == "" {
+		if os.Getenv("SAVINGS_ALLOW_NO_ACCOUNTING") != "true" {
+			return nil, ErrNoAccountingURL
+		}
+		if logger != nil {
+			logger.Warn("accounting.New: SAVINGS_ALLOW_NO_ACCOUNTING=true — running in dry-run mode; every JE will log a WARNING but no outbox row will be written.")
+		}
+		return &Client{
+			InternalToken: internalToken,
+			HTTP:          &http.Client{Timeout: 8 * time.Second},
+			Logger:        logger,
+			DryRun:        true,
+		}, nil
+	}
 	return &Client{
 		BaseURL:       baseURL,
 		InternalToken: internalToken,
 		HTTP:          &http.Client{Timeout: 8 * time.Second},
 		Logger:        logger,
-		Disabled:      baseURL == "",
-	}
+	}, nil
 }
 
 type Line struct {
@@ -111,7 +141,7 @@ type responseEnvelope struct {
 }
 
 func (c *Client) Post(ctx context.Context, in PostInput) (*PostResult, error) {
-	if c == nil || c.Disabled {
+	if c == nil || c.DryRun {
 		return nil, ErrDisabled
 	}
 	if len(in.Lines) < 2 {
@@ -197,15 +227,26 @@ type outboxPayloadShape struct {
 // returns an error wrapping ErrOutboxInsert and the handler surfaces
 // 502 + rolls back.
 //
-// Disabled (dev / test) is a no-op: preserves today's "no GL
-// evidence without a live accounting service" behaviour.
+// Dry-run posture: when DryRun=true, logs a WARNING per call and
+// skips the outbox insert. Every dev event without accounting wired
+// emits a noisy WARN.
 //
 // The dispatcher (services/savings/cmd/posting-dispatcher) drains
 // every outbox row regardless of which service inserted it — the
 // payload carries source_module so the accounting service's
 // dedup picks the right semantics.
 func (c *Client) PostTx(ctx context.Context, tx pgx.Tx, in PostInput) error {
-	if c == nil || c.Disabled {
+	if c == nil {
+		return nil
+	}
+	if c.DryRun {
+		if c.Logger != nil {
+			c.Logger.Warn("accounting.PostTx: DRY-RUN — outbox row skipped",
+				"source_module", in.SourceModule,
+				"source_ref", in.SourceRef,
+				"tenant_id", in.TenantID,
+				"hint", "Set ACCOUNTING_SERVICE_URL to a reachable accounting service to actually post.")
+		}
 		return nil
 	}
 	if len(in.Lines) < 2 {

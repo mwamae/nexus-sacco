@@ -636,7 +636,7 @@ func (h *InterestHandler) postBatchedRunGLTx(
 	run *domain.InterestRun, lines []domain.InterestRunLine,
 	policy *store.SharePolicy,
 ) error {
-	if h.Posting == nil || h.Posting.Disabled {
+	if h.Posting == nil || h.Posting.DryRun {
 		return nil
 	}
 

@@ -536,7 +536,7 @@ func (h *DividendHandler) postBatchedDivRunGLTx(
 	run *domain.DividendRun, lines []domain.DividendRunLine,
 	policy *store.SharePolicy,
 ) error {
-	if h.Posting == nil || h.Posting.Disabled {
+	if h.Posting == nil || h.Posting.DryRun {
 		return nil
 	}
 

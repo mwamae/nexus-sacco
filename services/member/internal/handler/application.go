@@ -627,7 +627,7 @@ func (h *ApplicationHandler) postFeeToGL(r *http.Request, tenantID uuid.UUID, ap
 //   forward (refund=false): DR channel-cash / CR 4080
 //   reversal (refund=true): DR 4080 / CR channel-cash
 func (h *ApplicationHandler) postFeeToGLTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, app *domain.MembershipApplication, actorID uuid.UUID, refund bool) (uuid.UUID, error) {
-	if h.Accounting == nil || h.Accounting.Disabled || app.FeeAmountPaid.IsZero() {
+	if h.Accounting == nil || h.Accounting.DryRun || app.FeeAmountPaid.IsZero() {
 		// Dev fallback: synthetic id so the caller's JE-stamp
 		// branch still fires (matches the legacy postFeeToGL
 		// semantic before the outbox refactor).

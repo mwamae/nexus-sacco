@@ -220,7 +220,7 @@ func buildDividendHandlerForTest(env *testEnv) *DividendHandler {
 		Shares:         store.NewShareStore(pool.Pool),
 		Dividends:      store.NewDividendStore(pool.Pool),
 		// Live posting client — PostTx writes to posting_outbox.
-		Posting: &posting.Client{Disabled: false},
+		Posting: &posting.Client{DryRun: false},
 	}
 }
 

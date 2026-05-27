@@ -22,6 +22,22 @@ help:
 up: ## Bring up postgres + redis + identity (detached)
 	$(COMPOSE) up -d
 
+.PHONY: all-up
+all-up: ## Bring up the full money stack and check the pipeline end-to-end
+	$(COMPOSE) up -d postgres redis identity member workflow accounting savings posting-dispatcher mpesa
+	@echo
+	@echo "Waiting 5s for services to settle..."
+	@sleep 5
+	@$(MAKE) money-pipeline-check
+
+.PHONY: money-pipeline-check
+money-pipeline-check: ## Verify the GL pipeline is end-to-end alive
+	@echo "  • savings    :"; curl -sf http://localhost:8084/healthz | (which jq >/dev/null 2>&1 && jq . || cat)
+	@echo "  • accounting :"; curl -sf http://localhost:8086/healthz | (which jq >/dev/null 2>&1 && jq . || cat)
+	@echo "  • outbox     :"
+	@$(COMPOSE) exec -T postgres psql -U $(POSTGRES_USER) $(POSTGRES_DB) -c \
+	  "SELECT count(*) FILTER (WHERE dispatched_at IS NULL) AS pending, count(*) FILTER (WHERE dispatched_at IS NOT NULL) AS dispatched FROM posting_outbox;"
+
 .PHONY: down
 down: ## Stop the stack
 	$(COMPOSE) down
@@ -97,11 +113,11 @@ tidy: ## go mod tidy across services
 # CI / pre-push hooks can gate merges on it.
 .PHONY: lint
 lint: ## Run postingcheck analyzer across all services
-	cd tools/postingcheck && go build -o $(CURDIR)/bin/postingcheck ./cmd/postingcheck
+	cd tools/postingcheck && GOWORK=off go build -o $(CURDIR)/bin/postingcheck ./cmd/postingcheck
 	@for svc in savings accounting member workflow notification identity; do \
 	  if [ -d "services/$$svc/internal/handler" ]; then \
 	    echo "→ postingcheck services/$$svc/internal/handler/..."; \
-	    (cd services/$$svc && $(CURDIR)/bin/postingcheck ./internal/handler/...) || exit 1; \
+	    (cd services/$$svc && GOWORK=off $(CURDIR)/bin/postingcheck ./internal/handler/...) || exit 1; \
 	  fi; \
 	done
 	@echo "✓ postingcheck clean"

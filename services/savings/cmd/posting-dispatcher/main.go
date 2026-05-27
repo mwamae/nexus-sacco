@@ -47,17 +47,17 @@ import (
 )
 
 const (
-	pollInterval     = 1 * time.Second
-	maxAttempts      = 12
-	backoffBaseUnit  = 5 * time.Second
-	backoffMaxUnit   = 1 * time.Hour
+	pollInterval    = 1 * time.Second
+	maxAttempts     = 12
+	backoffBaseUnit = 5 * time.Second
+	backoffMaxUnit  = 1 * time.Hour
 )
 
 type outboxRow struct {
-	ID        uuid.UUID
-	TenantID  uuid.UUID
-	Payload   json.RawMessage
-	Attempts  int
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	Payload    json.RawMessage
+	Attempts   int
 	EnqueuedAt time.Time
 }
 
@@ -81,6 +81,8 @@ type outboxJSON struct {
 
 func main() {
 	once := flag.Bool("once", false, "drain one batch and exit (useful for cron-style deployments)")
+	catchup := flag.Bool("catchup", false,
+		"backlog drain mode — iterate until pending=0, rate-limited to 5/sec so the accounting service doesn't fall over. Run this once after upgrading from a pre-dispatcher version of savings.")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -101,9 +103,26 @@ func main() {
 	}
 	defer pool.Close()
 
-	postingClient := posting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
-	if postingClient.Disabled {
-		logger.Warn("posting-dispatcher: accounting URL is empty — dispatcher will sit idle. Set ACCOUNTING_URL to enable.")
+	postingClient, perr := posting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
+	if perr != nil {
+		logger.Error("posting-dispatcher: cannot start without accounting",
+			"err", perr,
+			"accounting_url", cfg.AccountingURL,
+			"hint", "ACCOUNTING_SERVICE_URL is the env var (default http://localhost:8086). Set SAVINGS_ALLOW_NO_ACCOUNTING=true for tests only.")
+		os.Exit(1)
+	}
+	if postingClient.DryRun {
+		logger.Warn("posting-dispatcher: DRY-RUN mode — outbox rows will NOT be replayed. SAVINGS_ALLOW_NO_ACCOUNTING is set.")
+	}
+
+	// Catchup mode — backlog drain at 5/sec, exits when pending=0.
+	// Pre-dispatcher savings deploys accumulated outbox rows that
+	// were never replayed; flushing the whole backlog at full
+	// dispatcher speed risks overwhelming a freshly-started
+	// accounting service.
+	if *catchup {
+		runCatchup(ctx, pool, postingClient, logger)
+		return
 	}
 
 	logger.Info("posting-dispatcher: starting",
@@ -129,6 +148,65 @@ func main() {
 		case <-tick.C:
 		}
 	}
+}
+
+// runCatchup walks the entire pending backlog at a steady 5/sec
+// (200ms between rows). Logs a structured summary at the end so the
+// operator running the catchup pass has the count of dispatched +
+// failed + hard-failed rows.
+func runCatchup(ctx context.Context, pool *pgxpool.Pool, client *posting.Client, logger *slog.Logger) {
+	const catchupRatePerSec = 5
+	rowInterval := time.Second / catchupRatePerSec
+
+	start := time.Now()
+	stats := struct {
+		Iterations   int
+		RowsHandled  int
+		HardFailures int
+	}{}
+	logger.Info("posting-dispatcher: catchup mode starting",
+		"rate_per_sec", catchupRatePerSec, "max_attempts", maxAttempts)
+
+	for {
+		if ctx.Err() != nil {
+			logger.Warn("posting-dispatcher: catchup interrupted", "rows_handled", stats.RowsHandled)
+			break
+		}
+		rows, err := pickPending(ctx, pool)
+		if err != nil {
+			logger.Error("catchup pickPending", "err", err)
+			break
+		}
+		if len(rows) == 0 {
+			break
+		}
+		stats.Iterations++
+		for _, r := range rows {
+			if ctx.Err() != nil {
+				break
+			}
+			processRow(ctx, pool, client, logger, r)
+			stats.RowsHandled++
+			if r.Attempts+1 >= maxAttempts {
+				stats.HardFailures++
+			}
+			time.Sleep(rowInterval)
+		}
+	}
+
+	// Final pending count for the summary.
+	var pending int
+	_ = pool.QueryRow(ctx, `
+		SELECT count(*) FROM posting_outbox WHERE dispatched_at IS NULL
+	`).Scan(&pending)
+
+	logger.Info("posting-dispatcher: catchup complete",
+		"duration", time.Since(start).Round(time.Millisecond),
+		"iterations", stats.Iterations,
+		"rows_handled", stats.RowsHandled,
+		"hard_failures_this_run", stats.HardFailures,
+		"pending_remaining", pending,
+		"hint", "If pending_remaining > 0 the remaining rows have hit max_attempts. Inspect via /v1/finance/posting-outbox?status=stuck.")
 }
 
 // drain pulls every currently-pending row in one pass. Returns the
@@ -333,4 +411,3 @@ func nullableUUID(u uuid.UUID) any {
 	}
 	return u
 }
-

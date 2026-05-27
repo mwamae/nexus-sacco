@@ -48,7 +48,7 @@ func buildShareHandlerForTest(env *testEnv) *ShareHandler {
 		// notification side-effects in the GL contract tests.
 		Notifier: nil,
 		// Live posting client — PostTx writes to posting_outbox.
-		Posting: &posting.Client{Disabled: false},
+		Posting: &posting.Client{DryRun: false},
 	}
 }
 

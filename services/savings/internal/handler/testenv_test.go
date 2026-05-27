@@ -98,7 +98,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	// Disabled posting — every handler's PostXxx-side helper checks
 	// for ErrPostingDisabled and continues. This lets us exercise the
 	// full receipt flow without standing up the accounting service.
-	postingClient := &posting.Client{Disabled: true}
+	postingClient := &posting.Client{DryRun: true}
 
 	// ─── handlers ──────────────────────────────────────────────────
 	depositH := &DepositHandler{

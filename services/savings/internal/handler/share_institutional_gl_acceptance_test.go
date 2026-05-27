@@ -63,7 +63,7 @@ func TestInstitutionalSharePurchase_PostsToOutboxLikeIndividual(t *testing.T) {
 		Shares:         store.NewShareStore(pool.Pool),
 		Approvals:      store.NewApprovalsStore(pool.Pool),
 		Notifier:       nil,
-		Posting:        &posting.Client{Disabled: false},
+		Posting:        &posting.Client{DryRun: false},
 	}
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {

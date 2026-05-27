@@ -97,14 +97,14 @@ func main() {
 	memH := &handler.MemberHandler{
 		DB: pool, Members: members, Relations: rels, Documents: docs, Audit: auditStore,
 		Counterparties: counterpartyStore,
-		Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
+		Storage:        stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
 		Notifier: notifyClient,
 	}
 	orgH := &handler.OrgHandler{
 		DB: pool, Orgs: orgs, Documents: orgDocs, Officials: officials,
 		Signatories: signatories, Banking: banking, Contacts: contacts,
 		Counterparties: counterpartyStore,
-		Audit: auditStore, Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
+		Audit:          auditStore, Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
 		Notifier: notifyClient,
 	}
 	dormancyRunStore := store.NewDormancyRunStore(pool.Pool)
@@ -121,14 +121,21 @@ func main() {
 		HTTP:                  &http.Client{Timeout: 10 * time.Second},
 		Notifier:              notifyClient,
 	}
-	accountingClient := accounting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
+	accountingClient, accErr := accounting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
+	if accErr != nil {
+		logger.Error("member server: cannot start without accounting",
+			"err", accErr,
+			"accounting_url", cfg.AccountingURL,
+			"hint", "ACCOUNTING_SERVICE_URL is the env var (default http://localhost:8086). Set SAVINGS_ALLOW_NO_ACCOUNTING=true for tests only.")
+		os.Exit(1)
+	}
 	appH := &handler.ApplicationHandler{
 		DB: pool, Applications: applicationStore, FeePayments: feePaymentStore,
 		ReceiptStamper: receiptStamper,
 		Members:        members,
-		Orgs:           orgs,                // institutional materialisation
+		Orgs:           orgs, // institutional materialisation
 		Counterparties: counterpartyStore,
-		Accounting: accountingClient, Notifier: notifyClient,
+		Accounting:     accountingClient, Notifier: notifyClient,
 		Logger: logger,
 		// PR #8 — Unified Inbox workflow integration.
 		WorkflowURL:           cfg.WorkflowURL,

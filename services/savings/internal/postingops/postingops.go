@@ -93,7 +93,7 @@ func PostShareBuyTx(ctx context.Context, tx pgx.Tx, deps Deps, in ShareBuyInput)
 	}); err != nil {
 		return err
 	}
-	if deps.Posting.Disabled || deps.Shares == nil {
+	if deps.Posting.DryRun || deps.Shares == nil {
 		return nil
 	}
 	return deps.Shares.UpdateJournalEntryIDTx(ctx, tx, in.TxnID, in.TxnID)
@@ -509,7 +509,7 @@ type ShareBonusInput struct {
 }
 
 func PostShareBonusTx(ctx context.Context, tx pgx.Tx, deps Deps, in ShareBonusInput) error {
-	if deps.Posting == nil || deps.Posting.Disabled {
+	if deps.Posting == nil || deps.Posting.DryRun {
 		return nil
 	}
 	if in.TotalBonusShares <= 0 {

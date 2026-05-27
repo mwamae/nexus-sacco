@@ -147,7 +147,7 @@ func TestInstitutionalDepositOpen_PostsToOutboxLikeIndividual(t *testing.T) {
 		Products:       store.NewDepositProductStore(pool.Pool),
 		Deposits:       store.NewDepositStore(pool.Pool),
 		Approvals:      store.NewApprovalsStore(pool.Pool),
-		Posting:        &posting.Client{Disabled: false},
+		Posting:        &posting.Client{DryRun: false},
 	}
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {

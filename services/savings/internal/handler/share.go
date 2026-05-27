@@ -532,7 +532,7 @@ func (h *ShareHandler) postSharePurchaseToGLTx(ctx context.Context, tx pgx.Tx, t
 	}
 	// Mirror the in-memory journal_entry_id stamp so the HTTP response
 	// reflects what postingops persisted to the row.
-	if h.Posting != nil && !h.Posting.Disabled {
+	if h.Posting != nil && !h.Posting.DryRun {
 		jeID := result.Transaction.ID
 		result.Transaction.JournalEntryID = &jeID
 	}
@@ -1273,7 +1273,7 @@ func (h *ShareHandler) postShareAdjustmentToGLTx(
 	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
 	txn *domain.ShareTransaction, offsettingCode, reason string,
 ) error {
-	if h.Posting == nil || h.Posting.Disabled || txn == nil {
+	if h.Posting == nil || h.Posting.DryRun || txn == nil {
 		return nil
 	}
 	amount := txn.Amount.Abs()

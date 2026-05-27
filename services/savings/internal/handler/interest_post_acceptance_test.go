@@ -217,7 +217,7 @@ func buildInterestHandlerForTest(env *testEnv) *InterestHandler {
 		// Live posting client: writes to posting_outbox via PostTx.
 		// No HTTP base URL is needed — PostTx never calls accounting,
 		// it only inserts the outbox row.
-		Posting: &posting.Client{Disabled: false},
+		Posting: &posting.Client{DryRun: false},
 	}
 }
 

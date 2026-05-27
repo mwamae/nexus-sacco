@@ -94,3 +94,26 @@ func (h *FakeHandler) postFineLine(ctx context.Context, tx fakeTx) error {
 func (h *FakeHandler) DeferredGapDeposit(ctx context.Context, tx fakeTx) error {
 	return h.Deposits.PostTxnTx(ctx, tx, nil)
 }
+
+// ─── Rule 4 positive: composite literal sets DryRun=true ───
+//
+// The hazard the rule prevents: someone constructs a Client{} with
+// DryRun=true in a handler or store "just for now" and every
+// money event downstream is silently dropped.
+type FakeClient struct {
+	DryRun bool
+}
+
+func BadDryRunComposite() *FakeClient {
+	return &FakeClient{DryRun: true} // want "posting_dryrun_in_prod:"
+}
+
+// ─── Rule 4 positive: assignment sets DryRun=true ───
+func BadDryRunAssign(c *FakeClient) {
+	c.DryRun = true // want "posting_dryrun_in_prod:"
+}
+
+// ─── Rule 4 negative: DryRun: false is fine ───
+func FineDryRunFalse() *FakeClient {
+	return &FakeClient{DryRun: false}
+}

@@ -33,6 +33,7 @@ type Deps struct {
 	Outbox        *PostingOutboxHandler
 	FeesSummary   *FeesSummaryHandler
 	FinanceHealth *FinanceHealthHandler
+	Health        *HealthHandler // /healthz — outbox lag + accounting reachable
 	TenantStore   *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
@@ -47,10 +48,17 @@ func Routes(d Deps) http.Handler {
 	r.Use(middleware.CORS("*"))
 	r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
 
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	// /healthz — outbox lag + accounting-reachable probe. Falls back
+	// to the trivial {status:ok} when the HealthHandler isn't wired
+	// (early-boot tests + the FinanceHealth-only main.go variants).
+	if d.Health != nil {
+		r.Get("/healthz", d.Health.Handle)
+	} else {
+		r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		})
+	}
 
 	// /healthz/finance — config-integrity probe for the GL pipeline.
 	// 503 when any fee_catalog.gl_credit_code resolves to a missing

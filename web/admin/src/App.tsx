@@ -63,6 +63,7 @@ import BudgetsPage from './pages/Accounting/Budgets';
 import BudgetDetailPage from './pages/Accounting/BudgetDetail';
 import BudgetVariancePage from './pages/Accounting/BudgetVariance';
 import SASRAReturnPage from './pages/Accounting/SASRAReturn';
+import SystemHealthPage from './pages/Accounting/SystemHealth';
 import FinanceDashboardPage from './pages/Accounting/FinanceDashboard';
 import MpesaReconciliationPage from './pages/Accounting/MpesaReconciliation';
 import MemberStatementPage from './pages/Members/MemberStatement';
@@ -170,6 +171,7 @@ function Gate() {
   else if (path.match(/^\/budgets\/[^/]+\/variance$/)) page = <BudgetVariancePage />;
   else if (path.startsWith('/budgets/')) page = <BudgetDetailPage />;
   else if (path === '/accounting/sasra-return') page = <SASRAReturnPage />;
+  else if (path === '/accounting/system-health') page = <SystemHealthPage />;
   else if (path === '/accounting/dashboard') page = <FinanceDashboardPage />;
   else if (path === '/accounting/mpesa-reconciliation') page = <MpesaReconciliationPage />;
   else if (path === '/provisioning' || path.startsWith('/provisioning/')) page = <ProvisioningPage />;

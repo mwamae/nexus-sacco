@@ -114,13 +114,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		// Walk the function body once and collect every call we care
 		// about. Cheaper than three separate AST walks per function.
 		var (
-			callsPostTxnTx        bool
-			postTxnTxPos          ast.Node
-			callsPostTx           bool
-			callsPostingPostHTTP  bool
-			postingPostHTTPPos    ast.Node
-			rawSQLPos             ast.Node
-			rawSQLMatch           string
+			callsPostTxnTx       bool
+			postTxnTxPos         ast.Node
+			callsPostTx          bool
+			callsPostingPostHTTP bool
+			postingPostHTTPPos   ast.Node
+			rawSQLPos            ast.Node
+			rawSQLMatch          string
 		)
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
@@ -210,5 +210,80 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				fn.Name.Name)
 		}
 	})
+
+	// Rule 4 — posting_dryrun_in_prod. ANY non-test file under
+	// services/*/ that sets DryRun=true is flagged. The hazard the
+	// rule prevents is the resurrected silent-no-op: someone in a
+	// handler/store writes `client.DryRun = true` (or
+	// `&posting.Client{DryRun: true, ...}`) "just for now" and
+	// every money event downstream is dropped. Tests legitimately
+	// set DryRun=true via struct literals; _test.go files are the
+	// only exemption.
+	insp.Preorder([]ast.Node{(*ast.KeyValueExpr)(nil), (*ast.AssignStmt)(nil)}, func(n ast.Node) {
+		pos := pass.Fset.Position(n.Pos())
+		if !servicesPathRE.MatchString(pos.Filename) {
+			return
+		}
+		if strings.HasSuffix(pos.Filename, "_test.go") {
+			return
+		}
+		switch x := n.(type) {
+		case *ast.KeyValueExpr:
+			// Composite literal field: `DryRun: true` inside a Client{}.
+			key, ok := x.Key.(*ast.Ident)
+			if !ok || key.Name != "DryRun" {
+				return
+			}
+			if !isTrueLit(x.Value) {
+				return
+			}
+			pass.Reportf(x.Pos(),
+				"posting_dryrun_in_prod: DryRun: true in a non-test file. "+
+					"DryRun is a test-only escape — see services/savings/internal/posting/client.go. "+
+					"Setting it in production code silently drops every money event. "+
+					"If this is a test fixture, move it to a _test.go file.")
+		case *ast.AssignStmt:
+			// Assignment: `client.DryRun = true`. Look for a SelectorExpr
+			// LHS named DryRun and a true RHS.
+			if len(x.Lhs) != 1 || len(x.Rhs) != 1 {
+				return
+			}
+			sel, ok := x.Lhs[0].(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "DryRun" {
+				return
+			}
+			if !isTrueLit(x.Rhs[0]) {
+				return
+			}
+			pass.Reportf(x.Pos(),
+				"posting_dryrun_in_prod: %s.DryRun = true in a non-test file. "+
+					"DryRun is a test-only escape. Setting it here silently drops every money event downstream.",
+				exprName(sel.X))
+		}
+	})
+
 	return nil, nil
+}
+
+// servicesPathRE matches every file under services/<svc>/ (any
+// subdirectory). Broader than handlerPathRE because the DryRun rule
+// applies to handlers, stores, cmd binaries, executors — everywhere.
+var servicesPathRE = regexp.MustCompile(`/services/[^/]+/.+\.go$`)
+
+// isTrueLit reports whether the expression is the Go literal `true`.
+func isTrueLit(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == "true"
+}
+
+// exprName renders a SelectorExpr's receiver as a string for the
+// diagnostic. Best-effort — falls back to "?".
+func exprName(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		return exprName(v.X) + "." + v.Sel.Name
+	}
+	return "?"
 }

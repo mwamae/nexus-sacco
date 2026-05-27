@@ -194,7 +194,7 @@ func buildLoanHandlerForTest(env *testEnv) *LoanHandler {
 		DepositProducts: store.NewDepositProductStore(pool.Pool),
 		Approvals:       store.NewApprovalsStore(pool.Pool),
 		// Live posting client — PostTx writes the outbox row.
-		Posting: &posting.Client{Disabled: false},
+		Posting: &posting.Client{DryRun: false},
 	}
 }
 

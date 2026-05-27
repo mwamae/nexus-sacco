@@ -99,7 +99,18 @@ func main() {
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
 	notifyClient := notifier.New(cfg.NotificationURL, cfg.NotificationInternalToken, logger)
-	postingClient := posting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
+	// Fail-fast on a missing accounting URL — better to refuse to
+	// start than to silently drop GL posts. The dry-run escape is
+	// SAVINGS_ALLOW_NO_ACCOUNTING=true (tests only); production +
+	// dev should always reach an accounting service.
+	postingClient, perr := posting.New(cfg.AccountingURL, cfg.AccountingInternalToken, logger)
+	if perr != nil {
+		logger.Error("savings server: cannot start without accounting",
+			"err", perr,
+			"accounting_url", cfg.AccountingURL,
+			"hint", "ACCOUNTING_SERVICE_URL is the env var (default http://localhost:8086). Set SAVINGS_ALLOW_NO_ACCOUNTING=true for tests only.")
+		os.Exit(1)
+	}
 	shareH := &handler.ShareHandler{
 		DB:             pool,
 		Tenants:        tenants,
@@ -136,7 +147,7 @@ func main() {
 		DB:                  pool,
 		Tenants:             tenants,
 		Members:             members,
-		Counterparties: counterparties,
+		Counterparties:      counterparties,
 		Products:            productStore,
 		Deposits:            depositStore,
 		Shares:              shareStore,
@@ -200,16 +211,16 @@ func main() {
 		Logger:         logger,
 	}
 	loanCollectH := &handler.LoanCollectionsHandler{
-		DB:          pool,
-		Tenants:     tenants,
-		Members:     members,
+		DB:             pool,
+		Tenants:        tenants,
+		Members:        members,
 		Counterparties: counterparties,
-		Loans:       loanStore,
-		Collections: loanCollectionsStore,
-		Restructure: loanRestructureStore,
-		Approvals:   approvalsStore,
-		Notifier:    notifyClient,
-		Logger:      logger,
+		Loans:          loanStore,
+		Collections:    loanCollectionsStore,
+		Restructure:    loanRestructureStore,
+		Approvals:      approvalsStore,
+		Notifier:       notifyClient,
+		Logger:         logger,
 	}
 	loanReportsH := &handler.LoanReportsHandler{
 		DB:        pool,
@@ -238,15 +249,15 @@ func main() {
 		Logger: logger,
 	}
 	approvalsH := &handler.PendingApprovalsHandler{
-		DB:                    pool,
-		Approvals:             approvalsStore,
-		Deposit:               depositH,
-		Share:                 shareH,
-		Loan:                  loanH,
-		LoanRepay:             loanRepayH,
-		LoanCollect:           loanCollectH,
-		LoanReports:           loanReportsH,
-		Receipts:              receiptStore,
+		DB:          pool,
+		Approvals:   approvalsStore,
+		Deposit:     depositH,
+		Share:       shareH,
+		Loan:        loanH,
+		LoanRepay:   loanRepayH,
+		LoanCollect: loanCollectH,
+		LoanReports: loanReportsH,
+		Receipts:    receiptStore,
 		// Wave 2 — ApplicationFee dispatcher executor. Collection
 		// gets wired in below after collectionDeskH exists (the two
 		// handlers reference each other; we break the cycle with a
@@ -280,7 +291,7 @@ func main() {
 		DB:                  pool,
 		Tenants:             tenants,
 		Members:             members,
-		Counterparties: counterparties,
+		Counterparties:      counterparties,
 		Products:            productStore,
 		Deposits:            depositStore,
 		Shares:              shareStore,
@@ -347,31 +358,32 @@ func main() {
 	}
 
 	router := handler.Routes(handler.Deps{
-		Share:       shareH,
-		Deposit:     depositH,
-		Product:     productH,
-		Interest:    interestH,
-		Dividend:    dividendH,
-		LoanProduct: loanProductH,
-		LoanApp:     loanAppH,
-		Loan:        loanH,
-		LoanRepay:   loanRepayH,
-		LoanCollect: loanCollectH,
-		LoanReports:  loanReportsH,
-		Provisioning: provisioningH,
-		MemberStmt:   memberStmtH,
-		MemberLedger: memberLedgerH,
-		Approvals:    approvalsH,
-		Collection:   collectionDeskH,
-		VirtualTill:  &handler.VirtualTillHandler{DB: pool, Tills: virtualTillStore},
-		BOSAExit:     &handler.BOSAExitHandler{DB: pool, Deposit: depositH, Approvals: approvalsStore},
+		Share:         shareH,
+		Deposit:       depositH,
+		Product:       productH,
+		Interest:      interestH,
+		Dividend:      dividendH,
+		LoanProduct:   loanProductH,
+		LoanApp:       loanAppH,
+		Loan:          loanH,
+		LoanRepay:     loanRepayH,
+		LoanCollect:   loanCollectH,
+		LoanReports:   loanReportsH,
+		Provisioning:  provisioningH,
+		MemberStmt:    memberStmtH,
+		MemberLedger:  memberLedgerH,
+		Approvals:     approvalsH,
+		Collection:    collectionDeskH,
+		VirtualTill:   &handler.VirtualTillHandler{DB: pool, Tills: virtualTillStore},
+		BOSAExit:      &handler.BOSAExitHandler{DB: pool, Deposit: depositH, Approvals: approvalsStore},
 		Outbox:        &handler.PostingOutboxHandler{DB: pool, Outbox: store.NewPostingOutboxStore(pool.Pool)},
 		FeesSummary:   &handler.FeesSummaryHandler{DB: pool, Store: store.NewFeesSummaryStore(pool.Pool)},
 		FinanceHealth: &handler.FinanceHealthHandler{DB: pool, Logger: logger},
-		TenantStore:  tenants,
-		Issuer:      issuer,
-		AppDomain:   cfg.AppDomain,
-		Logger:      logger,
+		Health:        &handler.HealthHandler{DB: pool, AccountingURL: cfg.AccountingURL},
+		TenantStore:   tenants,
+		Issuer:        issuer,
+		AppDomain:     cfg.AppDomain,
+		Logger:        logger,
 	})
 
 	// Boot-time integrity probe: log ERROR for any broken fee_catalog

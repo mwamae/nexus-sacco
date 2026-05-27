@@ -112,7 +112,7 @@ func (e *ApplicationFeeExecutor) PostApprovedTx(
 	// (source_module, source_ref) so retries from the dispatcher
 	// won't double-post.
 	jeID := uuid.New()
-	if e.Posting != nil && !e.Posting.Disabled {
+	if e.Posting != nil && !e.Posting.DryRun {
 		if perr := e.Posting.PostTx(ctx, tx, posting.PostInput{
 			TenantID:     tenantID,
 			EntryDate:    time.Now(),

@@ -118,6 +118,92 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  accounting:
+    build:
+      context: ./services/accounting
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      ACCOUNTING_HTTP_ADDR: :8086
+      ACCOUNTING_ENV: ${ACCOUNTING_ENV:-development}
+      ACCOUNTING_LOG_LEVEL: ${ACCOUNTING_LOG_LEVEL:-info}
+      # Shared secret between savings (posting client + dispatcher)
+      # and accounting (/internal/v1/post). Override per-environment
+      # via .env; never use the dev fallback in production.
+      ACCOUNTING_INTERNAL_TOKEN: ${ACCOUNTING_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-do-not-use-in-production-eef9b4c6c0f04f4d8a8b1e7f2a3b4c5d}
+      JWT_ISSUER: ${JWT_ISSUER:-nexus-identity}
+      APP_DOMAIN: ${APP_DOMAIN:-nexussacco.local}
+    ports:
+      - "8086:8086"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8086/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  savings:
+    build:
+      context: ./services/savings
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      SAVINGS_HTTP_ADDR: :8084
+      SAVINGS_ENV: ${SAVINGS_ENV:-development}
+      SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
+      # The /healthz check flips status=degraded once the oldest
+      # pending outbox row crosses this many seconds.
+      SAVINGS_HEALTHZ_OUTBOX_LAG_THRESHOLD_S: ${SAVINGS_HEALTHZ_OUTBOX_LAG_THRESHOLD_S:-60}
+      ACCOUNTING_SERVICE_URL: http://accounting:8086
+      ACCOUNTING_INTERNAL_TOKEN: ${ACCOUNTING_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
+      WORKFLOW_SERVICE_URL: http://workflow:8083
+      NOTIFICATION_SERVICE_URL: http://notification:8085
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-do-not-use-in-production-eef9b4c6c0f04f4d8a8b1e7f2a3b4c5d}
+      JWT_ISSUER: ${JWT_ISSUER:-nexus-identity}
+      APP_DOMAIN: ${APP_DOMAIN:-nexussacco.local}
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      accounting:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8084/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  # Background outbox drainer. Same image as the savings HTTP
+  # service — just runs the second binary. The accounting service
+  # is idempotent on (source_module, source_ref) so multiple
+  # dispatcher instances are safe (SELECT FOR UPDATE SKIP LOCKED
+  # on the outbox row prevents double-posting).
+  posting-dispatcher:
+    build:
+      context: ./services/savings
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/posting-dispatcher"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      ACCOUNTING_SERVICE_URL: http://accounting:8086
+      ACCOUNTING_INTERNAL_TOKEN: ${ACCOUNTING_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
+      SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-do-not-use-in-production-eef9b4c6c0f04f4d8a8b1e7f2a3b4c5d}
+      JWT_ISSUER: ${JWT_ISSUER:-nexus-identity}
+      APP_DOMAIN: ${APP_DOMAIN:-nexussacco.local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      accounting:
+        condition: service_started
+
   mpesa:
     build:
       context: ./services/mpesa

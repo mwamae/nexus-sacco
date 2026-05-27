@@ -826,7 +826,7 @@ func (h *CollectionDeskHandler) postFeeLineTx(
 	if err != nil {
 		return uuid.Nil, err
 	}
-	if h.Posting == nil || h.Posting.Disabled {
+	if h.Posting == nil || h.Posting.DryRun {
 		// Dev environment without an accounting service. Stamp a
 		// synthetic txn id so the receipt line still rolls up; log a
 		// warning so production never trips this silently.

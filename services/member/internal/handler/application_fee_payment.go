@@ -481,7 +481,7 @@ func (h *ApplicationHandler) postFeePaymentToGLTx(
 			{AccountCode: "4080", Credit: payment.Amount, Narration: "Registration fee income"},
 		}
 	}
-	if h.Accounting == nil || h.Accounting.Disabled {
+	if h.Accounting == nil || h.Accounting.DryRun {
 		// Dev fallback — stamp a synthetic id so the payment's
 		// posted_at fires. The outbox is intentionally empty in
 		// this mode (no dispatcher work). Matches the legacy
