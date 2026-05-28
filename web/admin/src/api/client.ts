@@ -6599,3 +6599,76 @@ export async function getLoanDashboard(): Promise<LoanDashboardKPIs> {
   const r = await api.get('/v1/loans/dashboard');
   return (r.data?.data ?? r.data) as LoanDashboardKPIs;
 }
+
+// ─── Loans Phase 2 — Reports ───
+
+export async function getLoanReportPAR(): Promise<any> {
+  const r = await api.get('/v1/loans/reports/par');
+  return r.data?.data ?? r.data;
+}
+export async function getLoanReportPARHistory(days = 90): Promise<any> {
+  const r = await api.get(`/v1/loans/reports/par/history?days=${days}`);
+  return r.data?.data ?? r.data;
+}
+export async function getLoanReportAging(): Promise<any> {
+  const r = await api.get('/v1/loans/reports/aging-buckets');
+  return r.data?.data ?? r.data;
+}
+export async function getLoanReportVintage(from?: string, to?: string): Promise<any> {
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  const r = await api.get(`/v1/loans/reports/vintage${params.toString() ? '?' + params.toString() : ''}`);
+  return r.data?.data ?? r.data;
+}
+export async function getLoanReportOfficers(from?: string, to?: string): Promise<any> {
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  const r = await api.get(`/v1/loans/reports/officers${params.toString() ? '?' + params.toString() : ''}`);
+  return r.data?.data ?? r.data;
+}
+export async function getLoanReportDisbursements(opts: { from?: string; to?: string; product_id?: string; channel?: string; limit?: number; offset?: number } = {}): Promise<any> {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(opts)) if (v) p.set(k, String(v));
+  const r = await api.get('/v1/loans/reports/disbursements' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data?.data ?? r.data;
+}
+export async function getLoanReportRepayments(opts: { from?: string; to?: string; product_id?: string; channel?: string; limit?: number; offset?: number } = {}): Promise<any> {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(opts)) if (v) p.set(k, String(v));
+  const r = await api.get('/v1/loans/reports/repayments' + (p.toString() ? '?' + p.toString() : ''));
+  return r.data?.data ?? r.data;
+}
+export async function getLoanReportGuarantorExposure(memberID?: string, limit = 50): Promise<any> {
+  const p = new URLSearchParams();
+  if (memberID) p.set('member_id', memberID);
+  p.set('limit', String(limit));
+  const r = await api.get(`/v1/loans/reports/guarantor-exposure?${p.toString()}`);
+  return r.data?.data ?? r.data;
+}
+export async function getLoanReportTopN(metric: 'outstanding' | 'disbursed' | 'collected' = 'outstanding', limit = 50): Promise<any> {
+  const r = await api.get(`/v1/loans/reports/top-n?metric=${metric}&limit=${limit}`);
+  return r.data?.data ?? r.data;
+}
+
+// CSV download URL — browser navigation handles the attachment.
+export function loanReportCSVURL(report: string, extra: Record<string, string> = {}): string {
+  const p = new URLSearchParams({ format: 'csv', ...extra });
+  return `/api/v1/loans/reports/${report}?${p.toString()}`;
+}
+
+// ─── SASRA quarterly extract ───
+
+export async function getSASRAExtract(period: string): Promise<any> {
+  const r = await api.get(`/v1/loans/reports/sasra?period=${period}&format=json`);
+  return r.data?.data ?? r.data;
+}
+export function sasraDownloadURL(period: string, format: 'csv' | 'pdf'): string {
+  return `/api/v1/loans/reports/sasra?period=${period}&format=${format}`;
+}
+export async function verifySASRAPeriod(period: string, verifiedFormVersion: string, note?: string): Promise<void> {
+  await api.post('/v1/loans/reports/sasra/verify', {
+    period, verified_form_version: verifiedFormVersion, note,
+  });
+}

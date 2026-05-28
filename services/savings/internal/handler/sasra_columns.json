@@ -1,0 +1,45 @@
+{
+  "form_version": "best-guess-v1 (verify against current SASRA Form D before submission)",
+  "description": "Fallback SASRA quarterly extract column layout. Per-tenant override path: PUT /v1/tenant/sasra-column-overrides. Until a tenant admin verifies the layout via POST /v1/loans/reports/sasra/verify, every artifact ships with a DRAFT watermark.",
+  "header_metadata": [
+    "tenant_name",
+    "tenant_registration_no",
+    "reporting_period",
+    "submission_date",
+    "preparing_officer_name",
+    "preparing_officer_signature_line"
+  ],
+  "columns": [
+    {"key": "loan_no",                       "label": "Loan No",                       "type": "string"},
+    {"key": "member_no",                     "label": "Member No",                     "type": "string"},
+    {"key": "member_id_no",                  "label": "Member ID/Passport No",         "type": "string"},
+    {"key": "member_name",                   "label": "Member Name",                   "type": "string"},
+    {"key": "product_code",                  "label": "Product Code",                  "type": "string"},
+    {"key": "product_name",                  "label": "Product Name",                  "type": "string"},
+    {"key": "original_disbursement_amount",  "label": "Original Disbursement Amount",  "type": "decimal"},
+    {"key": "disbursement_date",             "label": "Disbursement Date",             "type": "date"},
+    {"key": "maturity_date",                 "label": "Maturity Date",                 "type": "date"},
+    {"key": "interest_rate_pct",             "label": "Interest Rate (%)",             "type": "decimal"},
+    {"key": "term_months",                   "label": "Term (months)",                 "type": "integer"},
+    {"key": "principal_outstanding",         "label": "Principal Outstanding",         "type": "decimal"},
+    {"key": "interest_outstanding",          "label": "Interest Outstanding",          "type": "decimal"},
+    {"key": "fees_outstanding",              "label": "Fees Outstanding",              "type": "decimal"},
+    {"key": "penalty_outstanding",           "label": "Penalty Outstanding",           "type": "decimal"},
+    {"key": "total_outstanding",             "label": "Total Outstanding",             "type": "decimal"},
+    {"key": "days_in_arrears",               "label": "Days in Arrears (DPD)",         "type": "integer"},
+    {"key": "classification_code",           "label": "Classification Code (1-5)",     "type": "integer"},
+    {"key": "classification_label",          "label": "Classification",                "type": "string"},
+    {"key": "provision_required",            "label": "Provision Required",            "type": "decimal"},
+    {"key": "provision_held",                "label": "Provision Held",                "type": "decimal"},
+    {"key": "security_type",                 "label": "Security Type",                 "type": "string"},
+    {"key": "security_value",                "label": "Security Value",                "type": "decimal"},
+    {"key": "is_insider",                    "label": "Insider (Y/N)",                 "type": "boolean"}
+  ],
+  "classification_thresholds": {
+    "normal":       {"dpd_min": 0,   "dpd_max": 30,  "code": 1, "provision_pct": 0},
+    "watch":        {"dpd_min": 31,  "dpd_max": 60,  "code": 2, "provision_pct": 5},
+    "substandard":  {"dpd_min": 61,  "dpd_max": 180, "code": 3, "provision_pct": 25},
+    "doubtful":     {"dpd_min": 181, "dpd_max": 360, "code": 4, "provision_pct": 50},
+    "loss":         {"dpd_min": 361, "dpd_max": null, "code": 5, "provision_pct": 100}
+  }
+}

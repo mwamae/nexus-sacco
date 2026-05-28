@@ -479,6 +479,18 @@ func main() {
 		// per-tenant cache inside the handler keeps the dashboard's
 		// 60s poll cheap.
 		LoanDashboard: &handler.LoanDashboardHandler{DB: pool},
+		// Loans Phase 2 — reporting endpoints. Per-endpoint TTL
+		// cache inside the handler matches the prompt's matrix
+		// (30s aging, 1h vintage, 1m officers, 1m top-N, 5m
+		// guarantors, 5m trend history).
+		LoanReportsP2: &handler.LoanReportsPhase2Handler{
+			DB:    pool,
+			Store: loanReportsStore,
+		},
+		// Loans Phase 2 — SASRA quarterly extract handler. CSV +
+		// PDF formats; DRAFT watermark until the tenant admin
+		// signs off on the column layout for the period.
+		SASRA: &handler.SASRAHandler{DB: pool},
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),

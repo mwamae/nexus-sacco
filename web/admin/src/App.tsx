@@ -43,6 +43,8 @@ import LoanDetail from './pages/Loans/LoanDetail';
 import LoanApplicationsQueue from './pages/Loans/Applications/LoanApplicationsQueue';
 import LoanApplicationDetail from './pages/Loans/Applications/LoanApplicationDetail';
 import NewLoanApplication from './pages/Loans/Applications/NewLoanApplication';
+import LoansReports from './pages/Loans/Reports';
+import SASRAPage from './pages/Loans/SASRA';
 import LoansRedirectPage from './pages/Loans/RedirectPage';
 import CollectionsPage from './pages/Collections';
 import LoanReportsPage from './pages/LoanReports';
@@ -146,7 +148,11 @@ function Gate() {
   else if (path === '/loans/register') page = <LoansRegister />;
   else if (path.startsWith('/loans/register/')) page = <LoanDetail />;
   else if (path === '/loans/products' || path.startsWith('/loans/products/')) page = <LoanProductsPage />;
-  else if (path === '/loans/reports' || path.startsWith('/loans/reports/')) page = <LoanReportsPage />;
+  // Loans Phase 2 — the new tabbed Reports page replaces the legacy
+  // LoanReportsPage at /loans/reports. SASRA sits at its own
+  // /loans/reports/sasra path (must be checked BEFORE the catch-all).
+  else if (path === '/loans/reports/sasra') page = <SASRAPage />;
+  else if (path === '/loans/reports' || path.startsWith('/loans/reports')) page = <LoansReports />;
   else if (path === '/loans/provisioning' || path.startsWith('/loans/provisioning/')) page = <ProvisioningPage />;
   else if (path === '/loans/collections') page = <LoansRedirectPage to="/loans" label="Loans dashboard (Collections lands in Phase 4)" />;
   else if (path === '/loans') page = <LoansDashboard />;

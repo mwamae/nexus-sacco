@@ -43,6 +43,13 @@ type Deps struct {
 	// renders in one round trip. Optional in test main.go variants
 	// (route omits when nil).
 	LoanDashboard *LoanDashboardHandler
+	// LoanReportsP2 backs the Loans Phase 2 reporting endpoints
+	// under /v1/loans/reports/*. Optional in test main.go variants.
+	LoanReportsP2 *LoanReportsPhase2Handler
+	// SASRA backs the SASRA quarterly extract endpoints. Permission-
+	// gated on loans:sasra (sensitive — generates the file SACCOs
+	// upload to the regulator's portal).
+	SASRA *SASRAHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -265,6 +272,26 @@ func Routes(d Deps) http.Handler {
 			// match "dashboard" as a loan id param.
 			if d.LoanDashboard != nil {
 				r.With(middleware.RequirePermission("loans:view")).Get("/loans/dashboard", d.LoanDashboard.Get)
+			}
+			// Loans Phase 2 — reporting endpoints. Same registration-
+			// order caveat: these must come BEFORE /loans/{loan_id}.
+			if d.LoanReportsP2 != nil {
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/par",                d.LoanReportsP2.PAR)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/par/history",        d.LoanReportsP2.PARHistory)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/portfolio/history",  d.LoanReportsP2.PortfolioHistory)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/aging-buckets",      d.LoanReportsP2.Aging)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/vintage",            d.LoanReportsP2.Vintage)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/officers",           d.LoanReportsP2.Officers)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/disbursements",      d.LoanReportsP2.Disbursements)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/repayments",         d.LoanReportsP2.Repayments)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/guarantor-exposure", d.LoanReportsP2.GuarantorExposure)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/top-n",              d.LoanReportsP2.TopN)
+			}
+			if d.SASRA != nil {
+				r.With(middleware.RequirePermission("loans:sasra")).Get("/loans/reports/sasra",          d.SASRA.Generate)
+				r.With(middleware.RequirePermission("loans:sasra")).Post("/loans/reports/sasra/verify", d.SASRA.Verify)
+				r.With(middleware.RequirePermission("loans:sasra")).Get("/tenant/sasra-column-overrides",  d.SASRA.GetOverride)
+				r.With(middleware.RequirePermission("loans:sasra")).Put("/tenant/sasra-column-overrides", d.SASRA.PutOverride)
 			}
 			r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}", d.Loan.GetLoan)
 			r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/payoff", d.LoanRepay.Payoff)

@@ -210,6 +210,24 @@ services:
       accounting:
         condition: service_started
 
+  # Loans Phase 2 — daily portfolio snapshot worker. Materialises one
+  # row per tenant per day into loan_portfolio_snapshots so the
+  # Reports page's PAR / portfolio trend charts render from a small
+  # range scan instead of walking loan_transactions each paint.
+  # First run for any tenant auto-backfills 90 days.
+  loan-snapshotter:
+    build:
+      context: .
+      dockerfile: services/savings/Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/loan-snapshotter"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   mpesa:
     build:
       context: .
