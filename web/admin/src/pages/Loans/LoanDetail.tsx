@@ -37,6 +37,8 @@ import {
   generateCollectionLetter,
   escalateCollection,
   legalHandover,
+  createTopUpApplication,
+  createRefinanceApplication,
   type LoanDetail as LoanDetailType,
   type LoanInstallment,
   type LoanTransaction,
@@ -94,7 +96,7 @@ export default function LoanDetail() {
   const [detail, setDetail] = useState<LoanDetailType | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>('overview');
-  const [modal, setModal] = useState<null | 'repay'>(null);
+  const [modal, setModal] = useState<null | 'repay' | 'topup' | 'refinance'>(null);
 
   const refresh = useCallback(async () => {
     if (!id) return;
@@ -204,8 +206,12 @@ export default function LoanDetail() {
       <div className="card" style={{ position: 'sticky', bottom: 0, background: 'var(--surface)', borderTop: '2px solid var(--accent)' }}>
         <div className="card-body" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
           <button className="btn" disabled title="Phase 4">Issue PTP</button>
-          <button className="btn" disabled title="Phase 5">Top-up</button>
-          <button className="btn" disabled title="Phase 5">Refinance</button>
+          {hasPermission('loans:topup') && (
+            <button className="btn" onClick={() => setModal('topup')}>Top-up</button>
+          )}
+          {hasPermission('loans:refinance') && (
+            <button className="btn" onClick={() => setModal('refinance')}>Refinance</button>
+          )}
           {canRestructure && <button className="btn" disabled title="Use the legacy /loans page until the modals are extracted">Reschedule</button>}
           {canRestructure && <button className="btn" disabled title="Use the legacy /loans page until the modals are extracted">Moratorium</button>}
           {canRestructure && <button className="btn" disabled title="Use the legacy /loans page until the modals are extracted">Settlement discount</button>}
@@ -218,6 +224,12 @@ export default function LoanDetail() {
 
       {modal === 'repay' && (
         <RepayModal loan={l} currency={currency} onClose={() => setModal(null)} onPosted={() => { setModal(null); void refresh(); }} />
+      )}
+      {modal === 'topup' && (
+        <TopUpModal loan={l} onClose={() => setModal(null)} onSubmitted={(appID) => { setModal(null); window.location.assign(`/applications/${appID}`); }} />
+      )}
+      {modal === 'refinance' && (
+        <RefinanceModal loan={l} onClose={() => setModal(null)} onSubmitted={(appID) => { setModal(null); window.location.assign(`/applications/${appID}`); }} />
       )}
 
       {/* Transitional notice — most action modals still live in the
@@ -769,4 +781,117 @@ function fmt(v: string | number | undefined): string {
   const n = typeof v === 'number' ? v : parseFloat(v ?? '0');
   if (!isFinite(n)) return String(v ?? '');
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// ─────────────── Top-up / Refinance modals (Phase 5) ───────────────
+
+function TopUpModal({ loan, onClose, onSubmitted }: {
+  loan: LoanDetailType['loan']; onClose: () => void; onSubmitted: (appID: string) => void;
+}) {
+  const [amount, setAmount] = useState('');
+  const [term, setTerm] = useState(String(loan.term_months));
+  const [note, setNote] = useState('');
+  const [rebroadcast, setRebroadcast] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function submit() {
+    setBusy(true); setErr(null);
+    try {
+      const app = await createTopUpApplication({
+        base_loan_id: loan.id,
+        top_up_amount: amount,
+        requested_term_months: parseInt(term, 10),
+        purpose_note: note || undefined,
+        rebroadcast_consent: rebroadcast,
+      });
+      onSubmitted(app.id);
+    } catch (e) { setErr(extractError(e)); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div role="dialog" aria-modal="true" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      <div style={{ background: 'var(--surface)', borderRadius: 8, width: '90%', maxWidth: 480, padding: 20 }}>
+        <h3 style={{ marginTop: 0 }}>Top-up against {loan.loan_no}</h3>
+        <p className="muted tiny">Creates a new loan application. On disbursement, the new loan settles the existing one and the member receives the top-up amount.</p>
+        <label><div className="muted tiny">Top-up amount</div>
+          <input className="input" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
+        </label>
+        <label><div className="muted tiny">New loan term (months)</div>
+          <input className="input" type="number" value={term} onChange={(e) => setTerm(e.target.value)} />
+        </label>
+        <label><div className="muted tiny">Purpose note (optional)</div>
+          <textarea className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+        </label>
+        <label style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+          <input type="checkbox" checked={rebroadcast} onChange={(e) => setRebroadcast(e.target.checked)} />
+          <span className="muted tiny">Rebroadcast to existing guarantors for re-consent</span>
+        </label>
+        {err && <div className="alert alert-error" style={{ marginTop: 8 }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={busy || !amount || !term} onClick={() => void submit()}>
+            {busy ? 'Submitting…' : 'Submit top-up application'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RefinanceModal({ loan, onClose, onSubmitted }: {
+  loan: LoanDetailType['loan']; onClose: () => void; onSubmitted: (appID: string) => void;
+}) {
+  const [otherIDs, setOtherIDs] = useState('');
+  const [term, setTerm] = useState(String(loan.term_months));
+  const [rate, setRate] = useState('');
+  const [note, setNote] = useState('');
+  const [rebroadcast, setRebroadcast] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function submit() {
+    setBusy(true); setErr(null);
+    try {
+      const ids = [loan.id, ...otherIDs.split(',').map(s => s.trim()).filter(Boolean)];
+      const app = await createRefinanceApplication({
+        base_loan_ids: ids,
+        requested_term_months: parseInt(term, 10),
+        requested_interest_rate: rate || undefined,
+        purpose_note: note || undefined,
+        rebroadcast_consent: rebroadcast,
+      });
+      onSubmitted(app.id);
+    } catch (e) { setErr(extractError(e)); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div role="dialog" aria-modal="true" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      <div style={{ background: 'var(--surface)', borderRadius: 8, width: '90%', maxWidth: 520, padding: 20 }}>
+        <h3 style={{ marginTop: 0 }}>Refinance {loan.loan_no}</h3>
+        <p className="muted tiny">Creates a new loan that settles the selected loan(s). Use to reschedule, re-price, or consolidate multiple loans of the same member + product.</p>
+        <label><div className="muted tiny">Consolidate with other loan IDs (optional, comma-separated)</div>
+          <input className="input" value={otherIDs} onChange={(e) => setOtherIDs(e.target.value)} placeholder="loan UUID, loan UUID…" />
+        </label>
+        <label><div className="muted tiny">New term (months)</div>
+          <input className="input" type="number" value={term} onChange={(e) => setTerm(e.target.value)} />
+        </label>
+        <label><div className="muted tiny">New interest rate % (optional — defaults to product rate)</div>
+          <input className="input" value={rate} onChange={(e) => setRate(e.target.value)} />
+        </label>
+        <label><div className="muted tiny">Purpose note (optional)</div>
+          <textarea className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+        </label>
+        <label style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+          <input type="checkbox" checked={rebroadcast} onChange={(e) => setRebroadcast(e.target.checked)} />
+          <span className="muted tiny">Rebroadcast to guarantors for re-consent</span>
+        </label>
+        {err && <div className="alert alert-error" style={{ marginTop: 8 }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={busy || !term} onClick={() => void submit()}>
+            {busy ? 'Submitting…' : 'Submit refinance application'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

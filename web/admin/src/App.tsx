@@ -80,6 +80,7 @@ import MpesaReconciliationPage from './pages/Accounting/MpesaReconciliation';
 import MemberStatementPage from './pages/Members/MemberStatement';
 import ProvisioningPage from './pages/Loans/Provisioning';
 import CollectionsQueuePage from './pages/Loans/CollectionsQueue';
+import CheckoffPage from './pages/Loans/Checkoff';
 import CollectionDesk from './pages/CollectionDesk';
 import CollectionReceipts from './pages/CollectionReceipts';
 
@@ -158,6 +159,7 @@ function Gate() {
   else if (path === '/loans/reports' || path.startsWith('/loans/reports')) page = <LoansReports />;
   else if (path === '/loans/provisioning' || path.startsWith('/loans/provisioning/')) page = <ProvisioningPage />;
   else if (path === '/loans/collections') page = <CollectionsQueuePage />;
+  else if (path === '/loans/checkoff' || path.startsWith('/loans/checkoff/')) page = <CheckoffPage />;
   else if (path === '/loans') page = <LoansDashboard />;
 
   // Legacy paths — redirect for one release so bookmarks survive,

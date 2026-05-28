@@ -204,6 +204,10 @@ func (h *LoanRepaymentHandler) ExecuteSettleTx(
 	if err != nil {
 		return nil, err
 	}
+	// Phase 5 — release BOSA lien when the loan settles.
+	if h.BOSALiens != nil && updated.Status == domain.LoanSettled {
+		_ = h.BOSALiens.ReleaseTx(ctx, tx, updated.ID, makerID)
+	}
 	return &LoanRepayResult{Transaction: *txn, Allocation: *alloc, Loan: *updated, DPD: dpd}, nil
 }
 

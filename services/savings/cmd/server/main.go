@@ -212,6 +212,7 @@ func main() {
 		LoanProducts:          loanProductStore,
 		Applications:          loanAppStore,
 		Guarantees:            loanGuarStore,
+		Loans:                 loanStore, // Phase 5 — topup/refinance need parent loan reads
 		Notifier:              notifyClient,
 		Logger:                logger,
 		WorkflowURL:           cfg.WorkflowURL,
@@ -219,6 +220,7 @@ func main() {
 		SavingsSelfURL:        cfg.SavingsURL,
 		HTTP:                  &http.Client{Timeout: 10 * time.Second},
 	}
+	bosaLienStore := store.NewBOSALienStore(pool.Pool)
 	loanH := &handler.LoanHandler{
 		DB:              pool,
 		Tenants:         tenants,
@@ -236,6 +238,7 @@ func main() {
 		Logger:          logger,
 		Workflow:        workflowclient.New(),
 		SavingsSelfURL:  cfg.SavingsURL,
+		BOSALiens:       bosaLienStore, // Phase 5
 	}
 	loanRepayH := &handler.LoanRepaymentHandler{
 		DB:             pool,
@@ -252,6 +255,7 @@ func main() {
 		Logger:         logger,
 		Workflow:       workflowclient.New(),
 		SavingsSelfURL: cfg.SavingsURL,
+		BOSALiens:      bosaLienStore, // Phase 5 — release on settle
 	}
 	loanCollectH := &handler.LoanCollectionsHandler{
 		DB:             pool,
@@ -310,6 +314,11 @@ func main() {
 		Loans:     loanStore,
 		Posting:   postingClient,
 		Logger:    logger,
+	}
+	checkoffH := &handler.CheckoffHandler{
+		DB:     pool,
+		Loans:  loanStore,
+		Logger: logger,
 	}
 	memberStmtStore := store.NewMemberStatementStore(pool.Pool)
 	memberStmtH := &handler.MemberStatementHandler{
@@ -491,6 +500,7 @@ func main() {
 			DB:             pool,
 			Deposit:        depositH,
 			Approvals:      approvalsStore,
+			BOSALiens:      bosaLienStore, // Phase 5 — refuse exit when lien active
 			Workflow:       workflowclient.New(),
 			SavingsSelfURL: cfg.SavingsURL,
 		},
@@ -524,6 +534,8 @@ func main() {
 		// Loans Phase 4 — collections workflow + dividend offset.
 		LoanCollectionsEvents: collectionsEventsH,
 		DividendOffset:        dividendOffsetH,
+		// Loans Phase 5 — salary check-off batches.
+		Checkoff: checkoffH,
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),

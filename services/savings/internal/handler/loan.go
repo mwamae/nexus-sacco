@@ -54,6 +54,11 @@ type LoanHandler struct {
 
 	Workflow       *workflowclient.Client
 	SavingsSelfURL string
+
+	// Loans Phase 5 — BOSA lien placement on disburse + release on
+	// settle/writeoff. Optional in test main.go variants; the hook
+	// is nil-safe.
+	BOSALiens *store.BOSALienStore
 }
 
 // ─────────── Send offer ───────────

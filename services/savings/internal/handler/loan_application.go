@@ -39,6 +39,7 @@ type LoanApplicationHandler struct {
 	LoanProducts   *store.LoanProductStore
 	Applications   *store.LoanApplicationStore
 	Guarantees     *store.LoanGuaranteeStore
+	Loans          *store.LoanStore // Phase 5 — needed by topup/refinance to read parent loans
 	Notifier       *notifier.Client
 	Logger         *slog.Logger
 
@@ -166,6 +167,12 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 			MonthlyExistingObligations: in.MonthlyExistingObligations,
 			Notes:                      in.Notes,
 			CreatedBy:                  userID,
+		}
+		// Phase 5 — auto-detect insider status by matching the
+		// counterparty against users + roles in identity.
+		if isIns, cat, derr := detectInsiderForCounterpartyTx(r.Context(), tx, in.CounterpartyID); derr == nil && isIns {
+			app.IsInsider = true
+			app.InsiderCategory = &cat
 		}
 		created, err := h.Applications.CreateTx(r.Context(), tx, app)
 		if err != nil {

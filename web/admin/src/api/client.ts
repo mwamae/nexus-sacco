@@ -6953,3 +6953,102 @@ export async function assignLoanToOfficer(loanID: string, officerID: string): Pr
 export async function unassignLoan(loanID: string, reason: string): Promise<void> {
   await api.post(`/v1/loans/${loanID}/collections/unassign`, { reason });
 }
+
+// ─────────── Loans Phase 5 — top-up, refinance, check-off, BOSA liens ───────────
+
+export type TopUpRequest = {
+  base_loan_id: string;
+  top_up_amount: string;
+  requested_term_months: number;
+  purpose_note?: string;
+  rebroadcast_consent?: boolean;
+};
+
+export async function createTopUpApplication(payload: TopUpRequest): Promise<any> {
+  const r = await api.post('/v1/loan-applications/topup', payload);
+  return r.data.data;
+}
+
+export type RefinanceRequest = {
+  base_loan_ids: string[];
+  requested_term_months: number;
+  requested_interest_rate?: string;
+  purpose_note?: string;
+  rebroadcast_consent?: boolean;
+};
+
+export async function createRefinanceApplication(payload: RefinanceRequest): Promise<any> {
+  const r = await api.post('/v1/loan-applications/refinance', payload);
+  return r.data.data;
+}
+
+// ─────────── Salary check-off ───────────
+
+export type CheckoffBatch = {
+  id: string;
+  employer_name: string;
+  period_label: string;
+  upload_filename: string;
+  status: 'draft' | 'validated' | 'posted' | 'partial' | 'failed' | 'cancelled';
+  row_count: number;
+  matched_count: number;
+  unmatched_count: number;
+  posted_amount: string;
+  uploaded_at: string;
+};
+
+export type CheckoffBatchRow = {
+  id: string;
+  row_no: number;
+  member_no_raw: string;
+  amount_raw: string;
+  resolved_member_id?: string | null;
+  resolved_loan_id?: string | null;
+  amount?: string | null;
+  status: 'pending' | 'matched' | 'ambiguous' | 'unmatched' | 'posted' | 'failed' | 'skipped';
+  error_message?: string | null;
+  posted_txn_id?: string | null;
+};
+
+export async function uploadCheckoffBatch(form: FormData): Promise<{ batch_id: string; row_count: number }> {
+  const r = await api.post('/v1/loans/checkoff/batches', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return r.data.data;
+}
+
+export async function listCheckoffBatches(): Promise<{ items: CheckoffBatch[]; total: number }> {
+  const r = await api.get('/v1/loans/checkoff/batches');
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function getCheckoffBatch(id: string): Promise<{ batch: CheckoffBatch; rows: CheckoffBatchRow[] }> {
+  const r = await api.get(`/v1/loans/checkoff/batches/${id}`);
+  return r.data.data;
+}
+
+export async function validateCheckoffBatch(id: string): Promise<any> {
+  const r = await api.post(`/v1/loans/checkoff/batches/${id}/validate`);
+  return r.data.data;
+}
+
+export async function postCheckoffBatch(id: string): Promise<any> {
+  const r = await api.post(`/v1/loans/checkoff/batches/${id}/post`);
+  return r.data.data;
+}
+
+export async function resolveCheckoffRow(batchID: string, rowID: string, payload: { loan_id?: string; skip?: boolean }): Promise<void> {
+  await api.post(`/v1/loans/checkoff/batches/${batchID}/rows/${rowID}/resolve`, payload);
+}
+
+// ─────────── Group loan officers + apportionment ───────────
+
+export async function listGroupOfficers(appID: string): Promise<{ items: any[]; total: number }> {
+  const r = await api.get(`/v1/loan-applications/${appID}/group-officers`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function getGroupApportionment(loanID: string): Promise<{ items: { member_id: string; share_pct: string }[]; total: number }> {
+  const r = await api.get(`/v1/loans/${loanID}/group-apportionment`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}

@@ -37,6 +37,9 @@ type BOSAExitHandler struct {
 
 	Workflow       *workflowclient.Client
 	SavingsSelfURL string
+
+	// Loans Phase 5 — refuse BOSA exit when there's an active lien.
+	BOSALiens *store.BOSALienStore
 }
 
 type bosaExitReq struct {
@@ -79,6 +82,22 @@ func (h *BOSAExitHandler) RequestExit(w http.ResponseWriter, r *http.Request) {
 		// wrong kind.
 		if product.Segment != domain.SegmentBOSA {
 			return httpx.ErrBadRequest("BOSA exit is only valid for BOSA accounts; use /withdraw for FOSA")
+		}
+		// Phase 5 — refuse if there's an active BOSA lien against this
+		// account; surface the blocking loan ids in the message.
+		if h.BOSALiens != nil {
+			liens, lerr := h.BOSALiens.ActiveByBOSAAccountTx(r.Context(), tx, accountID)
+			if lerr != nil {
+				return lerr
+			}
+			if len(liens) > 0 {
+				msg := "BOSA exit blocked by active loan lien(s):"
+				for _, l := range liens {
+					msg += " " + l.LoanID.String()[:8] + "…"
+				}
+				msg += " — settle the loans first."
+				return httpx.ErrConflict(msg)
+			}
 		}
 		memberID := acct.CounterpartyID
 		amount := acct.CurrentBalance

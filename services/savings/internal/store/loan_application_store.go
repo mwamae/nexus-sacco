@@ -39,7 +39,10 @@ const loanAppCols = `
 	approved_at, approved_by, approval_conditions,
 	decline_category, decline_reason,
 	offer_letter_path, offer_sent_at, offer_expires_at, offer_accepted_at,
-	notes, created_at, updated_at, created_by
+	notes, created_at, updated_at, created_by,
+	application_type, parent_loan_id, refinance_source_loan_ids,
+	applicant_kind, borrower_counterparty_id, group_income_source,
+	is_insider, insider_category
 `
 
 func scanApp(row pgx.Row) (*domain.LoanApplication, error) {
@@ -59,6 +62,9 @@ func scanApp(row pgx.Row) (*domain.LoanApplication, error) {
 		&a.DeclineCategory, &a.DeclineReason,
 		&a.OfferLetterPath, &a.OfferSentAt, &a.OfferExpiresAt, &a.OfferAcceptedAt,
 		&a.Notes, &a.CreatedAt, &a.UpdatedAt, &a.CreatedBy,
+		&a.ApplicationType, &a.ParentLoanID, &a.RefinanceSourceLoanIDs,
+		&a.ApplicantKind, &a.BorrowerCounterpartyID, &a.GroupIncomeSource,
+		&a.IsInsider, &a.InsiderCategory,
 	)
 	if err != nil {
 		return nil, err
@@ -76,6 +82,14 @@ func (s *LoanApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in *doma
 	in.ApplicationNo = appNo
 	// Phase D sub-PR 3: in.CounterpartyID is a counterparty.id directly
 	// (the URL contract and the frontend payload both carry counterparty.id).
+	appType := in.ApplicationType
+	if appType == "" {
+		appType = "new"
+	}
+	applicantKind := in.ApplicantKind
+	if applicantKind == "" {
+		applicantKind = "individual"
+	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO loan_applications (
 			tenant_id, application_no, counterparty_id, product_id, status,
@@ -83,14 +97,20 @@ func (s *LoanApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in *doma
 			purpose_category_id, purpose_note, preferred_disbursement_channel,
 			employment_type, employer_name, employer_payroll_contact,
 			monthly_net_income, other_income, monthly_expenses, monthly_existing_obligations,
-			notes, created_by
+			notes, created_by,
+			application_type, parent_loan_id, refinance_source_loan_ids,
+			applicant_kind, borrower_counterparty_id, group_income_source,
+			is_insider, insider_category
 		) VALUES (
 			current_tenant_id(), $1, $2, $3, $4,
 			$5, $6,
 			$7, $8, $9,
 			$10, $11, $12,
 			$13, $14, $15, $16,
-			$17, $18
+			$17, $18,
+			$19, $20, $21,
+			$22, $23, $24,
+			$25, $26
 		)
 		RETURNING `+loanAppCols,
 		in.ApplicationNo, in.CounterpartyID, in.ProductID, string(in.Status),
@@ -99,6 +119,9 @@ func (s *LoanApplicationStore) CreateTx(ctx context.Context, tx pgx.Tx, in *doma
 		in.EmploymentType, in.EmployerName, in.EmployerPayrollContact,
 		in.MonthlyNetIncome, in.OtherIncome, in.MonthlyExpenses, in.MonthlyExistingObligations,
 		in.Notes, in.CreatedBy,
+		appType, in.ParentLoanID, in.RefinanceSourceLoanIDs,
+		applicantKind, in.BorrowerCounterpartyID, in.GroupIncomeSource,
+		in.IsInsider, in.InsiderCategory,
 	)
 	return scanApp(row)
 }
@@ -200,6 +223,9 @@ func (s *LoanApplicationStore) ListTx(ctx context.Context, tx pgx.Tx, f AppListF
 			&it.Application.DeclineCategory, &it.Application.DeclineReason,
 			&it.Application.OfferLetterPath, &it.Application.OfferSentAt, &it.Application.OfferExpiresAt, &it.Application.OfferAcceptedAt,
 			&it.Application.Notes, &it.Application.CreatedAt, &it.Application.UpdatedAt, &it.Application.CreatedBy,
+			&it.Application.ApplicationType, &it.Application.ParentLoanID, &it.Application.RefinanceSourceLoanIDs,
+			&it.Application.ApplicantKind, &it.Application.BorrowerCounterpartyID, &it.Application.GroupIncomeSource,
+			&it.Application.IsInsider, &it.Application.InsiderCategory,
 			&it.MemberNo, &it.MemberName, &it.ProductCode, &it.ProductName,
 		}
 		if err := rows.Scan(dest...); err != nil {

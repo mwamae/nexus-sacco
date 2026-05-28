@@ -75,6 +75,7 @@ export const ROUTES: ReadonlyArray<StaticRoute | DynamicRoute> = [
   { kind: 'dynamic', match: (p) => /^\/loans\/register\/[^/]+/.test(p),
     baseTrail: ['Loans', 'Register'], fallbackSuffix: 'Loan' },
   { kind: 'static', path: '/loans/collections',             trail: ['Loans', 'Collections'] },
+  { kind: 'static', path: '/loans/checkoff',                 trail: ['Loans', 'Salary check-off'] },
   { kind: 'static', path: '/loans/reports',                 trail: ['Loans', 'Reports'] },
   { kind: 'static', path: '/loans/provisioning',            trail: ['Loans', 'Provisioning'] },
   { kind: 'static', path: '/loans/products',                trail: ['Loans', 'Products'] },

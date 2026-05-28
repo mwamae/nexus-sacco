@@ -51,6 +51,10 @@ type LoanRepaymentHandler struct {
 	// wf-routed queueing — same shape as DepositHandler.
 	Workflow       *workflowclient.Client
 	SavingsSelfURL string
+
+	// Loans Phase 5 — release BOSA lien on settle / write-off.
+	// Optional; nil-safe.
+	BOSALiens *store.BOSALienStore
 }
 
 // ─────────── Repay ───────────

@@ -326,6 +326,17 @@ type LoanApplication struct {
 	CreatedAt                   time.Time            `json:"created_at"`
 	UpdatedAt                   time.Time            `json:"updated_at"`
 	CreatedBy                   uuid.UUID            `json:"created_by"`
+
+	// Phase 5 fields. All nullable for backwards compat with apps
+	// predating the migration.
+	ApplicationType         string          `json:"application_type"`               // new | topup | refinance
+	ParentLoanID            *uuid.UUID      `json:"parent_loan_id,omitempty"`
+	RefinanceSourceLoanIDs  []byte          `json:"refinance_source_loan_ids,omitempty"` // jsonb [uuid...]
+	ApplicantKind           string          `json:"applicant_kind"`                 // individual | group
+	BorrowerCounterpartyID  *uuid.UUID      `json:"borrower_counterparty_id,omitempty"`
+	GroupIncomeSource       *string         `json:"group_income_source,omitempty"`
+	IsInsider               bool            `json:"is_insider"`
+	InsiderCategory         *string         `json:"insider_category,omitempty"`
 }
 
 type LoanGuarantee struct {

@@ -65,6 +65,8 @@ type Deps struct {
 	// DividendOffset — Phase 4 dividend offset preview + manual post.
 	// Mounted at /v1/dividends/runs/{run_id}/arrears-offset-*.
 	DividendOffset *DividendOffsetHandler
+	// Checkoff — Phase 5 salary check-off batch upload + validate + post.
+	Checkoff *CheckoffHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -264,6 +266,24 @@ func Routes(d Deps) http.Handler {
 			// ─────────── Loan applications + scoring ───────────
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications", d.LoanApp.List)
 			r.With(middleware.RequirePermission("loans:apply")).Post("/loan-applications", d.LoanApp.Create)
+			// Loans Phase 5 — top-up + refinance.
+			r.With(middleware.RequirePermission("loans:topup")).Post("/loan-applications/topup", d.LoanApp.TopUp)
+			r.With(middleware.RequirePermission("loans:refinance")).Post("/loan-applications/refinance", d.LoanApp.Refinance)
+			// Loans Phase 5 — group (org-as-borrower) applications + officer consents.
+			r.With(middleware.RequirePermission("loans:apply")).Post("/loan-applications/group", d.LoanApp.CreateGroup)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/group-officers", d.LoanApp.ListGroupOfficers)
+			r.With(middleware.RequirePermission("loans:apply")).Post("/loan-applications/{app_id}/group-officers/{consent_id}/respond", d.LoanApp.RespondGroupOfficer)
+			r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/group-apportionment", d.LoanApp.GetGroupApportionment)
+
+			// Loans Phase 5 — salary check-off.
+			if d.Checkoff != nil {
+				r.With(middleware.RequirePermission("loans:checkoff:upload")).Post("/loans/checkoff/batches", d.Checkoff.Upload)
+				r.With(middleware.RequirePermission("loans:checkoff:upload")).Post("/loans/checkoff/batches/{id}/validate", d.Checkoff.Validate)
+				r.With(middleware.RequirePermission("loans:checkoff:upload")).Post("/loans/checkoff/batches/{id}/rows/{row_id}/resolve", d.Checkoff.ResolveRow)
+				r.With(middleware.RequirePermission("loans:checkoff:post")).Post("/loans/checkoff/batches/{id}/post", d.Checkoff.Post)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/checkoff/batches", d.Checkoff.List)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/checkoff/batches/{id}", d.Checkoff.Get)
+			}
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}", d.LoanApp.Get)
 			r.With(middleware.RequirePermission("loans:assess")).Post("/loan-applications/{app_id}/score", d.LoanApp.ReScore)
 			r.With(middleware.RequirePermission("loans:approve")).Post("/loan-applications/{app_id}/approve", d.LoanApp.Approve)

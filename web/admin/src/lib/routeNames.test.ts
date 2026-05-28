@@ -23,6 +23,7 @@ const STATIC_PATHS: string[] = [
   '/deposits',
   '/deposit-products',
   '/loans',
+  '/loans/checkoff',
   '/loan-products',
   '/loan-reports',
   '/collections',
