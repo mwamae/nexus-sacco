@@ -40,7 +40,23 @@ import (
 	"github.com/nexussacco/mpesa/internal/distribution"
 	"github.com/nexussacco/mpesa/internal/store"
 	"github.com/nexussacco/mpesa/internal/workflowclient"
+	"github.com/nexussacco/shared/healthx"
 )
+
+// version is overridden at link time. Reported in worker_heartbeats
+// so the operations dashboard can confirm every worker is on the
+// expected SHA after a rollout.
+var version string
+
+func workerVersion() string {
+	if version != "" {
+		return version
+	}
+	if v := os.Getenv("BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
 
 func main() {
 	once := flag.Bool("once", false, "drain the queue once and exit (handy for cron-style deployments + tests)")
@@ -80,6 +96,15 @@ func main() {
 		// Phase 3.5 plug. applier.ApplyPlanTx matches the
 		// distribution.ApplyFn signature so we wire it in directly.
 		Apply: applier.ApplyPlanTx,
+	}
+
+	// Heartbeat — every 30s upsert worker_heartbeats. Skipped in
+	// -once mode (single-shot cron-style, not a long-lived worker).
+	if !*once {
+		go healthx.RunHeartbeatLoop(
+			ctx, pool.Pool, "distributor", workerVersion(),
+			30*time.Second, nil, logger,
+		)
 	}
 
 	busy := durationMs("MPESA_DISTRIBUTOR_POLL_INTERVAL_MS", 1000)

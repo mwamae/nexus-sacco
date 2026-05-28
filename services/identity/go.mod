@@ -7,8 +7,14 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
+	github.com/nexussacco/shared v0.0.0
 	golang.org/x/crypto v0.51.0
 )
+
+// shared is the umbrella in-tree module (healthx is its first
+// package). Workspace resolves it locally in dev; this replace
+// covers Docker builds where the workspace isn't used.
+replace github.com/nexussacco/shared => ../../shared
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect

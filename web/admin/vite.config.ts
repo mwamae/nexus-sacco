@@ -394,6 +394,15 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        // /v1/finance/* lives on savings — the posting-outbox
+        // viewer + the /v1/finance/health alias the System Health
+        // page polls. Without this entry the calls fall through
+        // to the catchall /api → identity proxy and 404.
+        '/api/v1/finance': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         // Daraja-facing webhook routes — Safaricom refuses URLs that
         // contain "mpesa", so the C2B + B2C webhook endpoints live at
         // /v1/c2b/* and /v1/b2c/* with no /mpesa segment. Proxy them

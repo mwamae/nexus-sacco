@@ -44,8 +44,8 @@ services:
 
   workflow:
     build:
-      context: ./services/workflow
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/workflow/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
@@ -63,8 +63,8 @@ services:
 
   member:
     build:
-      context: ./services/member
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/member/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
@@ -86,8 +86,8 @@ services:
 
   identity:
     build:
-      context: ./services/identity
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/identity/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
@@ -120,8 +120,8 @@ services:
 
   accounting:
     build:
-      context: ./services/accounting
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/accounting/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
@@ -148,8 +148,8 @@ services:
 
   savings:
     build:
-      context: ./services/savings
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/savings/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
@@ -186,8 +186,8 @@ services:
   # on the outbox row prevents double-posting).
   posting-dispatcher:
     build:
-      context: ./services/savings
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/savings/Dockerfile
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/posting-dispatcher"]
     environment:
@@ -206,8 +206,8 @@ services:
 
   mpesa:
     build:
-      context: ./services/mpesa
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/mpesa/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
@@ -235,8 +235,8 @@ services:
   # lease query is what makes them race-free).
   mpesa-distributor:
     build:
-      context: ./services/mpesa
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/mpesa/Dockerfile
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/mpesa-distributor"]
     environment:

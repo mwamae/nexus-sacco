@@ -164,6 +164,7 @@ export const ROUTES: ReadonlyArray<StaticRoute | DynamicRoute> = [
     baseTrail: ['Administration', 'Loan products'], fallbackSuffix: 'Product' },
 
   // ─── Platform (apex host only) ───
+  { kind: 'static', path: '/platform/system-health',        trail: ['Platform', 'System health'] },
   { kind: 'static', path: '/platform/credits',              trail: ['Platform', 'Credits'] },
   { kind: 'dynamic', match: (p) => /^\/platform\/credits\//.test(p),
     baseTrail: ['Platform', 'Credits'], fallbackSuffix: 'Detail' },

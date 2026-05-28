@@ -40,6 +40,10 @@ type Deps struct {
 	Issuer       *auth.TokenIssuer
 	AppDomain    string
 	Logger       *slog.Logger
+
+	// Health is the /healthz handler built on shared/healthx.Builder
+	// in main. Nil → falls back to the trivial {status:ok} response.
+	Health http.HandlerFunc
 }
 
 func Routes(d Deps) http.Handler {
@@ -49,10 +53,14 @@ func Routes(d Deps) http.Handler {
 	r.Use(middleware.Logging(d.Logger))
 	r.Use(middleware.CORS("*"))
 
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	if d.Health != nil {
+		r.Get("/healthz", d.Health)
+	} else {
+		r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		})
+	}
 
 	// Internal service-to-service posting. No JWT — gated by the
 	// shared X-Internal-Token header. Tenant id is passed in the body.

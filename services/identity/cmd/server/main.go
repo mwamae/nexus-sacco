@@ -32,7 +32,17 @@ import (
 	"github.com/nexussacco/identity/internal/handler"
 	"github.com/nexussacco/identity/internal/storage"
 	"github.com/nexussacco/identity/internal/store"
+	"github.com/nexussacco/shared/healthx"
 )
+
+// bootTime is captured at process start so /healthz can report
+// uptime via (now - started_at).
+var bootTime = time.Now().UTC()
+
+// version is overridden at link time. Reported on /healthz so the
+// system-health aggregator can confirm every replica is on the
+// expected SHA after a rollout.
+var version string
 
 const platformTenantSlug = "platform"
 
@@ -171,12 +181,28 @@ func main() {
 		Storage: stor, MaxUpload: cfg.MaxUploadBytes, Logger: logger,
 	}
 	auditH := &handler.AuditHandler{Audit: auditStore, Logger: logger}
+	systemHealthH := &handler.SystemHealthHandler{
+		DB:         pool,
+		Logger:     logger,
+		HTTPClient: &http.Client{Timeout: 1500 * time.Millisecond},
+	}
+
+	healthBuilder := &healthx.Builder{
+		Service:   "identity",
+		Version:   buildVersion(),
+		StartedAt: bootTime,
+		Probes: map[string]healthx.Probe{
+			"database": healthx.DBPingProbe(pool.Pool),
+		},
+	}
 
 	router := handler.Routes(handler.Deps{
 		Auth: authH, Tenant: tenantH, User: userH, RBAC: rbacH, Settings: settingsH,
-		AuditH: auditH,
-		TenantStore: tenantStore, Issuer: issuer,
+		AuditH:       auditH,
+		SystemHealth: systemHealthH,
+		TenantStore:  tenantStore, Issuer: issuer,
 		AppDomain: cfg.AppDomain, Logger: logger,
+		Health: healthBuilder.Handler(500 * time.Millisecond),
 	})
 
 	srv := &http.Server{
@@ -271,6 +297,18 @@ func seedPlatformAdmin(ctx context.Context, pool *db.Pool, cfg *config.Config, l
 		logger.Info("seeded platform super-admin", "id", u.ID, "email", u.Email)
 		return nil
 	})
+}
+
+// buildVersion returns the link-time version, falling back to env
+// BUILD_VERSION, falling back to "dev".
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if v := os.Getenv("BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
 }
 
 func newLogger(level, env string) *slog.Logger {

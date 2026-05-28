@@ -31,6 +31,11 @@ import (
 	"github.com/nexussacco/savings/internal/store"
 )
 
+// bootTime is captured at process start. Reported on /healthz so
+// operators can see process uptime via (now - started_at). Module-level
+// so the value persists across the migrate / snapshot / DPD branches.
+var bootTime = time.Now().UTC()
+
 func main() {
 	migrate := flag.Bool("migrate", false, "run database migrations and exit")
 	runSnapshot := flag.String("run-snapshot", "", "run the deposit daily-balance snapshot job for the named tenant slug (date optional via -snapshot-date)")
@@ -379,7 +384,9 @@ func main() {
 		Outbox:        &handler.PostingOutboxHandler{DB: pool, Outbox: store.NewPostingOutboxStore(pool.Pool)},
 		FeesSummary:   &handler.FeesSummaryHandler{DB: pool, Store: store.NewFeesSummaryStore(pool.Pool)},
 		FinanceHealth: &handler.FinanceHealthHandler{DB: pool, Logger: logger},
-		Health:        &handler.HealthHandler{DB: pool, AccountingURL: cfg.AccountingURL},
+		Health: handler.NewHealthBuilder(
+			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
+		).Handler(500 * time.Millisecond),
 		TenantStore:   tenants,
 		Issuer:        issuer,
 		AppDomain:     cfg.AppDomain,
@@ -418,6 +425,24 @@ func main() {
 		logger.Error("graceful shutdown failed", "err", err)
 	}
 }
+
+// buildVersion returns the version string baked in at build time
+// (-ldflags "-X main.version=…") if set, falling back to env
+// BUILD_VERSION, falling back to "dev". Reported on /healthz so the
+// system-health aggregator can confirm every replica is on the
+// expected SHA after a rollout.
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if v := os.Getenv("BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
+
+// version is overridden at link time. Left unset in dev builds.
+var version string
 
 func newLogger(level, env string) *slog.Logger {
 	var lvl slog.Level

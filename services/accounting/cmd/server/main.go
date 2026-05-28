@@ -31,7 +31,23 @@ import (
 	"github.com/nexussacco/accounting/internal/handler"
 	"github.com/nexussacco/accounting/internal/posting"
 	"github.com/nexussacco/accounting/internal/store"
+	"github.com/nexussacco/shared/healthx"
 )
+
+var (
+	bootTime = time.Now().UTC()
+	version  string
+)
+
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if v := os.Getenv("BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
 
 func main() {
 	migrate := flag.Bool("migrate", false, "run database migrations and exit")
@@ -149,6 +165,14 @@ func main() {
 		Issuer:      issuer,
 		AppDomain:   cfg.AppDomain,
 		Logger:      logger,
+		Health: (&healthx.Builder{
+			Service:   "accounting",
+			Version:   buildVersion(),
+			StartedAt: bootTime,
+			Probes: map[string]healthx.Probe{
+				"database": healthx.DBPingProbe(pool.Pool),
+			},
+		}).Handler(500 * time.Millisecond),
 	})
 
 	// CLI: subledger reconciliation. One-shot mode for ops cron;

@@ -27,7 +27,23 @@ import (
 	"github.com/nexussacco/mpesa/internal/savingsclient"
 	"github.com/nexussacco/mpesa/internal/store"
 	"github.com/nexussacco/mpesa/internal/workflowclient"
+	"github.com/nexussacco/shared/healthx"
 )
+
+var (
+	bootTime = time.Now().UTC()
+	version  string
+)
+
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if v := os.Getenv("BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
 
 func main() {
 	migrate := flag.Bool("migrate", false, "run database migrations and exit")
@@ -137,6 +153,43 @@ func main() {
 
 	issuer := auth.NewIssuer(cfg.JWTSecret, cfg.JWTIssuer)
 
+	healthBuilder := &healthx.Builder{
+		Service:   "mpesa",
+		Version:   buildVersion(),
+		StartedAt: bootTime,
+		Probes: map[string]healthx.Probe{
+			"database": healthx.DBPingProbe(pool.Pool),
+			// Daraja sandbox / production is HTTPS — TCPDialProbe is
+			// the right shape (a /healthz round-trip would cost an
+			// OAuth token and Safaricom rate-limits them).
+			"daraja": healthx.TCPDialProbe(cfg.DarajaBaseURL),
+		},
+		DetailsAndStatus: func(ctx context.Context) (healthx.Status, map[string]any) {
+			// Same probe /readyz uses: degrade when the outbox
+			// dispatcher has stopped draining (oldest > 60s).
+			qctx, qcancel := context.WithTimeout(ctx, 1*time.Second)
+			defer qcancel()
+			var oldest *time.Time
+			if err := pool.QueryRow(qctx, `
+				SELECT MIN(enqueued_at) FROM posting_outbox
+				 WHERE dispatched_at IS NULL
+			`).Scan(&oldest); err != nil {
+				return healthx.StatusDegraded, map[string]any{
+					"outbox_query_error": err.Error(),
+				}
+			}
+			var lag int64
+			if oldest != nil {
+				lag = int64(time.Since(*oldest).Seconds())
+			}
+			details := map[string]any{"posting_outbox_lag_seconds": lag}
+			if lag > 60 {
+				return healthx.StatusDegraded, details
+			}
+			return healthx.StatusOK, details
+		},
+	}
+
 	r := handler.Routes(handler.Deps{
 		Paybill:       paybillH,
 		Webhook:       webhookH,
@@ -148,6 +201,7 @@ func main() {
 		Pool:          pool, // phase 6 — /readyz queries posting_outbox lag
 		AppDomain:     cfg.AppDomain,
 		Logger:        logger,
+		Health:        healthBuilder.Handler(500 * time.Millisecond),
 	})
 
 	srv := &http.Server{

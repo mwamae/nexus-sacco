@@ -28,7 +28,23 @@ import (
 	"github.com/nexussacco/member/internal/notifier"
 	"github.com/nexussacco/member/internal/storage"
 	"github.com/nexussacco/member/internal/store"
+	"github.com/nexussacco/shared/healthx"
 )
+
+var (
+	bootTime = time.Now().UTC()
+	version  string
+)
+
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if v := os.Getenv("BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
 
 func main() {
 	migrate := flag.Bool("migrate", false, "run database migrations and exit")
@@ -165,11 +181,21 @@ func main() {
 		return
 	}
 
+	healthBuilder := &healthx.Builder{
+		Service:   "member",
+		Version:   buildVersion(),
+		StartedAt: bootTime,
+		Probes: map[string]healthx.Probe{
+			"database": healthx.DBPingProbe(pool.Pool),
+		},
+	}
+
 	router := handler.Routes(handler.Deps{
 		Member: memH, Org: orgH, Status: statusH, Applications: appH,
 		Counterparties: cpH,
 		TenantStore:    tenants, Issuer: issuer,
 		AppDomain: cfg.AppDomain, Logger: logger,
+		Health: healthBuilder.Handler(500 * time.Millisecond),
 	})
 
 	srv := &http.Server{

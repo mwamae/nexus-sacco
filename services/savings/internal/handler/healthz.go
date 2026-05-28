@@ -1,111 +1,78 @@
-// /healthz — operational health probe for the savings service.
+// /healthz — operational health probe for the savings service,
+// built on top of the shared healthx.Builder.
 //
-// Reports:
-//   • status                     "ok" | "degraded"
-//   • outbox_pending             count of posting_outbox rows with dispatched_at IS NULL
-//   • outbox_oldest_age_seconds  age of the oldest pending row
-//   • accounting_reachable       TCP-level dial probe (no auth round-trip)
+// What we report:
+//   • database     — pgxpool.Ping
+//   • accounting   — HTTPHealthzProbe on the accounting service
+//   • Details:
+//       outbox_pending             rows in posting_outbox with dispatched_at IS NULL
+//       outbox_oldest_age_seconds  age of the oldest pending row
 //
-// "degraded" fires when outbox_oldest_age_seconds > the threshold
-// (env SAVINGS_HEALTHZ_OUTBOX_LAG_THRESHOLD_S, default 60). That's
-// the visible signal the dispatcher has stopped draining.
+// Self-reported status flips to "degraded" when
+// outbox_oldest_age_seconds exceeds the threshold (env
+// SAVINGS_HEALTHZ_OUTBOX_LAG_THRESHOLD_S, default 60). That's the
+// visible signal the dispatcher has stopped draining.
 //
 // Public — NOT behind auth or tenant scoping. Health checks must
 // always work. The outbox query intentionally runs on the unscoped
-// pool (h.DB.Pool, not h.DB.WithTenantTx) — health is platform-wide.
+// pool (pool.Pool, not WithTenantTx) — health is platform-wide.
 
 package handler
 
 import (
 	"context"
-	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/nexussacco/savings/internal/db"
-	"github.com/nexussacco/savings/internal/httpx"
+	"github.com/nexussacco/shared/healthx"
 )
 
-type HealthHandler struct {
-	DB            *db.Pool
-	AccountingURL string
-	// LagThresholdSec is the cutoff above which status flips to
-	// "degraded". Zero defaults to envOr/60.
-	LagThresholdSec int
+// NewHealthBuilder constructs the per-service Builder used at
+// /healthz (and at /v1/finance/health, the proxied UI-facing
+// alias). The returned Builder is safe to share; its Handler
+// method is the http.HandlerFunc the routes wire in.
+//
+// lagThresholdSec ≤ 0 falls back to env SAVINGS_HEALTHZ_OUTBOX_LAG_THRESHOLD_S
+// (default 60s).
+func NewHealthBuilder(pool *db.Pool, accountingURL, version string, startedAt time.Time, lagThresholdSec int) *healthx.Builder {
+	if lagThresholdSec <= 0 {
+		lagThresholdSec = envIntOr("SAVINGS_HEALTHZ_OUTBOX_LAG_THRESHOLD_S", 60)
+	}
+	return &healthx.Builder{
+		Service:   "savings",
+		Version:   version,
+		StartedAt: startedAt,
+		Probes: map[string]healthx.Probe{
+			"database":   healthx.DBPingProbe(pool.Pool),
+			"accounting": healthx.HTTPHealthzProbe(accountingURL),
+		},
+		DetailsAndStatus: func(ctx context.Context) (healthx.Status, map[string]any) {
+			pending, oldestAge := readOutboxLag(ctx, pool)
+			details := map[string]any{
+				"outbox_pending":             pending,
+				"outbox_oldest_age_seconds":  oldestAge,
+			}
+			if oldestAge > lagThresholdSec {
+				return healthx.StatusDegraded, details
+			}
+			return healthx.StatusOK, details
+		},
+	}
 }
 
-type healthzResponse struct {
-	Status                 string `json:"status"`
-	OutboxPending          int    `json:"outbox_pending"`
-	OutboxOldestAgeSeconds int    `json:"outbox_oldest_age_seconds"`
-	AccountingReachable    bool   `json:"accounting_reachable"`
-}
-
-func (h *HealthHandler) Handle(w http.ResponseWriter, r *http.Request) {
-	var (
-		pending int
-		oldest  *time.Time
-	)
-	// Cheap query — short context so a hung DB doesn't stall LB
-	// rotation.
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
-	_ = h.DB.Pool.QueryRow(ctx, `
+func readOutboxLag(ctx context.Context, pool *db.Pool) (pending, oldestAgeSeconds int) {
+	var oldest *time.Time
+	_ = pool.Pool.QueryRow(ctx, `
 		SELECT count(*), min(enqueued_at)
 		  FROM posting_outbox
 		 WHERE dispatched_at IS NULL
 	`).Scan(&pending, &oldest)
-
-	oldestAge := 0
 	if oldest != nil {
-		oldestAge = int(time.Since(*oldest).Seconds())
+		oldestAgeSeconds = int(time.Since(*oldest).Seconds())
 	}
-	threshold := h.LagThresholdSec
-	if threshold <= 0 {
-		threshold = envIntOr("SAVINGS_HEALTHZ_OUTBOX_LAG_THRESHOLD_S", 60)
-	}
-	status := "ok"
-	if oldestAge > threshold {
-		status = "degraded"
-	}
-	accountingOK := canDial(h.AccountingURL, 500*time.Millisecond)
-	httpx.OK(w, healthzResponse{
-		Status:                 status,
-		OutboxPending:          pending,
-		OutboxOldestAgeSeconds: oldestAge,
-		AccountingReachable:    accountingOK,
-	})
-}
-
-// canDial does a TCP-level connect to the host:port from the URL.
-// Doesn't auth or HTTP-round-trip — health checks should be cheap
-// and not depend on the upstream's full surface working.
-func canDial(rawURL string, timeout time.Duration) bool {
-	if rawURL == "" {
-		return false
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
-		return false
-	}
-	host := u.Host
-	if u.Port() == "" {
-		switch u.Scheme {
-		case "https":
-			host += ":443"
-		default:
-			host += ":80"
-		}
-	}
-	conn, err := net.DialTimeout("tcp", host, timeout)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
+	return pending, oldestAgeSeconds
 }
 
 func envIntOr(key string, def int) int {

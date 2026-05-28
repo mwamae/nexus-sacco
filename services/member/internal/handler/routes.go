@@ -21,6 +21,10 @@ type Deps struct {
 	Issuer       *auth.TokenIssuer
 	AppDomain    string
 	Logger       *slog.Logger
+
+	// Health is the /healthz handler built on shared/healthx.Builder
+	// in main. Nil → falls back to the trivial {status:ok} response.
+	Health http.HandlerFunc
 }
 
 func Routes(d Deps) http.Handler {
@@ -31,10 +35,14 @@ func Routes(d Deps) http.Handler {
 	r.Use(middleware.CORS("*"))
 	r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
 
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	if d.Health != nil {
+		r.Get("/healthz", d.Health)
+	} else {
+		r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		})
+	}
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Group(func(r chi.Router) {

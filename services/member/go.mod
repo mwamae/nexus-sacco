@@ -8,6 +8,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/nexussacco/finance v0.0.0
+	github.com/nexussacco/shared v0.0.0
 	github.com/shopspring/decimal v1.4.0
 )
 
@@ -16,6 +17,10 @@ require (
 // replace inside the Docker build context. Same pattern services/mpesa
 // uses for the same dep.
 replace github.com/nexussacco/finance => ../finance
+
+// shared is the umbrella in-tree module (healthx is its first
+// package). Same resolution pattern as finance above.
+replace github.com/nexussacco/shared => ../../shared
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect

@@ -34,6 +34,11 @@ type Deps struct {
 	Pool      *db.Pool
 	AppDomain string
 	Logger    *slog.Logger
+
+	// Health is the /healthz handler built on shared/healthx.Builder
+	// in main. Nil → falls back to the historical trivial response
+	// so unit tests that don't wire it keep working.
+	Health http.HandlerFunc
 }
 
 func Routes(d Deps) http.Handler {
@@ -43,10 +48,14 @@ func Routes(d Deps) http.Handler {
 	r.Use(middleware.Logging(d.Logger))
 	r.Use(middleware.CORS("*"))
 
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok","service":"mpesa"}`))
-	})
+	if d.Health != nil {
+		r.Get("/healthz", d.Health)
+	} else {
+		r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok","service":"mpesa"}`))
+		})
+	}
 
 	// Phase 6 — Prometheus metrics. Public + unauthenticated by
 	// convention (most observability stacks scrape over a private

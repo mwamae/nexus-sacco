@@ -33,8 +33,11 @@ type Deps struct {
 	Outbox        *PostingOutboxHandler
 	FeesSummary   *FeesSummaryHandler
 	FinanceHealth *FinanceHealthHandler
-	Health        *HealthHandler // /healthz — outbox lag + accounting reachable
-	TenantStore   *store.TenantStore
+	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
+	// in main. Falls back to a trivial {status:ok} when nil (early-boot
+	// tests + the FinanceHealth-only main.go variants).
+	Health      http.HandlerFunc
+	TenantStore *store.TenantStore
 	Issuer      *auth.TokenIssuer
 	AppDomain   string
 	Logger      *slog.Logger
@@ -48,11 +51,18 @@ func Routes(d Deps) http.Handler {
 	r.Use(middleware.CORS("*"))
 	r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
 
-	// /healthz — outbox lag + accounting-reachable probe. Falls back
-	// to the trivial {status:ok} when the HealthHandler isn't wired
-	// (early-boot tests + the FinanceHealth-only main.go variants).
+	// /healthz — DB + accounting probes + outbox-lag self-report,
+	// built on the shared healthx.Builder. Falls back to the trivial
+	// {status:ok} when the Builder isn't wired (early-boot tests +
+	// the FinanceHealth-only main.go variants).
 	if d.Health != nil {
-		r.Get("/healthz", d.Health.Handle)
+		r.Get("/healthz", d.Health)
+		// /v1/finance/health — same payload exposed under the
+		// /v1/finance/* tree so the admin UI's vite proxy can route
+		// it through the existing per-prefix entries. Plain /healthz
+		// stays as the container/LB-facing probe; this is the
+		// UI-facing alias.
+		r.Get("/v1/finance/health", d.Health)
 	} else {
 		r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")

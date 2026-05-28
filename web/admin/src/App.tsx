@@ -1,4 +1,5 @@
 import { AuthProvider, useAuth } from './auth/AuthContext';
+import { isPlatformHost } from './auth/tenant';
 import AppShell from './components/AppShell';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Tweaks } from './components/Tweaks';
@@ -63,7 +64,7 @@ import BudgetsPage from './pages/Accounting/Budgets';
 import BudgetDetailPage from './pages/Accounting/BudgetDetail';
 import BudgetVariancePage from './pages/Accounting/BudgetVariance';
 import SASRAReturnPage from './pages/Accounting/SASRAReturn';
-import SystemHealthPage from './pages/Accounting/SystemHealth';
+import PlatformSystemHealthPage from './pages/Platform/SystemHealth';
 import FinanceDashboardPage from './pages/Accounting/FinanceDashboard';
 import MpesaReconciliationPage from './pages/Accounting/MpesaReconciliation';
 import MemberStatementPage from './pages/Members/MemberStatement';
@@ -171,7 +172,15 @@ function Gate() {
   else if (path.match(/^\/budgets\/[^/]+\/variance$/)) page = <BudgetVariancePage />;
   else if (path.startsWith('/budgets/')) page = <BudgetDetailPage />;
   else if (path === '/accounting/sasra-return') page = <SASRAReturnPage />;
-  else if (path === '/accounting/system-health') page = <SystemHealthPage />;
+  // /platform/system-health — platform-admin-only. On a tenant
+  // subdomain we 404 here rather than mount the page and let the
+  // backend's 403 surface; cleaner UX since the link is also hidden
+  // from the tenant-side nav.
+  else if (path === '/platform/system-health') {
+    page = isPlatformHost()
+      ? <PlatformSystemHealthPage />
+      : <Dashboard />;
+  }
   else if (path === '/accounting/dashboard') page = <FinanceDashboardPage />;
   else if (path === '/accounting/mpesa-reconciliation') page = <MpesaReconciliationPage />;
   else if (path === '/provisioning' || path.startsWith('/provisioning/')) page = <ProvisioningPage />;

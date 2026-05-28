@@ -44,7 +44,23 @@ import (
 
 	"github.com/nexussacco/savings/internal/config"
 	"github.com/nexussacco/savings/internal/posting"
+	"github.com/nexussacco/shared/healthx"
 )
+
+// version is overridden at link time. Reported in worker_heartbeats
+// so the system-health dashboard can confirm every worker is on the
+// expected SHA after a rollout.
+var version string
+
+func workerVersion() string {
+	if version != "" {
+		return version
+	}
+	if v := os.Getenv("BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
 
 const (
 	pollInterval    = 1 * time.Second
@@ -113,6 +129,18 @@ func main() {
 	}
 	if postingClient.DryRun {
 		logger.Warn("posting-dispatcher: DRY-RUN mode — outbox rows will NOT be replayed. SAVINGS_ALLOW_NO_ACCOUNTING is set.")
+	}
+
+	// Heartbeat — every 30s upsert worker_heartbeats. Goroutine; the
+	// signal-aware ctx kills it on shutdown. Skipped in -once mode
+	// because that's a single-shot cron-style run, not a long-lived
+	// worker the dashboard would expect to see a fresh heartbeat
+	// from.
+	if !*once {
+		go healthx.RunHeartbeatLoop(
+			ctx, pool, "posting-dispatcher", workerVersion(),
+			30*time.Second, nil, logger,
+		)
 	}
 
 	// Catchup mode — backlog drain at 5/sec, exits when pending=0.

@@ -30,7 +30,23 @@ import (
 	"github.com/nexussacco/notification/internal/pdf"
 	"github.com/nexussacco/notification/internal/store"
 	"github.com/nexussacco/notification/internal/worker"
+	"github.com/nexussacco/shared/healthx"
 )
+
+var (
+	bootTime = time.Now().UTC()
+	version  string
+)
+
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if v := os.Getenv("BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
 
 func main() {
 	migrate := flag.Bool("migrate", false, "run database migrations and exit")
@@ -233,6 +249,15 @@ func main() {
 		Logger:    logger,
 	}
 
+	healthBuilder := &healthx.Builder{
+		Service:   "notification",
+		Version:   buildVersion(),
+		StartedAt: bootTime,
+		Probes: map[string]healthx.Probe{
+			"database": healthx.DBPingProbe(pool.Pool),
+		},
+	}
+
 	router := handler.Routes(handler.Deps{
 		Notify:           notifyH,
 		PlatformDrivers:  platformDriversH,
@@ -249,6 +274,7 @@ func main() {
 		Issuer:           issuer,
 		AppDomain:        cfg.AppDomain,
 		Logger:           logger,
+		Health:           healthBuilder.Handler(500 * time.Millisecond),
 	})
 
 	// Workers — both drain their channel-specific queues continuously,

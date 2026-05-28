@@ -96,7 +96,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
         { href: '/fixed-assets',                 label: 'Fixed assets',      icon: 'bank',  show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/budgets',                      label: 'Budgets & variance', icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/accounting/sasra-return',      label: 'SASRA return',      icon: 'chart', show: !onPlatform && hasPermission('tenant:settings:view') },
-        { href: '/accounting/system-health',     label: 'System health',     icon: 'check', show: !onPlatform && hasPermission('tenant:settings:view') },
       ],
     },
     {
@@ -126,9 +125,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
     groups.push({
       section: 'Platform',
       items: [
-        // Single entry — Tenants list, credit operations, and shared
-        // driver configuration are all tabs within the dashboard.
+        // Tenants list, credit operations, and shared driver
+        // configuration are tabs within the dashboard.
         { href: '/', label: 'Tenants & credits', icon: 'building', show: true },
+        { href: '/platform/system-health', label: 'System health', icon: 'check', show: true },
       ],
     });
   }

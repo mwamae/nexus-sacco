@@ -13,9 +13,13 @@
 go 1.26.3
 
 use (
+	./services/accounting
 	./services/finance
 	./services/identity
 	./services/member
 	./services/mpesa
+	./services/notification
 	./services/savings
+	./services/workflow
+	./shared
 )

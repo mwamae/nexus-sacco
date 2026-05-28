@@ -8,6 +8,7 @@ import {
 import SecurityCard from '../components/SecurityCard';
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
+import { PlatformStatusBadge } from '../components/PlatformStatusBadge';
 import { roleLabel } from '../lib/roleLabels';
 
 export default function TenantDashboard() {
@@ -96,6 +97,9 @@ export default function TenantDashboard() {
           <div className="page-sub">
             <RoleStrip roles={roles} canManage={hasPermission('roles:view')} />
           </div>
+        </div>
+        <div>
+          <PlatformStatusBadge />
         </div>
       </div>
 

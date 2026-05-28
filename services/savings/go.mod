@@ -7,8 +7,15 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
+	github.com/nexussacco/shared v0.0.0
 	github.com/shopspring/decimal v1.4.0
 )
+
+// shared is the umbrella in-tree module holding cross-service Go
+// code (healthx, future telemetry/validation helpers). Resolves via
+// the workspace in dev (go.work `use ./shared`) and via this
+// replace inside the Docker build context.
+replace github.com/nexussacco/shared => ../../shared
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect

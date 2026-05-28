@@ -38,7 +38,23 @@ import (
 	"github.com/nexussacco/mpesa/internal/db"
 	"github.com/nexussacco/mpesa/internal/domain"
 	"github.com/nexussacco/mpesa/internal/store"
+	"github.com/nexussacco/shared/healthx"
 )
+
+// version is overridden at link time. Reported in worker_heartbeats
+// so the operations dashboard can confirm every worker is on the
+// expected SHA after a rollout.
+var version string
+
+func workerVersion() string {
+	if version != "" {
+		return version
+	}
+	if v := os.Getenv("BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
 
 func main() {
 	once := flag.Bool("once", false, "drain the queue once and exit")
@@ -120,6 +136,15 @@ func main() {
 		"worker_id", workerID, "env", cfg.Env, "once", *once,
 		"rate_limit_per_min", d.rateLimitPerMin,
 		"kms_active_key_id", cfg.KMSMasterKeyID)
+
+	// Heartbeat — every 30s upsert worker_heartbeats. Skipped in
+	// -once mode (single-shot cron-style, not a long-lived worker).
+	if !*once {
+		go healthx.RunHeartbeatLoop(
+			ctx, pool.Pool, "b2c-dispatcher", workerVersion(),
+			30*time.Second, nil, logger,
+		)
+	}
 
 	busy := durationMs("MPESA_B2C_POLL_INTERVAL_MS", 1000)
 	idle := durationMs("MPESA_B2C_IDLE_INTERVAL_MS", 5000)

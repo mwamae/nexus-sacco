@@ -14,16 +14,21 @@ import (
 )
 
 type Deps struct {
-	Auth        *AuthHandler
-	Tenant      *TenantHandler
-	User        *UserHandler
-	RBAC        *RBACHandler
-	Settings    *SettingsHandler
-	AuditH      *AuditHandler
-	TenantStore *store.TenantStore
-	Issuer      *auth.TokenIssuer
-	AppDomain   string
-	Logger      *slog.Logger
+	Auth         *AuthHandler
+	Tenant       *TenantHandler
+	User         *UserHandler
+	RBAC         *RBACHandler
+	Settings     *SettingsHandler
+	AuditH       *AuditHandler
+	SystemHealth *SystemHealthHandler
+	TenantStore  *store.TenantStore
+	Issuer       *auth.TokenIssuer
+	AppDomain    string
+	Logger       *slog.Logger
+
+	// Health is the /healthz handler built on shared/healthx.Builder
+	// in main. Nil → falls back to the trivial {status:ok} string.
+	Health http.HandlerFunc
 }
 
 func Routes(d Deps) http.Handler {
@@ -36,11 +41,17 @@ func Routes(d Deps) http.Handler {
 	r.Use(middleware.CORS("*"))
 	r.Use(middleware.ResolveTenant(d.TenantStore, d.AppDomain))
 
-	// Health
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	// /healthz — shared healthx envelope (DB ping + version +
+	// started_at). Falls back to the historical trivial response
+	// when not wired (mostly bare-handler unit tests).
+	if d.Health != nil {
+		r.Get("/healthz", d.Health)
+	} else {
+		r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		})
+	}
 
 	r.Route("/v1", func(r chi.Router) {
 
@@ -87,6 +98,17 @@ func Routes(d Deps) http.Handler {
 			// their own staff the same way tenant owners manage theirs.
 			r.With(middleware.RequirePermission("roles:view")).Get("/permissions", d.RBAC.ListPermissions)
 			r.With(middleware.RequirePermission("audit:view")).Get("/audit/by-target/{kind}/{id}", d.AuditH.ByTarget)
+
+			// /v1/platform-status — slim read-only summary that any
+			// authenticated user (tenant staff included) can poll to
+			// learn whether the platform is operational. Returns
+			// {overall_status, checked_at, message} only; no service
+			// internals leak. The full aggregator moved to
+			// /v1/platform/system-health under the RequirePlatform
+			// group below.
+			if d.SystemHealth != nil {
+				r.Get("/platform-status", d.SystemHealth.GetForTenant)
+			}
 			r.With(middleware.RequirePermission("roles:view")).Get("/roles", d.RBAC.ListRoles)
 			r.With(middleware.RequirePermission("roles:view")).Get("/roles/{id}", d.RBAC.GetRole)
 			r.With(middleware.RequirePermission("roles:edit")).Post("/roles", d.RBAC.CreateRole)
@@ -105,6 +127,16 @@ func Routes(d Deps) http.Handler {
 			// Platform-scoped routes
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequirePlatform)
+
+				// System Health aggregator — full fan-out across every
+				// service's /healthz + worker_heartbeats + infrastructure.
+				// Platform-only because service health is platform-wide;
+				// tenants see the slim /v1/platform-status instead.
+				if d.SystemHealth != nil {
+					r.With(middleware.RequirePermission("platform:operations:view")).
+						Get("/platform/system-health", d.SystemHealth.Get)
+				}
+
 				r.Get("/platform/tenants", d.Tenant.List)
 				r.Post("/platform/tenants", d.Tenant.Create)
 				r.Get("/platform/tenants/{id}", d.Tenant.Get)

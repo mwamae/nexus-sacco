@@ -1,4 +1,8 @@
-# Multi-stage build for the mpesa service. Mirrors services/savings/Dockerfile.
+# Multi-stage build for the mpesa service.
+#
+# Build context: repo root. docker-compose.yml sets
+#   context: .
+#   dockerfile: services/mpesa/Dockerfile
 #
 # Produces two binaries:
 #   /usr/local/bin/mpesa             — HTTP service (cmd/server)
@@ -10,10 +14,12 @@ FROM golang:1.26-alpine AS build
 WORKDIR /src
 ENV CGO_ENABLED=0 GOFLAGS=-mod=readonly
 
-COPY go.mod go.sum ./
-RUN go mod download
+COPY shared/             ./shared/
+COPY services/finance/   ./services/finance/
+COPY services/mpesa/     ./services/mpesa/
 
-COPY . .
+WORKDIR /src/services/mpesa
+RUN go mod download
 RUN go build -ldflags="-s -w" -o /out/mpesa             ./cmd/server && \
     go build -ldflags="-s -w" -o /out/mpesa-distributor ./cmd/distributor
 
