@@ -433,6 +433,13 @@ func (h *LoanCollectionsHandler) Reschedule(w http.ResponseWriter, r *http.Reque
 				SubjectLoanID:   &loanID,
 				Payload:         payload,
 				MakerUserID:     userID,
+				Narration:       in.Reason,
+				ContextExtras: map[string]any{
+					"loan_no":          loan.LoanNo,
+					"new_term_months":  in.NewTermMonths,
+					"new_first_due":    in.NewFirstDueDate,
+					"reason":           in.Reason,
+				},
 			})
 			if qerr != nil {
 				return qerr
@@ -511,6 +518,13 @@ func (h *LoanCollectionsHandler) Moratorium(w http.ResponseWriter, r *http.Reque
 				SubjectLoanID:   &loanID,
 				Payload:         payload,
 				MakerUserID:     userID,
+				Narration:       in.Reason,
+				ContextExtras: map[string]any{
+					"loan_no":          loan.LoanNo,
+					"moratorium_months": in.MoratoriumMonths,
+					"suspend_interest":  in.SuspendInterest,
+					"reason":            in.Reason,
+				},
 			})
 			if qerr != nil {
 				return qerr
@@ -590,6 +604,11 @@ func (h *LoanCollectionsHandler) SettlementDiscount(w http.ResponseWriter, r *ht
 				Payload:         payload,
 				MakerUserID:     userID,
 				SummarySuffix:   " — " + amount.StringFixed(2),
+				Narration:       in.Reason,
+				ContextExtras: map[string]any{
+					"loan_no": loan.LoanNo,
+					"reason":  in.Reason,
+				},
 			})
 			if qerr != nil {
 				return qerr

@@ -441,6 +441,10 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 				Payload:         payload,
 				MakerUserID:     userID,
 				SummarySuffix:   " — " + amount.StringFixed(2),
+				Channel:         string(in.PaymentChannel),
+				ChannelRef:      in.PaymentRef,
+				Narration:       in.Narration,
+				ContextExtras:   map[string]any{"shares": in.Shares},
 			})
 			if qerr != nil {
 				return qerr
@@ -679,6 +683,11 @@ func (h *ShareHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 				Amount:          &amount,
 				Payload:         payload,
 				MakerUserID:     userID,
+				ContextExtras: map[string]any{
+					"shares":         in.Shares,
+					"to_member_id":   payload.ToMemberID.String(),
+					"from_member_id": payload.FromMemberID.String(),
+				},
 			})
 			if qerr != nil {
 				return qerr
@@ -999,6 +1008,10 @@ func (h *ShareHandler) PlaceLien(w http.ResponseWriter, r *http.Request) {
 				SubjectMemberID: &m,
 				Payload:         payload,
 				MakerUserID:     userID,
+				ContextExtras: map[string]any{
+					"shares": in.Shares,
+					"reason": in.Reason,
+				},
 			})
 			if qerr != nil {
 				return qerr
@@ -1123,6 +1136,10 @@ func (h *ShareHandler) BonusIssue(w http.ResponseWriter, r *http.Request) {
 				SubjectID:   tid,
 				Payload:     payload,
 				MakerUserID: userID,
+				ContextExtras: map[string]any{
+					"pct_of_holding": in.PctOfHolding.String(),
+					"reason":         in.Reason,
+				},
 			})
 			if qerr != nil {
 				return qerr

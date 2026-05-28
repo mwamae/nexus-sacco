@@ -158,6 +158,10 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 				Payload:         payload,
 				MakerUserID:     userID,
 				SummarySuffix:   " — " + amount.StringFixed(2),
+				Channel:         in.Channel,
+				ChannelRef:      in.ChannelRef,
+				Narration:       in.Narration,
+				ContextExtras:   map[string]any{"loan_no": loan.LoanNo},
 			})
 			if qerr != nil {
 				return qerr
@@ -503,6 +507,9 @@ func (h *LoanRepaymentHandler) Settle(w http.ResponseWriter, r *http.Request) {
 				Payload:         payload,
 				MakerUserID:     userID,
 				SummarySuffix:   " — payoff " + payoff.StringFixed(2),
+				Channel:         in.Channel,
+				ChannelRef:      in.ChannelRef,
+				ContextExtras:   map[string]any{"loan_no": loan.LoanNo},
 			})
 			if qerr != nil {
 				return qerr
@@ -579,6 +586,10 @@ func (h *LoanRepaymentHandler) Reverse(w http.ResponseWriter, r *http.Request) {
 				Payload:       payload,
 				MakerUserID:   userID,
 				SummarySuffix: " — " + amt.StringFixed(2),
+				ContextExtras: map[string]any{
+					"original_txn_no": orig.TxnNo,
+					"reason":          in.Reason,
+				},
 			})
 			if qerr != nil {
 				return qerr

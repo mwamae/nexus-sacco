@@ -66,6 +66,37 @@ type QueueApprovalInput struct {
 	// SummarySuffix is appended to Title for the wf instance summary
 	// (e.g. " — 1,500.00"). Optional; empty means no suffix.
 	SummarySuffix string
+
+	// Channel + ChannelRef are lifted into the wf context as flat
+	// top-level keys so the Approvals Inbox SubjectMiniCard can render
+	// "Channel: mpesa · Reference: TX12345" without having to know how
+	// to deeply unpack each kind's Payload struct. Pass the M-PESA
+	// receipt number / bank ref / cheque number here — same value the
+	// approver needs to verify the money actually arrived.
+	//
+	// Examples per kind:
+	//   cash_deposit          — DepositPayload.Channel + .ChannelRef
+	//   cash_withdrawal       — WithdrawalPayload.Channel + .ChannelRef
+	//   share_purchase        — SharePurchasePayload.PaymentChannel + .PaymentRef
+	//   loan_repayment        — LoanRepaymentPayload.Channel + .ChannelRef
+	//   loan_settle           — LoanSettlePayload.Channel + .ChannelRef
+	//
+	// Empty values are skipped (the inbox just omits the row).
+	Channel    string
+	ChannelRef string
+
+	// Narration travels with most payment kinds; the inbox surfaces
+	// it under "Narration" in the mini card so the approver sees the
+	// teller-entered note without opening the source page.
+	Narration string
+
+	// ContextExtras is a per-kind escape hatch. Anything in here is
+	// merged into the wf context at the top level (alongside payload,
+	// amount, channel, channel_ref, narration). Use it for kind-
+	// specific display fields the SubjectMiniCard knows how to read
+	// (e.g. share_purchase passes {"shares": 10} so the card can
+	// show the share count).
+	ContextExtras map[string]any
 }
 
 // queueApproval performs the wf-vs-legacy branch. Returns the synthetic
@@ -103,12 +134,39 @@ func queueApproval(
 			summary = in.Title + in.SummarySuffix
 		}
 
+		// Build the wf context. "payload" stays nested so the executor
+		// (RunDepositTx etc) can unmarshal it as the typed payload
+		// struct it owns. The display-relevant keys are lifted to the
+		// top level so the Inbox SubjectMiniCard can render them
+		// directly — it reads ctx.counterparty_id / amount / channel /
+		// channel_ref / narration.
+		wfCtx := map[string]any{"payload": in.Payload}
+		if in.Amount != nil {
+			wfCtx["amount"] = in.Amount.String()
+		}
+		if in.SubjectMemberID != nil {
+			// Inbox MemberRef resolves the member name from this id.
+			wfCtx["counterparty_id"] = in.SubjectMemberID.String()
+		}
+		if in.Channel != "" {
+			wfCtx["channel"] = in.Channel
+		}
+		if in.ChannelRef != "" {
+			wfCtx["channel_ref"] = in.ChannelRef
+		}
+		if in.Narration != "" {
+			wfCtx["narration"] = in.Narration
+		}
+		for k, v := range in.ContextExtras {
+			wfCtx[k] = v
+		}
+
 		instanceID, err := deps.Workflow.CreateInstanceTx(ctx, tx, workflowclient.CreateInstanceInput{
 			TenantID:    in.TenantID,
 			ProcessKind: processKind,
 			SubjectKind: SubjectKindFor(in.Kind),
 			SubjectID:   subjectID,
-			Context:     map[string]any{"payload": in.Payload},
+			Context:     wfCtx,
 			Summary:     summary,
 			SourceURL:   SourceURLFor(in.Kind, subjectID),
 			CallbackURL: deps.SavingsSelfURL + "/internal/v1/workflow-terminal-action",

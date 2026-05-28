@@ -286,6 +286,8 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 				Payload:         payload,
 				MakerUserID:     userID,
 				SummarySuffix:   " — " + amount.StringFixed(2),
+				Channel:         payload.Channel,
+				ContextExtras:   map[string]any{"loan_no": loan.LoanNo},
 			})
 			if qerr != nil {
 				return qerr

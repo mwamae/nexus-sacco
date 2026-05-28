@@ -100,6 +100,11 @@ func (h *BOSAExitHandler) RequestExit(w http.ResponseWriter, r *http.Request) {
 			Amount:           &amount,
 			Payload:          map[string]any{"account_id": accountID, "reason": reason, "maker_note": reason},
 			MakerUserID:      userID,
+			Narration:        reason,
+			ContextExtras: map[string]any{
+				"account_no": acct.AccountNo,
+				"reason":     reason,
+			},
 		})
 		if qerr != nil {
 			return qerr

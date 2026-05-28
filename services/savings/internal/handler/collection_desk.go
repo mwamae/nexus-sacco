@@ -445,6 +445,14 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 				Payload:         payload,
 				MakerUserID:     userID,
 				SummarySuffix:   " — " + amt.StringFixed(2),
+				Channel:         string(in.Channel),
+				ChannelRef:      in.ChannelRef,
+				Narration:       derefString(line.Narration),
+				ContextExtras: map[string]any{
+					"receipt_serial": r2.Serial,
+					"receipt_line_no": line.LineNo,
+					"line_kind":      string(line.Kind),
+				},
 			})
 			if qerr != nil {
 				return qerr

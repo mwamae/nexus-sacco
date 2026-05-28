@@ -200,6 +200,11 @@ func (h *LoanReportsHandler) WriteOff(w http.ResponseWriter, r *http.Request) {
 				Payload:         payload,
 				MakerUserID:     userID,
 				SummarySuffix:   " — " + amt.StringFixed(2),
+				Narration:       in.Reason,
+				ContextExtras: map[string]any{
+					"loan_no": loan.LoanNo,
+					"reason":  in.Reason,
+				},
 			})
 			if qerr != nil {
 				return qerr

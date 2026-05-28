@@ -683,12 +683,18 @@ function SubjectMiniCard({ instance }: { instance: WFInstance }) {
   let body: ReactNode = null;
   switch (family) {
     case 'cash':
+      // Money-proof fields the approver needs to verify before sign-off.
+      // "Reference" is the M-PESA receipt / bank transfer ref / cheque
+      // number — the single most important field on the card.
       body = (
         <MiniGrid items={[
           ['Member', str(ctx['counterparty_id']) ? <MemberRef counterpartyId={str(ctx['counterparty_id']) ?? undefined} /> : null],
+          ['Account no', str(ctx['account_no'])],
           ['Amount', money(ctx['amount'])],
           ['Channel', str(ctx['channel'])],
           ['Reference', str(ctx['channel_ref'])],
+          ['Shares', str(ctx['shares'])],
+          ['Narration', str(ctx['narration'])],
         ]} />
       );
       break;
@@ -696,10 +702,16 @@ function SubjectMiniCard({ instance }: { instance: WFInstance }) {
       body = (
         <MiniGrid items={[
           ['Loan / App', str(ctx['loan_no'] ?? ctx['application_no'])],
+          ['Member', str(ctx['counterparty_id']) ? <MemberRef counterpartyId={str(ctx['counterparty_id']) ?? undefined} /> : null],
+          ['Amount', money(ctx['amount'])],
+          ['Channel', str(ctx['channel'])],
+          ['Reference', str(ctx['channel_ref'])],
           ['Requested', money(ctx['requested_amount'])],
           ['Term (months)', str(ctx['requested_term'])],
           ['Credit score', str(ctx['credit_score'])],
           ['DTI', str(ctx['dti_ratio'])],
+          ['Reason', str(ctx['reason'])],
+          ['Narration', str(ctx['narration'])],
         ]} />
       );
       break;

@@ -633,6 +633,12 @@ func (h *DepositHandler) executeDepositInlineTx(
 			Payload:          payload,
 			MakerUserID:      userID,
 			SummarySuffix:    " — " + amount.StringFixed(2),
+			Channel:          string(payload.Channel),
+			ChannelRef:       payload.ChannelRef,
+			Narration:        payload.Narration,
+			ContextExtras: map[string]any{
+				"account_no": acct.AccountNo,
+			},
 		})
 		if qerr != nil {
 			return nil, nil, nil, qerr
@@ -770,6 +776,13 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 				Payload:          payload,
 				MakerUserID:      userID,
 				SummarySuffix:    " — " + amount.StringFixed(2),
+				Channel:          string(payload.Channel),
+				ChannelRef:       payload.ChannelRef,
+				Narration:        payload.Narration,
+				ContextExtras: map[string]any{
+					"account_no": acct.AccountNo,
+					"reason":     payload.Reason,
+				},
 			})
 			if qerr != nil {
 				return qerr
@@ -1165,6 +1178,11 @@ func (h *DepositHandler) TransferBetweenOwn(w http.ResponseWriter, r *http.Reque
 				Payload:          payload,
 				MakerUserID:      userID,
 				SummarySuffix:    " — " + amount.StringFixed(2),
+				Narration:        payload.Narration,
+				ContextExtras: map[string]any{
+					"from_account_no": fromAcct.AccountNo,
+					"to_account_id":   payload.ToAccountID.String(),
+				},
 			})
 			if qerr != nil {
 				return qerr

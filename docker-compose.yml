@@ -110,6 +110,12 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-no-reply@nexussacco.local}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-nexusSacco}
+      # Storage root for tenant logo uploads etc. Defaults to
+      # ./data/identity-storage in the binary, which resolves to
+      # /data/identity-storage in the container — but the unprivileged
+      # `app` user can't mkdir at /. Point at /tmp so the dir is
+      # writable. For prod, mount a persistent volume here instead.
+      IDENTITY_STORAGE_DIR: /tmp/identity-storage
     ports:
       - "8081:8081"
     depends_on:
