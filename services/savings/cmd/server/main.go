@@ -475,6 +475,10 @@ func main() {
 			Registry:              wfRegistry,
 			WorkflowInternalToken: cfg.WorkflowInternalToken,
 		},
+		// Loans Phase 1 — single-call dashboard aggregator. 30s
+		// per-tenant cache inside the handler keeps the dashboard's
+		// 60s poll cheap.
+		LoanDashboard: &handler.LoanDashboardHandler{DB: pool},
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),

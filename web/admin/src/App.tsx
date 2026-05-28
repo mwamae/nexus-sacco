@@ -37,6 +37,13 @@ import InterestRunsPage from './pages/InterestRuns';
 import DividendRunsPage from './pages/DividendRuns';
 import LoanProductsPage from './pages/LoanProducts';
 import LoansPage from './pages/Loans';
+import LoansDashboard from './pages/Loans/LoansDashboard';
+import LoansRegister from './pages/Loans/Register';
+import LoanDetail from './pages/Loans/LoanDetail';
+import LoanApplicationsQueue from './pages/Loans/Applications/LoanApplicationsQueue';
+import LoanApplicationDetail from './pages/Loans/Applications/LoanApplicationDetail';
+import NewLoanApplication from './pages/Loans/Applications/NewLoanApplication';
+import LoansRedirectPage from './pages/Loans/RedirectPage';
 import CollectionsPage from './pages/Collections';
 import LoanReportsPage from './pages/LoanReports';
 import CashApprovalsPage from './pages/CashApprovals';
@@ -127,10 +134,34 @@ function Gate() {
   else if (path === '/deposits' || path.startsWith('/deposits/')) page = <Deposits />;
   else if (path === '/interest-runs' || path.startsWith('/interest-runs/')) page = <InterestRunsPage />;
   else if (path === '/dividend-runs' || path.startsWith('/dividend-runs/')) page = <DividendRunsPage />;
-  else if (path === '/loan-products' || path.startsWith('/loan-products/')) page = <LoanProductsPage />;
-  else if (path === '/loans' || path.startsWith('/loans/')) page = <LoansPage />;
+  // Loans Phase 1 — consolidated /loans section. Path-prefix matching
+  // matters: more-specific paths (`/loans/applications/...`) must
+  // come BEFORE generic `/loans/...` patterns.
+  else if (path === '/loans/applications/new') page = <NewLoanApplication />;
+  else if (path === '/loans/applications' || path.startsWith('/loans/applications/')) {
+    // Detail page when a UUID-shaped suffix is present; otherwise queue.
+    const tail = path.slice('/loans/applications/'.length);
+    page = tail && tail !== '' ? <LoanApplicationDetail /> : <LoanApplicationsQueue />;
+  }
+  else if (path === '/loans/register') page = <LoansRegister />;
+  else if (path.startsWith('/loans/register/')) page = <LoanDetail />;
+  else if (path === '/loans/products' || path.startsWith('/loans/products/')) page = <LoanProductsPage />;
+  else if (path === '/loans/reports' || path.startsWith('/loans/reports/')) page = <LoanReportsPage />;
+  else if (path === '/loans/provisioning' || path.startsWith('/loans/provisioning/')) page = <ProvisioningPage />;
+  else if (path === '/loans/collections') page = <LoansRedirectPage to="/loans" label="Loans dashboard (Collections lands in Phase 4)" />;
+  else if (path === '/loans') page = <LoansDashboard />;
+
+  // Legacy paths — redirect for one release so bookmarks survive,
+  // then delete in Phase 2.
+  else if (path === '/loan-products' || path.startsWith('/loan-products/')) page = <LoansRedirectPage to="/loans/products" />;
+  else if (path === '/provisioning' || path.startsWith('/provisioning/')) page = <LoansRedirectPage to="/loans/provisioning" />;
+  // The OLD /loans page (LoansPage, the 1646-line file) hosts the
+  // restructure/settle/writeoff modals that the new LoanDetail
+  // doesn't yet re-implement. Mount it at /loans/legacy so power
+  // users can still reach those actions during Phase 1.
+  else if (path === '/loans/legacy' || path.startsWith('/loans/legacy/')) page = <LoansPage />;
   else if (path === '/collections' || path.startsWith('/collections/')) page = <CollectionsPage />;
-  else if (path === '/loan-reports' || path.startsWith('/loan-reports/')) page = <LoanReportsPage />;
+  else if (path === '/loan-reports' || path.startsWith('/loan-reports/')) page = <LoansRedirectPage to="/loans/reports" />;
   else if (path === '/cash-approvals' || path.startsWith('/cash-approvals/')) page = <CashApprovalsPage />;
   else if (path === '/notifications' || path.startsWith('/notifications/')) {
     page = (
@@ -183,7 +214,7 @@ function Gate() {
   }
   else if (path === '/accounting/dashboard') page = <FinanceDashboardPage />;
   else if (path === '/accounting/mpesa-reconciliation') page = <MpesaReconciliationPage />;
-  else if (path === '/provisioning' || path.startsWith('/provisioning/')) page = <ProvisioningPage />;
+  // Old /provisioning path handled in the Loans Phase 1 block above.
   else if (path === '/collect') page = <CollectionDesk />;
   else if (path === '/collect/receipts' || path.startsWith('/collect/receipts/')) page = <CollectionReceipts />;
   else page = <Dashboard />;

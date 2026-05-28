@@ -123,7 +123,11 @@ describe('routeNames registry', () => {
   });
 
   it('the four explicitly-cited bug paths render their intended labels', () => {
-    expect(trailFor('/loans')).toEqual(['Lending', 'Loans']);
+    // Loans Phase 1 reorganized the /loans section: /loans is now
+    // the dashboard route, with detail pages under /loans/{register,
+    // applications, …}. The legacy ['Lending','Loans'] trail moved
+    // to /loans/legacy.
+    expect(trailFor('/loans')).toEqual(['Loans', 'Dashboard']);
     expect(trailFor('/deposits')).toEqual(['Deposits']);
     expect(trailFor('/shares')).toEqual(['Shares']);
     // Bonus: a totally unregistered path doesn't leak either.

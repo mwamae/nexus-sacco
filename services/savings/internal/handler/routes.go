@@ -38,6 +38,11 @@ type Deps struct {
 	// Optional — early-boot tests + the FinanceHealth-only main.go
 	// variants leave it nil and the route below short-circuits to 404.
 	WFTerminal *WorkflowTerminalCallbackHandler
+	// LoanDashboard backs GET /v1/loans/dashboard — Phase 1
+	// aggregator that returns every KPI the Loans → Dashboard page
+	// renders in one round trip. Optional in test main.go variants
+	// (route omits when nil).
+	LoanDashboard *LoanDashboardHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -255,6 +260,12 @@ func Routes(d Deps) http.Handler {
 
 			r.With(middleware.RequirePermission("loans:view")).Get("/loans", d.Loan.List)
 			r.With(middleware.RequirePermission("loans:view")).Get("/loans/arrears-summary", d.LoanRepay.ArrearsSummary)
+			// Loans Phase 1 — single-call dashboard aggregator.
+			// Must register BEFORE /loans/{loan_id} so chi doesn't
+			// match "dashboard" as a loan id param.
+			if d.LoanDashboard != nil {
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/dashboard", d.LoanDashboard.Get)
+			}
 			r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}", d.Loan.GetLoan)
 			r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/payoff", d.LoanRepay.Payoff)
 

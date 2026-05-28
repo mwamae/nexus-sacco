@@ -63,8 +63,24 @@ export const ROUTES: ReadonlyArray<StaticRoute | DynamicRoute> = [
   { kind: 'static', path: '/deposits',                      trail: ['Deposits'] },
   { kind: 'dynamic', match: (p) => /^\/deposits\//.test(p),  baseTrail: ['Deposits'],          fallbackSuffix: 'Detail' },
 
-  { kind: 'static', path: '/loans',                         trail: ['Lending', 'Loans'] },
-  { kind: 'dynamic', match: (p) => /^\/loans\//.test(p),     baseTrail: ['Lending', 'Loans'],  fallbackSuffix: 'Loan' },
+  // Loans Phase 1 — consolidated section. Order matters: the more-
+  // specific /loans/* static + dynamic patterns must come BEFORE the
+  // dynamic /loans/(:id) fallback at the end of the block.
+  { kind: 'static', path: '/loans',                         trail: ['Loans', 'Dashboard'] },
+  { kind: 'static', path: '/loans/applications',            trail: ['Loans', 'Applications'] },
+  { kind: 'static', path: '/loans/applications/new',        trail: ['Loans', 'Applications', 'New'] },
+  { kind: 'dynamic', match: (p) => /^\/loans\/applications\/[^/]+/.test(p),
+    baseTrail: ['Loans', 'Applications'], fallbackSuffix: 'Application' },
+  { kind: 'static', path: '/loans/register',                trail: ['Loans', 'Register'] },
+  { kind: 'dynamic', match: (p) => /^\/loans\/register\/[^/]+/.test(p),
+    baseTrail: ['Loans', 'Register'], fallbackSuffix: 'Loan' },
+  { kind: 'static', path: '/loans/collections',             trail: ['Loans', 'Collections'] },
+  { kind: 'static', path: '/loans/reports',                 trail: ['Loans', 'Reports'] },
+  { kind: 'static', path: '/loans/provisioning',            trail: ['Loans', 'Provisioning'] },
+  { kind: 'static', path: '/loans/products',                trail: ['Loans', 'Products'] },
+  // Legacy register page (kept one release) — its old breadcrumb stays.
+  { kind: 'static', path: '/loans/legacy',                  trail: ['Lending', 'Loans (legacy)'] },
+  { kind: 'dynamic', match: (p) => /^\/loans\/legacy\//.test(p), baseTrail: ['Lending', 'Loans (legacy)'], fallbackSuffix: 'Loan' },
 
   { kind: 'static', path: '/collections',                   trail: ['Lending', 'Collections'] },
   { kind: 'dynamic', match: (p) => /^\/collections\//.test(p),

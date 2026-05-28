@@ -60,10 +60,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
         { href: orgsHref, label: 'Organisations', icon: 'building', show: hasPermission('members:view') && !onPlatform },
         { href: '/shares', label: 'Shares', icon: 'bank', show: hasPermission('shares:view') && !onPlatform },
         { href: '/deposits', label: 'Deposits', icon: 'bank', show: hasPermission('savings:view') && !onPlatform },
-        { href: '/loans', label: 'Loans', icon: 'bank', show: hasPermission('loans:view') && !onPlatform },
+        // Loans entries moved into their own group (see below).
         { href: '/collections', label: 'Collections', icon: 'bell', show: hasPermission('collections:view') && !onPlatform },
-        { href: '/loan-reports', label: 'Loan reports', icon: 'chart', show: hasPermission('loans:view') && !onPlatform },
-        { href: '/provisioning', label: 'Provisioning', icon: 'chart', show: hasPermission('loans:view') && !onPlatform },
         { href: '/interest-runs', label: 'Interest runs', icon: 'refresh', show: hasPermission('interest:view') && !onPlatform },
         { href: '/dividend-runs', label: 'Dividend runs', icon: 'refresh', show: hasPermission('dividends:view') && !onPlatform },
       ],
@@ -73,6 +71,22 @@ export default function AppShell({ children }: { children: ReactNode }) {
       items: [
         { href: '/approvals', label: 'Inbox', icon: 'check', show: hasPermission('workflow:view') && !onPlatform },
         { href: '/workflows', label: 'Definitions', icon: 'settings', show: hasPermission('workflow:configure') && !onPlatform },
+      ],
+    },
+    {
+      // Loans Phase 1 — single consolidated nav group replacing the
+      // scattered top-level entries (/loans, /loan-reports,
+      // /provisioning, /loan-products). The old paths still resolve
+      // via redirect shells in App.tsx for one release.
+      section: 'Loans',
+      items: [
+        { href: '/loans',              label: 'Dashboard',    icon: 'chart',    show: !onPlatform && hasPermission('loans:view') },
+        { href: '/loans/applications', label: 'Applications', icon: 'plus',     show: !onPlatform && hasPermission('loans:apply') },
+        { href: '/loans/register',     label: 'Register',     icon: 'bank',     show: !onPlatform && hasPermission('loans:view') },
+        { href: '/loans/collections',  label: 'Collections',  icon: 'bell',     show: !onPlatform && hasPermission('loans:collect') },
+        { href: '/loans/reports',      label: 'Reports',      icon: 'chart',    show: !onPlatform && hasPermission('loans:reports') },
+        { href: '/loans/provisioning', label: 'Provisioning', icon: 'shield',   show: !onPlatform && hasPermission('loans:reports') },
+        { href: '/loans/products',     label: 'Products',     icon: 'settings', show: !onPlatform && hasPermission('loans:configure') },
       ],
     },
     {
@@ -113,7 +127,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
         { href: '/users', label: 'Staff', icon: 'users', show: hasPermission('users:view') },
         { href: '/roles', label: 'Roles & permissions', icon: 'key', show: hasPermission('roles:view') },
         { href: '/deposit-products', label: 'Deposit products', icon: 'settings', show: !onPlatform && hasPermission('deposits:configure') },
-        { href: '/loan-products', label: 'Loan products', icon: 'settings', show: !onPlatform && hasPermission('loans:configure') },
         { href: '/settings', label: 'Settings', icon: 'settings', show: !onPlatform && hasPermission('tenant:settings:view') },
         { href: '/settings/mpesa', label: 'M-PESA paybills', icon: 'bank', show: !onPlatform && hasPermission('tenant:settings:view') },
       ],

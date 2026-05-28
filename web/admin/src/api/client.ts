@@ -6564,3 +6564,38 @@ export function mpesaDarajaWebhookURLs(paybill: ApiMpesaPaybill, originOverride?
     b2cTimeout:   `${origin}/api/v1/b2c/${id}/timeout?token=${t}`,
   };
 }
+
+// ─── Loans Phase 1 — Dashboard aggregator ───
+//
+// GET /v1/loans/dashboard returns every KPI the Loans → Dashboard
+// page renders in one round trip. Cached server-side for 30s per
+// tenant; the page polls every 60s.
+
+export type LoanDashboardKPIs = {
+  as_of: string;
+  total_outstanding: {
+    principal_balance: string;
+    interest_balance: string;
+    fees_balance: string;
+    penalty_balance: string;
+    active_count: number;
+  };
+  by_product: {
+    product_id: string;
+    product_name: string;
+    outstanding: string;
+    active_count: number;
+  }[];
+  by_status: Record<string, number>;
+  disbursed_this_month: string;
+  collected_this_month: string;
+  applications_by_status: Record<string, number>;
+  approaching_disbursement_count: number;
+  at_risk_count: number;
+  promises_due_this_week_count: number;
+};
+
+export async function getLoanDashboard(): Promise<LoanDashboardKPIs> {
+  const r = await api.get('/v1/loans/dashboard');
+  return (r.data?.data ?? r.data) as LoanDashboardKPIs;
+}
