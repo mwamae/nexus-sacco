@@ -25,10 +25,10 @@ import (
 // from the Loans report) can pass a nil updater and we skip the
 // whole flow.
 //
-//   approve  → MarkReceiptLinePostedTx (needs the posted txn id)
-//   decline  → MarkReceiptLineDeclinedTx
-//   cancel   → MarkReceiptLineDeclinedTx (same UI effect — the line
-//              never posted)
+//	approve  → MarkReceiptLinePostedTx (needs the posted txn id)
+//	decline  → MarkReceiptLineDeclinedTx
+//	cancel   → MarkReceiptLineDeclinedTx (same UI effect — the line
+//	           never posted)
 //
 // Returns the original error wrapped with a "propagate receipt line"
 // prefix so the operator triaging callback_last_error can tell where

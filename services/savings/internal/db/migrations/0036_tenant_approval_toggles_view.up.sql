@@ -45,59 +45,6 @@
 -- safe to read in any tenant tx.
 
 CREATE OR REPLACE VIEW tenant_approval_toggles AS
-SELECT
-  t.id                          AS tenant_id,
-  COALESCE(tg('cash_deposit'),            false) AS approval_deposit,
-  COALESCE(tg('cash_withdrawal'),         false) AS approval_withdrawal,
-  COALESCE(tg('cash_account_transfer'),   false) AS approval_deposit_transfer,
-  COALESCE(tg('share_purchase'),          false) AS approval_share_purchase,
-  COALESCE(tg('share_transfer'),          false) AS approval_share_transfer,
-  COALESCE(tg('share_bonus_issue'),       false) AS approval_share_bonus,
-  COALESCE(tg('share_lien'),              false) AS approval_share_lien,
-  COALESCE(tg('loan_disbursement'),       false) AS approval_loan_disbursement,
-  COALESCE(tg('loan_repayment'),          false) AS approval_loan_repayment,
-  COALESCE(tg('loan_settle'),             false) AS approval_loan_settle,
-  COALESCE(tg('loan_reverse'),            false) AS approval_loan_reverse,
-  COALESCE(tg('loan_write_off'),          false) AS approval_loan_writeoff,
-  COALESCE(tg('loan_reschedule'),         false) AS approval_loan_reschedule,
-  COALESCE(tg('loan_moratorium'),         false) AS approval_loan_moratorium,
-  COALESCE(tg('loan_settlement_discount'),false) AS approval_loan_settlement_discount,
-  COALESCE(tg('fee_posting'),             false) AS approval_fee_posting,
-  COALESCE(tg('welfare_posting'),         false) AS approval_welfare_posting,
-  COALESCE(tg('application_fee'),         false) AS approval_application_fee,
-  COALESCE(tg('member_bosa_exit'),        false) AS approval_member_bosa_exit,
-  COALESCE(tops.approval_allow_self, false)      AS approval_allow_self
-FROM tenants t
-LEFT JOIN tenant_operations tops ON tops.tenant_id = t.id
-LEFT JOIN LATERAL (
-  -- Inline helper subquery: for the given process_kind, is there an
-  -- active wf_definition on this tenant?
-  SELECT NULL::boolean AS _
-) _ ON true,
--- LATERAL function wrapper so the SELECT list above can reference
--- per-kind toggles via a single tg(<kind>) call.
-LATERAL (
-  SELECT
-    EXISTS(SELECT 1 FROM wf_definitions d
-            WHERE d.tenant_id = t.id AND d.active = true
-              AND d.process_kind = 'cash_deposit')             AS cash_deposit,
-    EXISTS(SELECT 1 FROM wf_definitions d
-            WHERE d.tenant_id = t.id AND d.active = true
-              AND d.process_kind = 'cash_withdrawal')          AS cash_withdrawal,
-    EXISTS(SELECT 1 FROM wf_definitions d
-            WHERE d.tenant_id = t.id AND d.active = true
-              AND d.process_kind = 'cash_account_transfer')    AS cash_account_transfer
-  -- … (and so on for every kind — see the per-kind references above)
-) k;
-
--- The view above is illustrative; Postgres doesn't allow inline
--- function helpers in a SELECT list the way the comment sketched it.
--- The actual working view re-checks each kind explicitly. The
--- pattern below is verbose but Postgres-native.
-
-DROP VIEW IF EXISTS tenant_approval_toggles;
-
-CREATE VIEW tenant_approval_toggles AS
 WITH active_kinds AS (
   SELECT tenant_id, array_agg(process_kind) AS kinds
     FROM wf_definitions

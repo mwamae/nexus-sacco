@@ -45,28 +45,28 @@ type WorkflowTerminalCallbackHandler struct {
 // posts. Mirrors the body the dispatcher builds at
 // services/workflow/cmd/callback-dispatcher/main.go::postOnce.
 type callbackEnvelope struct {
-	TenantID    string             `json:"tenant_id"`
+	TenantID    string                `json:"tenant_id"`
 	Instance    wf_callbacks.Instance `json:"instance"`
-	Event       string             `json:"event"`
-	DeliveredAt string             `json:"delivered_at"`
+	Event       string                `json:"event"`
+	DeliveredAt string                `json:"delivered_at"`
 }
 
 // Handle decodes the dispatcher's POST and routes to the registered
 // callback. Status codes mirror what the dispatcher reads:
 //
-//   200 OK            → callback succeeded; dispatcher marks delivered
-//   400 Bad Request   → permanent parse error; dispatcher will retry
-//                       then DLQ (12 attempts of the same bad payload
-//                       is the operator's signal something upstream
-//                       is wrong)
-//   401 Unauthorized  → bad internal token; dispatcher retries (token
-//                       may have rotated; persistent failure DLQs)
-//   404 Not Found     → no registered callback for the process_kind;
-//                       dispatcher will retry then DLQ — kind needs
-//                       to be registered before instances of it can
-//                       terminate
-//   500 Internal      → callback returned an error; dispatcher retries
-//                       with exponential backoff
+//	200 OK            → callback succeeded; dispatcher marks delivered
+//	400 Bad Request   → permanent parse error; dispatcher will retry
+//	                    then DLQ (12 attempts of the same bad payload
+//	                    is the operator's signal something upstream
+//	                    is wrong)
+//	401 Unauthorized  → bad internal token; dispatcher retries (token
+//	                    may have rotated; persistent failure DLQs)
+//	404 Not Found     → no registered callback for the process_kind;
+//	                    dispatcher will retry then DLQ — kind needs
+//	                    to be registered before instances of it can
+//	                    terminate
+//	500 Internal      → callback returned an error; dispatcher retries
+//	                    with exponential backoff
 func (h *WorkflowTerminalCallbackHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// Trust gate — match WorkflowInternalToken, else fall back to
 	// the User-Agent prefix the workflow service always sends. Mirrors

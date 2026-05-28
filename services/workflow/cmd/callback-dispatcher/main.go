@@ -215,13 +215,13 @@ func pickPending(ctx context.Context, pool *pgxpool.Pool) ([]candidate, error) {
 
 // processRow runs one row end-to-end. Three database transactions:
 //
-//   tx1: claim the row (set callback_status='in_flight'), commit
-//        immediately so the row's claimed state is visible to other
-//        dispatcher replicas + to ops watching the table.
-//   POST: outside any tx — the HTTP round trip can take seconds and
-//         we don't want to hold a row lock that long.
-//   tx2: write the outcome (delivered or pending-with-bumped-attempts
-//        or terminal failure), audit row, commit.
+//	tx1: claim the row (set callback_status='in_flight'), commit
+//	     immediately so the row's claimed state is visible to other
+//	     dispatcher replicas + to ops watching the table.
+//	POST: outside any tx — the HTTP round trip can take seconds and
+//	      we don't want to hold a row lock that long.
+//	tx2: write the outcome (delivered or pending-with-bumped-attempts
+//	     or terminal failure), audit row, commit.
 func processRow(ctx context.Context, pool *pgxpool.Pool, client *http.Client, token string, logger *slog.Logger, c candidate) {
 	// ── tx1 — claim ──────────────────────────────────────────────
 	claimed, instanceJSON, err := claim(ctx, pool, c)

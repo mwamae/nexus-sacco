@@ -1,7 +1,7 @@
 // legacy-approvals-migrate — one-shot backfill that promotes every
 // in-flight pending_approvals row to a wf_instance.
 //
-// Purpose
+// # Purpose
 //
 // The unified-approvals migration PR moved every cash kind off the
 // legacy savings/pending_approvals table onto the workflow engine.
@@ -14,19 +14,19 @@
 //
 // Operational shape
 //
-//   default (no flag)   dry-run; reports counts per tenant and per
-//                       kind without mutating anything
-//   --apply             perform the backfill; mark each migrated
-//                       pending_approvals.status = 'migrated' and
-//                       stamp wf_instances.legacy_pending_approval_id
-//   --tenant-slug=X     limit the run to one tenant (skips others)
+//	default (no flag)   dry-run; reports counts per tenant and per
+//	                    kind without mutating anything
+//	--apply             perform the backfill; mark each migrated
+//	                    pending_approvals.status = 'migrated' and
+//	                    stamp wf_instances.legacy_pending_approval_id
+//	--tenant-slug=X     limit the run to one tenant (skips others)
 //
 // The script is idempotent: rerunning skips rows already marked
 // 'migrated'. The forward query is `status = 'pending'`, so a row
 // flipped to migrated on a previous run drops out of the candidate
 // set.
 //
-// Mapping
+// # Mapping
 //
 // processKindForApprovalKind handles the 5 enum-vs-process_kind name
 // drifts (deposit→cash_deposit, withdrawal→cash_withdrawal,
@@ -42,27 +42,27 @@
 //
 // What this script does NOT do
 //
-//   • Touch wf_instances that already exist (idempotency).
-//   • Migrate non-pending pending_approvals rows. approved / declined
+//   - Touch wf_instances that already exist (idempotency).
+//   - Migrate non-pending pending_approvals rows. approved / declined
 //     / cancelled / execution_error are terminal in the legacy table;
 //     promoting them would create a duplicate audit trail without
 //     value. The legacy rows stay queryable for historical
 //     reconciliation under their existing statuses.
-//   • Touch the per-tenant approval_* toggles. P5's migration moves
+//   - Touch the per-tenant approval_* toggles. P5's migration moves
 //     those onto the wf_definition active flag — the backfill just
 //     handles the in-flight rows.
 //
 // Run sequence at first deploy
 //
-//   1. Apply both new migrations (workflow 0012, savings 0035).
-//   2. Restart workflow + savings.
-//   3. Start the callback-dispatcher.
-//   4. ./legacy-approvals-migrate           # dry-run report
-//   5. ./legacy-approvals-migrate --apply
-//   6. Confirm: SELECT count(*) FROM pending_approvals WHERE status='pending';
-//      Expect 0. Any remaining rows are kinds the mapping doesn't
-//      cover (none today; this is a sanity check for future enum
-//      additions).
+//  1. Apply both new migrations (workflow 0012, savings 0035).
+//  2. Restart workflow + savings.
+//  3. Start the callback-dispatcher.
+//  4. ./legacy-approvals-migrate           # dry-run report
+//  5. ./legacy-approvals-migrate --apply
+//  6. Confirm: SELECT count(*) FROM pending_approvals WHERE status='pending';
+//     Expect 0. Any remaining rows are kinds the mapping doesn't
+//     cover (none today; this is a sanity check for future enum
+//     additions).
 package main
 
 import (

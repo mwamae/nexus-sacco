@@ -28,11 +28,11 @@ import (
 // gates the given legacy approval kind. Five of the 19 enum values
 // have name drift from the wf seeds:
 //
-//   deposit            → cash_deposit
-//   withdrawal         → cash_withdrawal
-//   deposit_transfer   → cash_account_transfer
-//   share_bonus        → share_bonus_issue
-//   loan_writeoff      → loan_write_off
+//	deposit            → cash_deposit
+//	withdrawal         → cash_withdrawal
+//	deposit_transfer   → cash_account_transfer
+//	share_bonus        → share_bonus_issue
+//	loan_writeoff      → loan_write_off
 //
 // The other 14 are identity-mapped. An unknown kind returns "" —
 // callers treat that as "skip the workflow path, fall back to
