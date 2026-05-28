@@ -170,6 +170,8 @@ export const ROUTES: ReadonlyArray<StaticRoute | DynamicRoute> = [
   { kind: 'static', path: '/users',                         trail: ['Administration', 'Staff'] },
   { kind: 'static', path: '/roles',                         trail: ['Administration', 'Roles & permissions'] },
   { kind: 'static', path: '/settings',                      trail: ['Administration', 'Settings'] },
+  { kind: 'static', path: '/settings/mpesa',                trail: ['Administration', 'Settings', 'M-PESA paybills'] },
+  { kind: 'static', path: '/settings/loans-policy',         trail: ['Administration', 'Settings', 'Loans policy'] },
 
   { kind: 'static', path: '/deposit-products',              trail: ['Administration', 'Deposit products'] },
   { kind: 'dynamic', match: (p) => /^\/deposit-products\//.test(p),

@@ -28,6 +28,7 @@ import TenantOnboarding from './pages/TenantOnboarding';
 import TenantProfile from './pages/TenantProfile';
 import TenantSettings from './pages/TenantSettings';
 import MpesaPaybillsPage from './pages/Settings/MpesaPaybills';
+import LoansPolicyPage from './pages/Settings/LoansPolicy';
 import ApprovalsInbox from './pages/ApprovalsInbox';
 import WorkflowDefinitions from './pages/WorkflowDefinitions';
 import Shares from './pages/Shares';
@@ -116,6 +117,7 @@ function Gate() {
   else if (path === '/tenants/new') page = <TenantOnboarding />;
   else if (path.startsWith('/tenants/')) page = <TenantProfile />;
   else if (path === '/settings/mpesa') page = <MpesaPaybillsPage />;
+  else if (path === '/settings/loans-policy') page = <LoansPolicyPage />;
   else if (path === '/settings') page = <TenantSettings />;
   else if (path === '/orgs/new') {
     window.location.replace('/applications/new?kind=institutional');

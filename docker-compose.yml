@@ -228,6 +228,25 @@ services:
       postgres:
         condition: service_healthy
 
+  # Loans Phase 3 — daily DPD + SASRA + IFRS 9 classification worker.
+  # For each active loan, computes DPD, classifies, upserts a row in
+  # loan_dpd_snapshots, and appends to loan_classification_history on
+  # any change. Idempotent on (loan_id, snapshot_date) so a missed day
+  # can be re-run safely. Reads tenant_operations for per-tenant
+  # threshold overrides; falls back to CBK Prudential 0419 defaults.
+  dpd-classifier:
+    build:
+      context: .
+      dockerfile: services/savings/Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/dpd-classifier"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   mpesa:
     build:
       context: .

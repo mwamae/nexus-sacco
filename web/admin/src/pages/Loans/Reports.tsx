@@ -135,6 +135,7 @@ function PARTab() {
   const pts = (hist?.points ?? []) as { snapshot_date: string; par_30: string }[];
   return (
     <>
+      <SnapshotBanner meta={par.snapshot} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 12 }}>
         <KPI label="PAR-1"  value={fmtPct(par.par_1)}  tone="warn" />
         <KPI label="PAR-30" value={fmtPct(par.par_30)} tone="neg" />
@@ -196,6 +197,7 @@ function AgingTab() {
 
   return (
     <>
+      <SnapshotBanner meta={data.snapshot} />
       <div className="card">
         <div className="card-hd">
           <h3>Aging buckets</h3>
@@ -592,6 +594,47 @@ function KPI({ label, value, tone }: { label: string; value: string; tone?: 'pos
       </div>
     </div>
   );
+}
+
+// SnapshotBanner — Phase 3 "verification gate" for reports backed by
+// loan_dpd_snapshots. Hidden when the snapshot is fresh AND covers
+// every eligible loan. Shows a soft warning when the snapshot is
+// 1+ day stale or doesn't cover every loan (the report falls back
+// to the inline DPD proxy for un-snapshotted loans).
+type SnapshotMetaShape = {
+  available: boolean;
+  latest_snapshot_date?: string;
+  staleness_days: number;
+  loans_with_snapshots: number;
+  loans_without_snapshots: number;
+};
+function SnapshotBanner({ meta }: { meta?: SnapshotMetaShape | null }) {
+  if (!meta) return null;
+  if (!meta.available) {
+    return (
+      <div className="alert alert-warn" style={{ marginBottom: 12 }}>
+        DPD snapshots are empty — the dpd-classifier worker hasn't run yet for this
+        tenant. Numbers below use the inline DPD proxy and may not match what the
+        provisioning cycle will see. The classifier runs nightly; trigger a manual
+        run with <code>dpd-classifier --once</code> to refresh immediately.
+      </div>
+    );
+  }
+  if (meta.staleness_days >= 1 || meta.loans_without_snapshots > 0) {
+    return (
+      <div className="alert alert-info" style={{ marginBottom: 12 }}>
+        DPD snapshots: latest from <strong>{meta.latest_snapshot_date}</strong>
+        {meta.staleness_days >= 1 && (
+          <> ({meta.staleness_days} day{meta.staleness_days === 1 ? '' : 's'} stale)</>
+        )}
+        {meta.loans_without_snapshots > 0 && (
+          <> · {meta.loans_without_snapshots} loan{meta.loans_without_snapshots === 1 ? '' : 's'} fall back to the inline DPD proxy</>
+        )}
+        .
+      </div>
+    );
+  }
+  return null;
 }
 
 function fmt(v: string | number | undefined): string {

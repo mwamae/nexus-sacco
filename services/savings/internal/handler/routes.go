@@ -50,6 +50,13 @@ type Deps struct {
 	// gated on loans:sasra (sensitive — generates the file SACCOs
 	// upload to the regulator's portal).
 	SASRA *SASRAHandler
+	// LoanProvisioningV2 backs the Phase 3 provisioning endpoints
+	// mounted under /v1/loans/provisioning/*. Reads loan_dpd_snapshots
+	// + ecl_rate_matrix. Optional in test main.go variants.
+	LoanProvisioningV2 *LoanProvisioningV2Handler
+	// LoanPolicy backs /v1/loans/policy/* (DPD thresholds + ECL matrix
+	// editor) and /v1/loans/{id}/classification-history. Optional.
+	LoanPolicy *LoanPolicyHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -340,12 +347,31 @@ func Routes(d Deps) http.Handler {
 			// this lives on savings.
 			r.With(middleware.RequirePermission("members:view")).Get("/member-ledger/{counterparty_id}", d.MemberLedger.Get)
 
-			// ─────────── Loan loss provisioning (Phase 11/3) ───────────
+			// ─────────── Loan loss provisioning (legacy /v1/provisioning/*) ───────────
+			// Kept mounted for one release alongside the Phase 3 v2 endpoints below.
+			// The legacy UI calls these; the new UI calls /v1/loans/provisioning/*.
 			r.With(middleware.RequirePermission("loans:view")).Get("/provisioning/runs", d.Provisioning.List)
 			r.With(middleware.RequirePermission("loans:view")).Get("/provisioning/runs/{run_id}", d.Provisioning.Get)
 			r.With(middleware.RequirePermission("interest:run")).Post("/provisioning/runs", d.Provisioning.Create)
 			r.With(middleware.RequirePermission("interest:post")).Post("/provisioning/runs/{run_id}/post", d.Provisioning.Post)
 			r.With(middleware.RequirePermission("interest:post")).Post("/provisioning/runs/{run_id}/supersede", d.Provisioning.Supersede)
+
+			// ─────────── Loans Phase 3 — provisioning v2 ───────────
+			if d.LoanProvisioningV2 != nil {
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/provisioning/runs", d.LoanProvisioningV2.List)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/provisioning/runs/{run_id}", d.LoanProvisioningV2.Get)
+				r.With(middleware.RequirePermission("loans:provisioning:run")).Post("/loans/provisioning/runs", d.LoanProvisioningV2.Create)
+				r.With(middleware.RequirePermission("loans:provisioning:post")).Post("/loans/provisioning/runs/{run_id}/post", d.LoanProvisioningV2.Post)
+				r.With(middleware.RequirePermission("loans:provisioning:run")).Post("/loans/provisioning/runs/{run_id}/cancel", d.LoanProvisioningV2.Cancel)
+			}
+
+			// ─────────── Loans Phase 3 — policy admin + classification history ───────────
+			if d.LoanPolicy != nil {
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/policy", d.LoanPolicy.Get)
+				r.With(middleware.RequirePermission("loans:policy:write")).Put("/loans/policy/thresholds", d.LoanPolicy.UpdateThresholds)
+				r.With(middleware.RequirePermission("loans:policy:write")).Put("/loans/policy/ecl-matrix", d.LoanPolicy.UpdateMatrix)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/classification-history", d.LoanPolicy.LoanClassificationHistory)
+			}
 
 			// ─────────── Collection Desk (single cashier's counter) ───────────
 			r.With(middleware.RequirePermission("members:view")).Get("/counterparties/{id}/outstanding", d.Collection.Outstanding)

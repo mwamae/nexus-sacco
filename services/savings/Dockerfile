@@ -4,12 +4,17 @@
 #   context: .
 #   dockerfile: services/savings/Dockerfile
 #
-# Produces three binaries:
+# Produces four binaries:
 #   /usr/local/bin/savings            — HTTP service (cmd/server)
 #   /usr/local/bin/posting-dispatcher — background outbox drainer
 #   /usr/local/bin/loan-snapshotter   — daily portfolio snapshot worker
 #                                        (Loans Phase 2 — feeds the
 #                                        Reports page's trend charts)
+#   /usr/local/bin/dpd-classifier     — daily DPD + SASRA + IFRS 9
+#                                        classification worker (Loans
+#                                        Phase 3 — feeds the
+#                                        provisioning + classification
+#                                        timeline surfaces)
 #
 # Compose decides which one each container runs by overriding ENTRYPOINT.
 
@@ -24,7 +29,8 @@ WORKDIR /src/services/savings
 RUN go mod download
 RUN go build -ldflags="-s -w" -o /out/savings            ./cmd/server && \
     go build -ldflags="-s -w" -o /out/posting-dispatcher ./cmd/posting-dispatcher && \
-    go build -ldflags="-s -w" -o /out/loan-snapshotter   ./cmd/loan-snapshotter
+    go build -ldflags="-s -w" -o /out/loan-snapshotter   ./cmd/loan-snapshotter && \
+    go build -ldflags="-s -w" -o /out/dpd-classifier     ./cmd/dpd-classifier
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget && adduser -D -u 10001 app
@@ -32,5 +38,6 @@ USER app
 COPY --from=build /out/savings            /usr/local/bin/savings
 COPY --from=build /out/posting-dispatcher /usr/local/bin/posting-dispatcher
 COPY --from=build /out/loan-snapshotter   /usr/local/bin/loan-snapshotter
+COPY --from=build /out/dpd-classifier     /usr/local/bin/dpd-classifier
 EXPOSE 8084
 ENTRYPOINT ["/usr/local/bin/savings"]

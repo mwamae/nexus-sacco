@@ -3,10 +3,16 @@
 // Lives in its own file so the original loan_reports_store.go stays
 // untouched (Phase 2 is purely additive — no business-logic change).
 //
-// DPD = CURRENT_DATE - next_installment_due_at (Phase 1 proxy).
-// Column name `dpd` is kept stable throughout the query+API so
-// Phase 3 can swap in loan_dpd_snapshots.dpd_days without breaking
-// the wire contract.
+// Phase 3 wiring (S7): DPD now prefers the loan_dpd_snapshots row
+// written by the dpd-classifier worker, falling back to the Phase 1
+// inline proxy (CURRENT_DATE - next_installment_due_at) when no
+// snapshot exists for the loan yet. The fallback keeps reports
+// useful in dev environments where the classifier hasn't run, and
+// during the seed phase right after migration 0039.
+//
+// `SnapshotMeta` (returned alongside the PAR + Aging payloads) lets
+// the UI banner stale data when the most recent snapshot is older
+// than 1 day — that's the "verification gate" the prompt calls for.
 
 package store
 
@@ -18,6 +24,71 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// dpdResolverCTE — reusable CTE prefix that exposes a per-loan
+// dpd_days column resolved from the latest snapshot. Queries that
+// already include their own WITH clause prepend this CTE.
+const dpdResolverCTE = `
+  latest_snap AS (
+    SELECT DISTINCT ON (loan_id) loan_id, dpd_days
+      FROM loan_dpd_snapshots
+     ORDER BY loan_id, snapshot_date DESC
+  )`
+
+// dpdExpr — the SQL expression to use in SELECT lists for the
+// resolved DPD. Requires the surrounding query to JOIN to
+// latest_snap LEFT JOIN ls ON ls.loan_id = l.id.
+const dpdExpr = `COALESCE(ls.dpd_days, GREATEST(0, (CURRENT_DATE - l.next_installment_due_at))::int)`
+
+// SnapshotMeta surfaces the freshness of loan_dpd_snapshots so the
+// UI can render a "data is N days stale" banner. Returned alongside
+// every Phase 3-wired report.
+type SnapshotMeta struct {
+	Available           bool       `json:"available"`             // false = no snapshots at all
+	LatestSnapshotDate  *time.Time `json:"latest_snapshot_date,omitempty"`
+	StalenessDays       int        `json:"staleness_days"`         // 0 = today's snapshot
+	LoansWithSnapshots  int        `json:"loans_with_snapshots"`
+	LoansWithoutSnapshots int      `json:"loans_without_snapshots"`
+}
+
+// LoadSnapshotMetaTx populates SnapshotMeta for the current tenant.
+// The caller already opened tx with set_config('app.tenant_id', …)
+// so RLS scopes the counts correctly.
+func (s *LoanReportsStore) LoadSnapshotMetaTx(ctx context.Context, tx pgx.Tx) (*SnapshotMeta, error) {
+	meta := &SnapshotMeta{}
+	var latest *time.Time
+	if err := tx.QueryRow(ctx, `SELECT MAX(snapshot_date) FROM loan_dpd_snapshots`).Scan(&latest); err != nil {
+		return nil, err
+	}
+	if latest == nil {
+		// No snapshots at all — pure fallback mode.
+		return meta, nil
+	}
+	meta.Available = true
+	meta.LatestSnapshotDate = latest
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	meta.StalenessDays = int(today.Sub(*latest).Hours() / 24)
+	if meta.StalenessDays < 0 {
+		meta.StalenessDays = 0
+	}
+	// Counts based on loans that ought to have a snapshot
+	// (active/in_arrears/restructured with positive principal).
+	if err := tx.QueryRow(ctx, `
+		WITH eligible AS (
+		  SELECT id FROM loans
+		   WHERE status IN ('active','in_arrears','restructured')
+		     AND principal_balance > 0
+		)
+		SELECT
+		  (SELECT count(*) FROM eligible e
+		    WHERE EXISTS (SELECT 1 FROM loan_dpd_snapshots s WHERE s.loan_id = e.id)),
+		  (SELECT count(*) FROM eligible e
+		    WHERE NOT EXISTS (SELECT 1 FROM loan_dpd_snapshots s WHERE s.loan_id = e.id))
+	`).Scan(&meta.LoansWithSnapshots, &meta.LoansWithoutSnapshots); err != nil {
+		return nil, err
+	}
+	return meta, nil
+}
 
 // ─────────── PAR ───────────
 
@@ -32,6 +103,7 @@ type PARSummary struct {
 	Par90Pct         string          `json:"par_90"`
 	TotalOutstanding string          `json:"total_outstanding"`
 	ByProduct        []PARProductRow `json:"by_product"`
+	Snapshot         *SnapshotMeta   `json:"snapshot,omitempty"`
 }
 
 type PARProductRow struct {
@@ -45,11 +117,12 @@ type PARProductRow struct {
 func (s *LoanReportsStore) PARTx(ctx context.Context, tx pgx.Tx) (*PARSummary, error) {
 	out := &PARSummary{AsOf: time.Now().UTC()}
 	err := tx.QueryRow(ctx, `
-		WITH active AS (
+		WITH `+dpdResolverCTE+`, active AS (
 		  SELECT l.principal_balance,
 		         (l.principal_balance + l.interest_balance + l.fees_balance + l.penalty_balance) AS total_outstanding,
-		         GREATEST(0, (CURRENT_DATE - l.next_installment_due_at))::int AS dpd
+		         `+dpdExpr+` AS dpd
 		    FROM loans l
+		    LEFT JOIN latest_snap ls ON ls.loan_id = l.id
 		   WHERE l.status IN ('active','in_arrears','restructured')
 		     AND l.principal_balance > 0
 		), totals AS (
@@ -76,10 +149,11 @@ func (s *LoanReportsStore) PARTx(ctx context.Context, tx pgx.Tx) (*PARSummary, e
 	}
 
 	rows, err := tx.Query(ctx, `
-		WITH active AS (
+		WITH `+dpdResolverCTE+`, active AS (
 		  SELECT l.product_id, l.principal_balance,
-		         GREATEST(0, (CURRENT_DATE - l.next_installment_due_at))::int AS dpd
+		         `+dpdExpr+` AS dpd
 		    FROM loans l
+		    LEFT JOIN latest_snap ls ON ls.loan_id = l.id
 		   WHERE l.status IN ('active','in_arrears','restructured')
 		     AND l.principal_balance > 0
 		)
@@ -104,7 +178,17 @@ func (s *LoanReportsStore) PARTx(ctx context.Context, tx pgx.Tx) (*PARSummary, e
 		}
 		out.ByProduct = append(out.ByProduct, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Snapshot staleness metadata — drives the "data is N days stale" banner.
+	meta, err := s.LoadSnapshotMetaTx(ctx, tx)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot meta: %w", err)
+	}
+	out.Snapshot = meta
+	return out, nil
 }
 
 // ─────────── Aging buckets ───────────
@@ -121,8 +205,9 @@ type AgingBucketRow struct {
 }
 
 type AgingBucketsReport struct {
-	AsOf    time.Time        `json:"as_of"`
-	Buckets []AgingBucketRow `json:"buckets"`
+	AsOf     time.Time        `json:"as_of"`
+	Buckets  []AgingBucketRow `json:"buckets"`
+	Snapshot *SnapshotMeta    `json:"snapshot,omitempty"`
 }
 
 func (s *LoanReportsStore) AgingBucketsTx(ctx context.Context, tx pgx.Tx) (*AgingBucketsReport, error) {
@@ -145,26 +230,30 @@ func (s *LoanReportsStore) AgingBucketsTx(ctx context.Context, tx pgx.Tx) (*Agin
 		var args []any
 		if d.hi == -1 {
 			query = `
+				WITH ` + dpdResolverCTE + `
 				SELECT count(*),
-				       COALESCE(SUM(principal_balance),0)::text,
-				       COALESCE(SUM(interest_balance),0)::text,
-				       COALESCE(SUM(penalty_balance),0)::text,
-				       COALESCE(SUM(principal_balance + interest_balance + fees_balance + penalty_balance),0)::text
-				  FROM loans
-				 WHERE status IN ('active','in_arrears','restructured')
-				   AND GREATEST(0, (CURRENT_DATE - next_installment_due_at))::int >= $1
+				       COALESCE(SUM(l.principal_balance),0)::text,
+				       COALESCE(SUM(l.interest_balance),0)::text,
+				       COALESCE(SUM(l.penalty_balance),0)::text,
+				       COALESCE(SUM(l.principal_balance + l.interest_balance + l.fees_balance + l.penalty_balance),0)::text
+				  FROM loans l
+				  LEFT JOIN latest_snap ls ON ls.loan_id = l.id
+				 WHERE l.status IN ('active','in_arrears','restructured')
+				   AND ` + dpdExpr + ` >= $1
 			`
 			args = []any{d.lo}
 		} else {
 			query = `
+				WITH ` + dpdResolverCTE + `
 				SELECT count(*),
-				       COALESCE(SUM(principal_balance),0)::text,
-				       COALESCE(SUM(interest_balance),0)::text,
-				       COALESCE(SUM(penalty_balance),0)::text,
-				       COALESCE(SUM(principal_balance + interest_balance + fees_balance + penalty_balance),0)::text
-				  FROM loans
-				 WHERE status IN ('active','in_arrears','restructured')
-				   AND GREATEST(0, (CURRENT_DATE - next_installment_due_at))::int BETWEEN $1 AND $2
+				       COALESCE(SUM(l.principal_balance),0)::text,
+				       COALESCE(SUM(l.interest_balance),0)::text,
+				       COALESCE(SUM(l.penalty_balance),0)::text,
+				       COALESCE(SUM(l.principal_balance + l.interest_balance + l.fees_balance + l.penalty_balance),0)::text
+				  FROM loans l
+				  LEFT JOIN latest_snap ls ON ls.loan_id = l.id
+				 WHERE l.status IN ('active','in_arrears','restructured')
+				   AND ` + dpdExpr + ` BETWEEN $1 AND $2
 			`
 			args = []any{d.lo, d.hi}
 		}
@@ -178,6 +267,11 @@ func (s *LoanReportsStore) AgingBucketsTx(ctx context.Context, tx pgx.Tx) (*Agin
 		}
 		out.Buckets = append(out.Buckets, row)
 	}
+	meta, err := s.LoadSnapshotMetaTx(ctx, tx)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot meta: %w", err)
+	}
+	out.Snapshot = meta
 	return out, nil
 }
 

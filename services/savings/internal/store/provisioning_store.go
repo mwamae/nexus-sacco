@@ -48,7 +48,8 @@ const provRunCols = `
 	previous_provision, movement,
 	journal_entry_ref, notes,
 	computed_at, posted_at, posted_by,
-	created_at, created_by, updated_at
+	created_at, created_by, updated_at,
+	period_month, cancelled_at, cancelled_by, cancel_reason, journal_entry_id
 `
 
 func scanProvRun(row pgx.Row) (*domain.ProvisionRun, error) {
@@ -60,6 +61,7 @@ func scanProvRun(row pgx.Row) (*domain.ProvisionRun, error) {
 		&r.JournalEntryRef, &r.Notes,
 		&r.ComputedAt, &r.PostedAt, &r.PostedBy,
 		&r.CreatedAt, &r.CreatedBy, &r.UpdatedAt,
+		&r.PeriodMonth, &r.CancelledAt, &r.CancelledBy, &r.CancelReason, &r.JournalEntryID,
 	)
 	if err != nil {
 		return nil, err
@@ -359,7 +361,8 @@ func (s *ProvisioningStore) LinesByRun(ctx context.Context, tenantID, runID uuid
 			SELECT id, run_id, loan_id, counterparty_id, loan_no,
 			       days_past_due, classification, outstanding,
 			       provision_rate, provision_amount,
-			       previous_classification, previous_provision
+			       previous_classification, previous_provision,
+			       product_id, classification_ifrs9_stage, delta
 			  FROM provision_run_lines
 			 WHERE run_id = $1
 			 ORDER BY CASE classification
@@ -379,6 +382,7 @@ func (s *ProvisioningStore) LinesByRun(ctx context.Context, tenantID, runID uuid
 				&l.DaysPastDue, &l.Classification, &l.Outstanding,
 				&l.ProvisionRate, &l.ProvisionAmount,
 				&l.PreviousClassification, &l.PreviousProvision,
+				&l.ProductID, &l.ClassificationStage, &l.Delta,
 			); err != nil {
 				return err
 			}

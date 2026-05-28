@@ -27,37 +27,47 @@ type ProvisionRunStatus string
 
 const (
 	ProvisionPending    ProvisionRunStatus = "pending"
+	ProvisionDraft      ProvisionRunStatus = "draft"     // Phase 3 — computed, awaiting post or cancel
 	ProvisionComputed   ProvisionRunStatus = "computed"
 	ProvisionPosted     ProvisionRunStatus = "posted"
 	ProvisionFailed     ProvisionRunStatus = "failed"
 	ProvisionSuperseded ProvisionRunStatus = "superseded"
+	ProvisionCancelled  ProvisionRunStatus = "cancelled" // Phase 3 — operator cancelled before posting
 )
 
 type ProvisionRun struct {
-	ID                 uuid.UUID          `json:"id"`
-	TenantID           uuid.UUID          `json:"tenant_id"`
-	AsOfDate           time.Time          `json:"as_of_date"`
-	Status             ProvisionRunStatus `json:"status"`
-	LoansClassified    int                `json:"loans_classified"`
-	TotalOutstanding   decimal.Decimal    `json:"total_outstanding"`
-	TotalProvision     decimal.Decimal    `json:"total_provision"`
-	PreviousProvision  decimal.Decimal    `json:"previous_provision"`
-	Movement           decimal.Decimal    `json:"movement"`
-	JournalEntryRef    *string            `json:"journal_entry_ref,omitempty"`
-	Notes              *string            `json:"notes,omitempty"`
-	ComputedAt         *time.Time         `json:"computed_at,omitempty"`
-	PostedAt           *time.Time         `json:"posted_at,omitempty"`
-	PostedBy           *uuid.UUID         `json:"posted_by,omitempty"`
-	CreatedAt          time.Time          `json:"created_at"`
-	CreatedBy          *uuid.UUID         `json:"created_by,omitempty"`
-	UpdatedAt          time.Time          `json:"updated_at"`
+	ID                uuid.UUID          `json:"id"`
+	TenantID          uuid.UUID          `json:"tenant_id"`
+	AsOfDate          time.Time          `json:"as_of_date"`
+	Status            ProvisionRunStatus `json:"status"`
+	LoansClassified   int                `json:"loans_classified"`
+	TotalOutstanding  decimal.Decimal    `json:"total_outstanding"`
+	TotalProvision    decimal.Decimal    `json:"total_provision"`
+	PreviousProvision decimal.Decimal    `json:"previous_provision"`
+	Movement          decimal.Decimal    `json:"movement"`
+	JournalEntryRef   *string            `json:"journal_entry_ref,omitempty"`
+	Notes             *string            `json:"notes,omitempty"`
+	ComputedAt        *time.Time         `json:"computed_at,omitempty"`
+	PostedAt          *time.Time         `json:"posted_at,omitempty"`
+	PostedBy          *uuid.UUID         `json:"posted_by,omitempty"`
+	CreatedAt         time.Time          `json:"created_at"`
+	CreatedBy         *uuid.UUID         `json:"created_by,omitempty"`
+	UpdatedAt         time.Time          `json:"updated_at"`
+
+	// Phase 3 fields. Nil-able for backwards-compat with Phase 1/2
+	// rows that lack period_month.
+	PeriodMonth     *time.Time `json:"period_month,omitempty"`
+	CancelledAt     *time.Time `json:"cancelled_at,omitempty"`
+	CancelledBy     *uuid.UUID `json:"cancelled_by,omitempty"`
+	CancelReason    *string    `json:"cancel_reason,omitempty"`
+	JournalEntryID  *uuid.UUID `json:"journal_entry_id,omitempty"`
 }
 
 type ProvisionRunLine struct {
 	ID                     uuid.UUID       `json:"id"`
 	RunID                  uuid.UUID       `json:"run_id"`
 	LoanID                 uuid.UUID       `json:"loan_id"`
-	CounterpartyID               uuid.UUID       `json:"counterparty_id"`
+	CounterpartyID         uuid.UUID       `json:"counterparty_id"`
 	LoanNo                 string          `json:"loan_no"`
 	DaysPastDue            int             `json:"days_past_due"`
 	Classification         string          `json:"classification"`
@@ -66,6 +76,11 @@ type ProvisionRunLine struct {
 	ProvisionAmount        decimal.Decimal `json:"provision_amount"`
 	PreviousClassification *string         `json:"previous_classification,omitempty"`
 	PreviousProvision      decimal.Decimal `json:"previous_provision"`
+
+	// Phase 3 fields. Nil-able for backwards-compat.
+	ProductID            *uuid.UUID       `json:"product_id,omitempty"`
+	ClassificationStage  *int             `json:"classification_ifrs9_stage,omitempty"`
+	Delta                *decimal.Decimal `json:"delta,omitempty"`
 }
 
 // ProvisioningRates carries the per-bucket percentages pulled from

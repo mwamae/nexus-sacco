@@ -38,6 +38,8 @@ const STATIC_PATHS: string[] = [
   '/notification-templates',
   '/scheduled-jobs',
   '/settings',
+  '/settings/mpesa',
+  '/settings/loans-policy',
   '/accounting/dashboard',
   '/accounting/chart-of-accounts',
   '/accounting/journal-entries',

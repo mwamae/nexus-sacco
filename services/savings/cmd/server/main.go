@@ -284,6 +284,18 @@ func main() {
 		Posting: postingClient,
 		Logger:  logger,
 	}
+	// Loans Phase 3 — v2 provisioning surface + loans-policy admin.
+	provisioningV2Store := store.NewLoanProvisioningV2Store(pool)
+	provisioningV2H := &handler.LoanProvisioningV2Handler{
+		V2:      provisioningV2Store,
+		Legacy:  provisioningStore,
+		Posting: postingClient,
+		Logger:  logger,
+	}
+	loanPolicyH := &handler.LoanPolicyHandler{
+		Pool:   pool,
+		Logger: logger,
+	}
 	memberStmtStore := store.NewMemberStatementStore(pool.Pool)
 	memberStmtH := &handler.MemberStatementHandler{
 		DB:         pool,
@@ -491,6 +503,9 @@ func main() {
 		// PDF formats; DRAFT watermark until the tenant admin
 		// signs off on the column layout for the period.
 		SASRA: &handler.SASRAHandler{DB: pool},
+		// Loans Phase 3 — v2 provisioning + per-tenant policy admin.
+		LoanProvisioningV2: provisioningV2H,
+		LoanPolicy:         loanPolicyH,
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),

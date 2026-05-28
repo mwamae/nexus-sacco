@@ -27,27 +27,30 @@ import { useAuth } from '../../auth/AuthContext';
 import {
   getLoan,
   repayLoan,
+  getLoanClassificationHistory,
   type LoanDetail as LoanDetailType,
   type LoanInstallment,
   type LoanTransaction,
   type LoanGuarantee,
   type LoanCollateralItem,
+  type LoanClassificationHistoryRow,
   extractError,
 } from '../../api/client';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
 
-type TabId = 'overview' | 'schedule' | 'transactions' | 'guarantors' | 'collateral' | 'documents' | 'collections' | 'restructure' | 'comments';
+type TabId = 'overview' | 'schedule' | 'transactions' | 'guarantors' | 'collateral' | 'documents' | 'collections' | 'restructure' | 'classification' | 'comments';
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: 'overview',     label: 'Overview' },
-  { id: 'schedule',     label: 'Schedule' },
-  { id: 'transactions', label: 'Transactions' },
-  { id: 'guarantors',   label: 'Guarantors' },
-  { id: 'collateral',   label: 'Collateral' },
-  { id: 'documents',    label: 'Documents' },
-  { id: 'collections',  label: 'Collections' },
-  { id: 'restructure',  label: 'Restructure history' },
-  { id: 'comments',     label: 'Comments' },
+  { id: 'overview',       label: 'Overview' },
+  { id: 'schedule',       label: 'Schedule' },
+  { id: 'transactions',   label: 'Transactions' },
+  { id: 'guarantors',     label: 'Guarantors' },
+  { id: 'collateral',     label: 'Collateral' },
+  { id: 'documents',      label: 'Documents' },
+  { id: 'collections',    label: 'Collections' },
+  { id: 'restructure',    label: 'Restructure history' },
+  { id: 'classification', label: 'Classification' }, // Phase 3
+  { id: 'comments',       label: 'Comments' },
 ];
 
 const STATUS_LABEL: Record<string, string> = {
@@ -181,6 +184,7 @@ export default function LoanDetail() {
           {activeTab === 'documents'    && <PlaceholderTab phase="Phase 2" what="Documents (upload + download)" />}
           {activeTab === 'collections'  && <PlaceholderTab phase="Phase 4" what="Collections timeline + PTPs" />}
           {activeTab === 'restructure'  && <RestructureTab txns={detail.transactions} currency={currency} />}
+          {activeTab === 'classification' && <ClassificationTab loanID={id} />}
           {activeTab === 'comments'     && <PlaceholderTab phase="Phase 2" what="Comments thread" />}
         </div>
       </div>
@@ -355,6 +359,61 @@ function PlaceholderTab({ phase, what }: { phase: string; what: string }) {
       {what} — coming in {phase}. The underlying data already exists in the schema;
       this tab is waiting on the matching UI components.
     </div>
+  );
+}
+
+// ─────────────── Classification timeline (Phase 3) ───────────────
+
+function ClassificationTab({ loanID }: { loanID: string }) {
+  const [items, setItems] = useState<LoanClassificationHistoryRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await getLoanClassificationHistory(loanID);
+        setItems(r.items);
+      } catch (e) {
+        setErr(extractError(e));
+      }
+    })();
+  }, [loanID]);
+  if (err) return <div className="alert alert-error">{err}</div>;
+  if (!items) return <div className="empty">Loading classification history…</div>;
+  if (items.length === 0) return (
+    <div className="empty">
+      No classification changes yet. The daily DPD classifier writes a row
+      each time the SASRA bucket or IFRS 9 stage changes.
+    </div>
+  );
+  return (
+    <table className="tbl">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>SASRA</th>
+          <th>IFRS 9 stage</th>
+          <th className="num">DPD</th>
+          <th>Trigger</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((row, i) => (
+          <tr key={i}>
+            <td className="mono">{new Date(row.changed_at).toLocaleString()}</td>
+            <td>
+              {row.prev_sasra && <span className="muted">{row.prev_sasra} → </span>}
+              <strong>{row.new_sasra}</strong>
+            </td>
+            <td className="mono">
+              {row.prev_ifrs9_stage != null && <span className="muted">{row.prev_ifrs9_stage} → </span>}
+              <strong>{row.new_ifrs9_stage}</strong>
+            </td>
+            <td className="num mono">{row.dpd_days}</td>
+            <td className="muted tiny">{row.trigger_source}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

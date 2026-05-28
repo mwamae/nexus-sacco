@@ -5346,7 +5346,14 @@ export async function incomeStatement(from: string, to: string): Promise<{
 
 // ─────────── Loan loss provisioning ───────────
 
-export type ProvisionRunStatus = 'pending' | 'computed' | 'posted' | 'failed' | 'superseded';
+export type ProvisionRunStatus =
+  | 'pending'
+  | 'draft'        // Phase 3 — computed, awaiting post or cancel
+  | 'computed'
+  | 'posted'
+  | 'failed'
+  | 'superseded'
+  | 'cancelled';   // Phase 3 — operator cancelled before posting
 
 export type ProvisionRun = {
   id: string;
@@ -5366,6 +5373,12 @@ export type ProvisionRun = {
   created_at: string;
   created_by?: string | null;
   updated_at: string;
+  // Phase 3 fields — nullable for backwards-compat with legacy rows.
+  period_month?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
+  cancel_reason?: string | null;
+  journal_entry_id?: string | null;
 };
 
 export type ProvisionRunLine = {
@@ -5381,7 +5394,13 @@ export type ProvisionRunLine = {
   provision_amount: string;
   previous_classification?: string | null;
   previous_provision: string;
+  // Phase 3 — nullable for legacy lines.
+  product_id?: string | null;
+  classification_ifrs9_stage?: number | null;
+  delta?: string | null;
 };
+
+// ─────────── Legacy /v1/provisioning/* (kept for one release) ───────────
 
 export async function listProvisionRuns(): Promise<{ items: ProvisionRun[]; total: number }> {
   const r = await api.get('/v1/provisioning/runs');
@@ -5405,6 +5424,85 @@ export async function postProvisionRun(id: string): Promise<ProvisionRun> {
 
 export async function supersedeProvisionRun(id: string): Promise<void> {
   await api.post(`/v1/provisioning/runs/${id}/supersede`);
+}
+
+// ─────────── Loans Phase 3 — provisioning v2 ───────────
+
+export async function listProvisioningV2Runs(): Promise<{ items: ProvisionRun[]; total: number }> {
+  const r = await api.get('/v1/loans/provisioning/runs');
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function getProvisioningV2Run(id: string): Promise<{ run: ProvisionRun; lines: ProvisionRunLine[] }> {
+  const r = await api.get(`/v1/loans/provisioning/runs/${id}`);
+  return r.data.data;
+}
+
+export async function createProvisioningV2Run(input: { period_month: string; notes?: string }): Promise<ProvisionRun> {
+  const r = await api.post('/v1/loans/provisioning/runs', input);
+  return r.data.data;
+}
+
+export async function postProvisioningV2Run(id: string): Promise<ProvisionRun> {
+  const r = await api.post(`/v1/loans/provisioning/runs/${id}/post`);
+  return r.data.data;
+}
+
+export async function cancelProvisioningV2Run(id: string, reason: string): Promise<ProvisionRun> {
+  const r = await api.post(`/v1/loans/provisioning/runs/${id}/cancel`, { reason });
+  return r.data.data;
+}
+
+// ─────────── Loans Phase 3 — policy admin + classification history ───────────
+
+export type LoansPolicyThresholds = {
+  sasra_watch_dpd: number;
+  dpd_substandard_days: number;
+  dpd_doubtful_days: number;
+  dpd_loss_days: number;
+  ifrs9_stage2_dpd: number;
+  ifrs9_stage3_dpd: number;
+};
+
+export type ECLMatrixRow = {
+  classification_sasra: 'performing' | 'watch' | 'substandard' | 'doubtful' | 'loss';
+  classification_ifrs9_stage: 1 | 2 | 3;
+  ecl_rate_pct: string; // numeric — "0.0100", "0.2500", …
+  effective_from?: string;
+  notes?: string | null;
+};
+
+export type LoansPolicySnapshot = {
+  thresholds: LoansPolicyThresholds;
+  ecl_matrix: ECLMatrixRow[];
+};
+
+export async function getLoansPolicy(): Promise<LoansPolicySnapshot> {
+  const r = await api.get('/v1/loans/policy');
+  return r.data.data;
+}
+
+export async function updateLoansPolicyThresholds(t: LoansPolicyThresholds): Promise<void> {
+  await api.put('/v1/loans/policy/thresholds', t);
+}
+
+export async function updateLoansPolicyMatrix(rows: ECLMatrixRow[]): Promise<void> {
+  await api.put('/v1/loans/policy/ecl-matrix', { rows });
+}
+
+export type LoanClassificationHistoryRow = {
+  changed_at: string;
+  prev_sasra?: string | null;
+  new_sasra: 'performing' | 'watch' | 'substandard' | 'doubtful' | 'loss';
+  prev_ifrs9_stage?: number | null;
+  new_ifrs9_stage: 1 | 2 | 3;
+  dpd_days: number;
+  trigger_source: 'daily_dpd_run' | 'manual_override' | 'repayment';
+};
+
+export async function getLoanClassificationHistory(loanID: string): Promise<{ items: LoanClassificationHistoryRow[]; total: number }> {
+  const r = await api.get(`/v1/loans/${loanID}/classification-history`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
 }
 
 // ─────────── Statement of Changes in Equity ───────────
