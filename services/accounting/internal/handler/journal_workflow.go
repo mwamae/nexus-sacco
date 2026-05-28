@@ -40,20 +40,20 @@ import (
 	"github.com/nexussacco/accounting/internal/store"
 )
 
-// tenantHasUnifiedInbox queries the tenants table once per request.
-// Failures fall back to false so the legacy maker/checker path stays
-// usable if the column is somehow missing (older identity migration).
-func (h *JournalHandler) tenantHasUnifiedInbox(ctx context.Context, tenantID uuid.UUID) bool {
-	var enabled bool
-	err := h.DB.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
-			`SELECT COALESCE(unified_inbox_enabled, false) FROM tenants WHERE id = $1`,
-			tenantID).Scan(&enabled)
-	})
-	if err != nil {
-		return false
-	}
-	return enabled
+// tenantHasUnifiedInbox is hard-pinned to true post the unified-
+// approvals migration: every cash kind routes through the workflow
+// engine, and journal-entry workflow routing follows the same gate.
+// The legacy code branches that read this remain temporarily so a
+// panic-revert can flip a single tenant back (set
+// unified_inbox_enabled = false on the tenants row AND swap the
+// `return true` line below back to the original DB read). The
+// branches + this helper get deleted in the next major release.
+//
+// The ctx + tenantID params stay so call sites don't have to change
+// when the helper goes away; future grep removes them in lockstep
+// with the dead branches.
+func (h *JournalHandler) tenantHasUnifiedInbox(_ context.Context, _ uuid.UUID) bool {
+	return true
 }
 
 // createJEWorkflowInstance POSTs the workflow service to create a

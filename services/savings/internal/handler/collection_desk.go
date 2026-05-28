@@ -38,6 +38,7 @@ import (
 	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/receiptops"
 	"github.com/nexussacco/savings/internal/store"
+	"github.com/nexussacco/savings/internal/workflowclient"
 )
 
 type CollectionDeskHandler struct {
@@ -63,6 +64,9 @@ type CollectionDeskHandler struct {
 	// about receipt lines.
 	Deposit   *DepositHandler
 	LoanRepay *LoanRepaymentHandler
+
+	Workflow       *workflowclient.Client
+	SavingsSelfURL string
 }
 
 // ─────────── GET /v1/counterparties/{id}/outstanding ───────────
@@ -427,13 +431,20 @@ func (h *CollectionDeskHandler) CreateReceipt(w http.ResponseWriter, r *http.Req
 			}
 			amt := line.Amount
 			subj := r2.CounterpartyID
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tenantID,
 				Kind:            approvalKind,
 				Title:           fmt.Sprintf("Receipt %s · line %d (%s)", r2.Serial, line.LineNo, line.Kind),
+				SubjectID:       line.ID, // receipt_line is the subject for fee/welfare/application_fee
 				SubjectMemberID: &subj,
 				Amount:          &amt,
 				Payload:         payload,
 				MakerUserID:     userID,
+				SummarySuffix:   " — " + amt.StringFixed(2),
 			})
 			if qerr != nil {
 				return qerr
@@ -1296,3 +1307,48 @@ func writeDeskErr(w http.ResponseWriter, r *http.Request, err error) {
 // when the executors below are pulled in for context.
 var _ = json.Marshal
 var _ = context.Background
+
+// RunFeePostingTx — wf_callbacks wrapper for both fee_posting and
+// welfare_posting. The payload shape is identical between the two
+// (FeePostingPayload + WelfarePostingPayload have the same fields);
+// the dispatcher routes both kinds to this single Run method.
+//
+// Mirrors the executePayloadTx fee/welfare case body: re-load the
+// receipt + line (so a concurrent void short-circuits the post),
+// call postFeeLineTx, mark the line posted.
+func (h *CollectionDeskHandler) RunFeePostingTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, _ uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload FeePostingPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode fee_posting/welfare_posting context: %w", err)
+	}
+	receipt, err := h.Receipts.GetByIDTx(ctx, tx, env.Payload.ReceiptID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	var line *domain.ReceiptLine
+	for i := range receipt.Lines {
+		if receipt.Lines[i].ID == env.Payload.LineID {
+			line = &receipt.Lines[i]
+			break
+		}
+	}
+	if line == nil {
+		return uuid.Nil, errors.New("receipt line not found on the receipt")
+	}
+	if line.VoidedAt != nil {
+		return uuid.Nil, errors.New("receipt line is voided")
+	}
+	txnID, err := h.postFeeLineTx(ctx, tx, tenantID, *receipt, *line, env.Payload.Channel)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := h.Receipts.MarkLinePostedTx(ctx, tx, line.ID, txnID); err != nil {
+		return uuid.Nil, err
+	}
+	return txnID, nil
+}

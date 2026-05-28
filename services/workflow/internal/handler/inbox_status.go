@@ -37,17 +37,30 @@ type inboxStatusResponse struct {
 
 func (h *InboxStatusHandler) Get(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := middleware.TenantIDFrom(r)
-	var resp inboxStatusResponse
+	// unified_inbox_enabled is hard-pinned true post the unified-
+	// approvals migration: every cash kind routes through the workflow
+	// engine unconditionally now, and every approval surface in the UI
+	// behaves as if the flag is on. The column on `tenants` is
+	// preserved one release for a panic-revert path (set the column
+	// to false on a single tenant to ride the legacy code branches
+	// that still exist in the per-service handlers), and is removed
+	// in the next major release together with those dead branches.
+	//
+	// bosa_fosa_enabled remains a per-tenant read because that flag
+	// gates a separate rollout (deposit accounts segmentation) and
+	// hasn't been universally turned on yet.
+	var bosaFosaEnabled bool
 	err := h.DB.WithTenantTx(r.Context(), tenantID, func(tx pgx.Tx) error {
 		return tx.QueryRow(r.Context(),
-			`SELECT COALESCE(unified_inbox_enabled, false),
-			        COALESCE(bosa_fosa_enabled, false)
-			   FROM tenants WHERE id = $1`,
-			tenantID).Scan(&resp.UnifiedInboxEnabled, &resp.BOSAFOSAEnabled)
+			`SELECT COALESCE(bosa_fosa_enabled, false) FROM tenants WHERE id = $1`,
+			tenantID).Scan(&bosaFosaEnabled)
 	})
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
 	}
-	httpx.OK(w, resp)
+	httpx.OK(w, inboxStatusResponse{
+		UnifiedInboxEnabled: true,
+		BOSAFOSAEnabled:     bosaFosaEnabled,
+	})
 }

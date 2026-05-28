@@ -22,14 +22,41 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/nexussacco/savings/internal/auth"
 	"github.com/nexussacco/savings/internal/config"
 	"github.com/nexussacco/savings/internal/db"
 	"github.com/nexussacco/savings/internal/handler"
+	"github.com/nexussacco/savings/internal/handler/wf_callbacks"
 	"github.com/nexussacco/savings/internal/notifier"
 	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
+	"github.com/nexussacco/savings/internal/workflowclient"
 )
+
+// receiptLineAdapter forwards wf_callbacks.ReceiptLineUpdater calls
+// onto the savings receipt store. Lives here (not in wf_callbacks)
+// so the wf_callbacks package stays free of store-package imports —
+// the runner-pattern keeps the dependency arrows pointing one way.
+type receiptLineAdapter struct{ s *store.ReceiptStore }
+
+func (a receiptLineAdapter) FindReceiptLineByApprovalIDTx(ctx context.Context, tx pgx.Tx, approvalID uuid.UUID) (uuid.UUID, bool, error) {
+	line, err := a.s.GetLineByApprovalIDTx(ctx, tx, approvalID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return uuid.Nil, false, nil
+		}
+		return uuid.Nil, false, err
+	}
+	return line.ID, true, nil
+}
+func (a receiptLineAdapter) MarkReceiptLinePostedTx(ctx context.Context, tx pgx.Tx, lineID uuid.UUID, txnID uuid.UUID) error {
+	return a.s.MarkLinePostedTx(ctx, tx, lineID, txnID)
+}
+func (a receiptLineAdapter) MarkReceiptLineDeclinedTx(ctx context.Context, tx pgx.Tx, lineID uuid.UUID) error {
+	return a.s.MarkLineDeclinedTx(ctx, tx, lineID)
+}
 
 // bootTime is captured at process start. Reported on /healthz so
 // operators can see process uptime via (now - started_at). Module-level
@@ -128,6 +155,8 @@ func main() {
 		Notifier:       notifyClient,
 		Posting:        postingClient,
 		Logger:         logger,
+		Workflow:       workflowclient.New(),
+		SavingsSelfURL: cfg.SavingsURL,
 	}
 	productH := &handler.ProductHandler{
 		DB:       pool,
@@ -147,6 +176,11 @@ func main() {
 		Notifier:       notifyClient,
 		Posting:        postingClient,
 		Logger:         logger,
+		// Workflow path — when active wf_definition exists for
+		// cash_deposit on the tenant, queueing routes through the
+		// workflow engine instead of pending_approvals.
+		Workflow:       workflowclient.New(),
+		SavingsSelfURL: cfg.SavingsURL,
 	}
 	interestH := &handler.InterestHandler{
 		DB:                  pool,
@@ -200,6 +234,8 @@ func main() {
 		Notifier:        notifyClient,
 		Posting:         postingClient,
 		Logger:          logger,
+		Workflow:        workflowclient.New(),
+		SavingsSelfURL:  cfg.SavingsURL,
 	}
 	loanRepayH := &handler.LoanRepaymentHandler{
 		DB:             pool,
@@ -214,6 +250,8 @@ func main() {
 		Notifier:       notifyClient,
 		Posting:        postingClient,
 		Logger:         logger,
+		Workflow:       workflowclient.New(),
+		SavingsSelfURL: cfg.SavingsURL,
 	}
 	loanCollectH := &handler.LoanCollectionsHandler{
 		DB:             pool,
@@ -226,14 +264,19 @@ func main() {
 		Approvals:      approvalsStore,
 		Notifier:       notifyClient,
 		Logger:         logger,
+		Posting:        postingClient,
+		Workflow:       workflowclient.New(),
+		SavingsSelfURL: cfg.SavingsURL,
 	}
 	loanReportsH := &handler.LoanReportsHandler{
-		DB:        pool,
-		Posting:   postingClient,
-		Reports:   loanReportsStore,
-		Loans:     loanStore,
-		Approvals: approvalsStore,
-		Logger:    logger,
+		DB:             pool,
+		Posting:        postingClient,
+		Reports:        loanReportsStore,
+		Loans:          loanStore,
+		Approvals:      approvalsStore,
+		Logger:         logger,
+		Workflow:       workflowclient.New(),
+		SavingsSelfURL: cfg.SavingsURL,
 	}
 	provisioningStore := store.NewProvisioningStore(pool)
 	provisioningH := &handler.ProvisioningHandler{
@@ -253,6 +296,12 @@ func main() {
 		Ledger: memberLedgerStore,
 		Logger: logger,
 	}
+	// Application-fee executor is shared between the legacy pending-
+	// approvals dispatcher (wired below) and the wf_callbacks
+	// registry. Extracted to a local so both can hold the same
+	// instance.
+	applicationFeesEx := &handler.ApplicationFeeExecutor{Posting: postingClient, Logger: logger}
+
 	approvalsH := &handler.PendingApprovalsHandler{
 		DB:          pool,
 		Approvals:   approvalsStore,
@@ -267,7 +316,7 @@ func main() {
 		// gets wired in below after collectionDeskH exists (the two
 		// handlers reference each other; we break the cycle with a
 		// post-construction assignment).
-		ApplicationFees:       &handler.ApplicationFeeExecutor{Posting: postingClient, Logger: logger},
+		ApplicationFees:       applicationFeesEx,
 		WorkflowInternalToken: cfg.WorkflowInternalToken,
 		Logger:                logger,
 	}
@@ -287,6 +336,8 @@ func main() {
 		Deposit:        depositH,
 		LoanRepay:      loanRepayH,
 		Logger:         logger,
+		Workflow:       workflowclient.New(),
+		SavingsSelfURL: cfg.SavingsURL,
 	}
 	// Cycle-breaker: the fee/welfare approval executor needs to
 	// call back into collectionDeskH.postFeeLineTx. Constructed
@@ -362,6 +413,35 @@ func main() {
 		return
 	}
 
+	// Workflow callback registry. One Register call per migrated
+	// kind; the dispatcher's HTTP POST is routed by process_kind
+	// through this registry. Every cash-handling kind has a
+	// dedicated callback file in wf_callbacks/<kind>.go.
+	rla := receiptLineAdapter{s: receiptStore}
+	wfRegistry := wf_callbacks.NewRegistry()
+	wfRegistry.Register("cash_deposit", wf_callbacks.NewCashDepositCallback(depositH, rla))
+	wfRegistry.Register("cash_withdrawal", wf_callbacks.NewCashWithdrawalCallback(depositH, rla))
+	wfRegistry.Register("cash_account_transfer", wf_callbacks.NewCashAccountTransferCallback(depositH, rla))
+	wfRegistry.Register("share_purchase", wf_callbacks.NewSharePurchaseCallback(shareH, rla))
+	wfRegistry.Register("share_transfer", wf_callbacks.NewShareTransferCallback(shareH, rla))
+	wfRegistry.Register("share_bonus_issue", wf_callbacks.NewShareBonusCallback(shareH, rla))
+	wfRegistry.Register("share_lien", wf_callbacks.NewShareLienCallback(shareH, rla))
+	wfRegistry.Register("loan_disbursement", wf_callbacks.NewLoanDisbursementCallback(loanH, rla))
+	wfRegistry.Register("loan_repayment", wf_callbacks.NewLoanRepaymentCallback(loanRepayH, rla))
+	wfRegistry.Register("loan_settle", wf_callbacks.NewLoanSettleCallback(loanRepayH, rla))
+	wfRegistry.Register("loan_reverse", wf_callbacks.NewLoanReverseCallback(loanRepayH, rla))
+	wfRegistry.Register("loan_write_off", wf_callbacks.NewLoanWriteoffCallback(loanReportsH, rla))
+	wfRegistry.Register("loan_reschedule", wf_callbacks.NewLoanRescheduleCallback(loanCollectH, rla))
+	wfRegistry.Register("loan_moratorium", wf_callbacks.NewLoanMoratoriumCallback(loanCollectH, rla))
+	wfRegistry.Register("loan_settlement_discount", wf_callbacks.NewLoanSettlementDiscountCallback(loanCollectH, rla))
+	wfRegistry.Register("fee_posting", wf_callbacks.NewFeePostingCallback(collectionDeskH, rla, "fee_posting"))
+	wfRegistry.Register("welfare_posting", wf_callbacks.NewFeePostingCallback(collectionDeskH, rla, "welfare_posting"))
+	if applicationFeesEx != nil {
+		wfRegistry.Register("application_fee", wf_callbacks.NewApplicationFeeCallback(applicationFeesEx, rla))
+	}
+	wfRegistry.Register("member_bosa_exit", wf_callbacks.NewMemberBOSAExitCallback())
+	logger.Info("wf_callbacks: registered", "kinds", wfRegistry.Kinds())
+
 	router := handler.Routes(handler.Deps{
 		Share:         shareH,
 		Deposit:       depositH,
@@ -380,10 +460,21 @@ func main() {
 		Approvals:     approvalsH,
 		Collection:    collectionDeskH,
 		VirtualTill:   &handler.VirtualTillHandler{DB: pool, Tills: virtualTillStore},
-		BOSAExit:      &handler.BOSAExitHandler{DB: pool, Deposit: depositH, Approvals: approvalsStore},
+		BOSAExit: &handler.BOSAExitHandler{
+			DB:             pool,
+			Deposit:        depositH,
+			Approvals:      approvalsStore,
+			Workflow:       workflowclient.New(),
+			SavingsSelfURL: cfg.SavingsURL,
+		},
 		Outbox:        &handler.PostingOutboxHandler{DB: pool, Outbox: store.NewPostingOutboxStore(pool.Pool)},
 		FeesSummary:   &handler.FeesSummaryHandler{DB: pool, Store: store.NewFeesSummaryStore(pool.Pool)},
 		FinanceHealth: &handler.FinanceHealthHandler{DB: pool, Logger: logger},
+		WFTerminal: &handler.WorkflowTerminalCallbackHandler{
+			DB:                    pool,
+			Registry:              wfRegistry,
+			WorkflowInternalToken: cfg.WorkflowInternalToken,
+		},
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),

@@ -30,6 +30,7 @@ import (
 	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/postingops"
 	"github.com/nexussacco/savings/internal/store"
+	"github.com/nexussacco/savings/internal/workflowclient"
 )
 
 type LoanHandler struct {
@@ -50,6 +51,9 @@ type LoanHandler struct {
 	Notifier       *notifier.Client
 	Posting        *posting.Client
 	Logger         *slog.Logger
+
+	Workflow       *workflowclient.Client
+	SavingsSelfURL string
 }
 
 // ─────────── Send offer ───────────
@@ -267,14 +271,21 @@ func (h *LoanHandler) Disburse(w http.ResponseWriter, r *http.Request) {
 			}
 			memberID := loan.CounterpartyID
 			amount := loan.Principal
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tid,
 				Kind:            domain.ApprovalKindLoanDisbursement,
 				Title:           "Disburse loan " + loan.LoanNo,
+				SubjectID:       loanID,
 				SubjectMemberID: &memberID,
 				SubjectLoanID:   &loanID,
 				Amount:          &amount,
 				Payload:         payload,
 				MakerUserID:     userID,
+				SummarySuffix:   " — " + amount.StringFixed(2),
 			})
 			if qerr != nil {
 				return qerr

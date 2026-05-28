@@ -8,12 +8,9 @@
 package handler
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -186,11 +183,18 @@ func (h *InstanceHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		i = inst
-		// If we auto-approved (all skipped), fire the callback.
+		// If we auto-approved (all skipped), close the instance and
+		// mark its callback row for the dispatcher. Marking inside
+		// the same tx keeps the outbox semantics honest — either both
+		// the terminal state AND the callback-pending flag commit, or
+		// neither does. The dispatcher polls; we don't fire inline.
 		if startStatus == domain.StatusApproved {
 			now := time.Now().UTC()
 			i.CompletedAt = &now
 			if err := h.Instances.UpdateProgressTx(r.Context(), tx, i); err != nil {
+				return err
+			}
+			if err := h.Instances.MarkCallbackPendingTx(r.Context(), tx, i.ID); err != nil {
 				return err
 			}
 		}
@@ -199,10 +203,6 @@ func (h *InstanceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
-	}
-	// Webhook delivery if terminal (out-of-txn).
-	if i.Status == domain.StatusApproved {
-		h.fireCallback(r.Context(), tenantID, i)
 	}
 	// Notify approvers that a new request landed in their queue. We
 	// only fire when the instance is still pending (someone needs to
@@ -465,15 +465,22 @@ func (h *InstanceHandler) Action(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
+		// Terminal transition (approved / rejected / cancelled) →
+		// mark the callback row pending inside the same tx. The
+		// dispatcher polls and delivers asynchronously. Done inline
+		// (not deferred to post-tx) so the row's terminal state and
+		// callback-pending flag commit atomically.
+		if fireCallback {
+			if err := h.Instances.MarkCallbackPendingTx(r.Context(), tx, inst.ID); err != nil {
+				return err
+			}
+		}
 		updated = inst
 		return nil
 	})
 	if err != nil {
 		httpx.WriteErr(w, r, err)
 		return
-	}
-	if fireCallback {
-		h.fireCallback(r.Context(), tenantID, updated)
 	}
 	// Mirror the action onto the notification stream. ESCALATE has its
 	// own event; APPROVE / REJECT / CANCEL all roll up to APPROVAL_ACTIONED
@@ -627,60 +634,17 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// ─────────── webhook delivery ───────────
-
-func (h *InstanceHandler) fireCallback(parent context.Context, tenantID uuid.UUID, i *domain.Instance) {
-	if i.CallbackURL == "" {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), h.CallbackTimeout)
-		defer cancel()
-		body, _ := json.Marshal(map[string]any{
-			"tenant_id":     tenantID,
-			"instance":      i,
-			"event":         string(i.Status),
-			"delivered_at":  time.Now().UTC(),
-		})
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, i.CallbackURL, bytes.NewReader(body))
-		if err != nil {
-			h.recordCallback(parent, tenantID, i.ID, "failed:request: "+err.Error())
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "nexus-workflow/1")
-		req.Header.Set("X-Nexus-Workflow-Event", string(i.Status))
-		resp, err := h.HTTP.Do(req)
-		if err != nil {
-			h.recordCallback(parent, tenantID, i.ID, "failed:transport: "+err.Error())
-			return
-		}
-		defer resp.Body.Close()
-		// Drain to allow connection reuse.
-		_, _ = io.Copy(io.Discard, resp.Body)
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			h.recordCallback(parent, tenantID, i.ID, "delivered")
-		} else {
-			h.recordCallback(parent, tenantID, i.ID, "failed:status:"+resp.Status)
-		}
-	}()
-}
-
-func (h *InstanceHandler) recordCallback(parent context.Context, tenantID, instanceID uuid.UUID, status string) {
-	delivered := time.Now().UTC()
-	_ = h.DB.WithTenantTx(parent, tenantID, func(tx pgx.Tx) error {
-		if err := h.Instances.SetCallbackStatusTx(parent, tx, instanceID, status, &delivered); err != nil {
-			return err
-		}
-		_, err := h.Actions.WriteTx(parent, tx, store.CreateActionInput{
-			TenantID:   tenantID,
-			InstanceID: instanceID,
-			Action:     domain.ActCallbackFired,
-			Comments:   status,
-		})
-		return err
-	})
-}
+// Callback delivery used to live here as a fire-and-forget goroutine
+// (fireCallback + recordCallback). It was replaced in this PR by the
+// callback-dispatcher worker at services/workflow/cmd/callback-dispatcher.
+// The dispatcher polls wf_instances for rows with
+// callback_url IS NOT NULL AND callback_status = 'pending', POSTs, and
+// updates callback_status / callback_attempts / callback_next_attempt_at
+// with retry-and-DLQ semantics that mirror the posting-dispatcher.
+//
+// The handlers above just flip callback_status to 'pending' inside the
+// transaction that produces the terminal state — see
+// store.InstanceStore.MarkCallbackPendingTx.
 
 // ─────────── POST /v1/workflow-instances/{id}/claim ───────────
 //

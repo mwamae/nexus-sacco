@@ -12,6 +12,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -102,6 +103,77 @@ type DepTransferResult struct {
 }
 
 // ─────────── Executors ───────────
+
+// RunDepositTx — wf_callbacks-facing wrapper for cash_deposit.
+// See the leading comment in the wf_callbacks package for the
+// dependency-graph rationale (runners live on the handler; the
+// callback files declare narrow interfaces; main.go connects).
+func (h *DepositHandler) RunDepositTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload DepositPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode cash_deposit context: %w", err)
+	}
+	res, err := h.ExecuteDepositTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := h.postDepositToGLTx(ctx, tx, tenantID, res, env.Payload.Channel); err != nil {
+		return uuid.Nil, err
+	}
+	return res.Transaction.ID, nil
+}
+
+// RunWithdrawalTx — wf_callbacks wrapper for cash_withdrawal. Same
+// shape as RunDepositTx but routes through the withdrawal executor +
+// withdrawal GL post.
+func (h *DepositHandler) RunWithdrawalTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload WithdrawalPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode cash_withdrawal context: %w", err)
+	}
+	res, err := h.ExecuteWithdrawalTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := h.postWithdrawalToGLTx(ctx, tx, tenantID, res, env.Payload.Channel); err != nil {
+		return uuid.Nil, err
+	}
+	return res.Transaction.ID, nil
+}
+
+// RunDepTransferTx — wf_callbacks wrapper for cash_account_transfer.
+// Returns the FROM-side transaction id (the source of truth for the
+// receipt-line linkage; the TO-side mirror txn is reachable via the
+// transfer-pair join).
+func (h *DepositHandler) RunDepTransferTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload DepTransferPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode cash_account_transfer context: %w", err)
+	}
+	res, err := h.ExecuteDepTransferTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := h.postDepositTransferToGLTx(ctx, tx, tenantID, res); err != nil {
+		return uuid.Nil, err
+	}
+	return res.From.Transaction.ID, nil
+}
 
 // ExecuteDepositTx posts a deposit transaction. Caller guarantees:
 //   - amount is positive

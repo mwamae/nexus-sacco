@@ -5,6 +5,8 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 
@@ -17,6 +19,27 @@ import (
 	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
 )
+
+// RunDisbursementTx — wf_callbacks wrapper for loan_disbursement.
+func (h *LoanHandler) RunDisbursementTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload LoanDisbursementPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode loan_disbursement context: %w", err)
+	}
+	res, err := h.ExecuteDisbursementTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := h.postLoanDisbursementToGLTx(ctx, tx, tenantID, res, env.Payload.Channel); err != nil {
+		return uuid.Nil, err
+	}
+	return res.Disbursement.ID, nil
+}
 
 type LoanDisbursementPayload struct {
 	LoanID          uuid.UUID  `json:"loan_id"`

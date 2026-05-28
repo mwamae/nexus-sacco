@@ -29,6 +29,7 @@ import (
 	"github.com/nexussacco/savings/internal/postingops"
 	"github.com/nexussacco/savings/internal/receiptops"
 	"github.com/nexussacco/savings/internal/store"
+	"github.com/nexussacco/savings/internal/workflowclient"
 )
 
 type ShareHandler struct {
@@ -46,6 +47,11 @@ type ShareHandler struct {
 	Notifier     *notifier.Client
 	Posting      *posting.Client
 	Logger       *slog.Logger
+
+	// Workflow + SavingsSelfURL drive the new wf path. See
+	// DepositHandler for the same fields.
+	Workflow       *workflowclient.Client
+	SavingsSelfURL string
 }
 
 // ─────────── Helpers ───────────
@@ -421,13 +427,20 @@ func (h *ShareHandler) Purchase(w http.ResponseWriter, r *http.Request) {
 		amount := policy.ParValue.Mul(decimal.NewFromInt(int64(in.Shares)))
 		if toggles.SharePurchase {
 			m := memberID
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tid,
 				Kind:            domain.ApprovalKindSharePurchase,
 				Title:           fmt.Sprintf("Buy %d shares", in.Shares),
+				SubjectID:       memberID,
 				SubjectMemberID: &m,
 				Amount:          &amount,
 				Payload:         payload,
 				MakerUserID:     userID,
+				SummarySuffix:   " — " + amount.StringFixed(2),
 			})
 			if qerr != nil {
 				return qerr
@@ -653,9 +666,15 @@ func (h *ShareHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 			}
 			amount := policy.ParValue.Mul(decimal.NewFromInt(int64(in.Shares)))
 			m := memberID
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tid,
 				Kind:            domain.ApprovalKindShareTransfer,
 				Title:           fmt.Sprintf("Transfer %d shares between members", in.Shares),
+				SubjectID:       memberID,
 				SubjectMemberID: &m,
 				Amount:          &amount,
 				Payload:         payload,
@@ -968,9 +987,15 @@ func (h *ShareHandler) PlaceLien(w http.ResponseWriter, r *http.Request) {
 		}
 		if toggles.ShareLien {
 			m := memberID
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tid,
 				Kind:            domain.ApprovalKindShareLien,
 				Title:           fmt.Sprintf("Place lien on %d shares", in.Shares),
+				SubjectID:       memberID,
 				SubjectMemberID: &m,
 				Payload:         payload,
 				MakerUserID:     userID,
@@ -1083,9 +1108,19 @@ func (h *ShareHandler) BonusIssue(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if toggles.ShareBonus {
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			// Bonus issue is tenant-wide (no per-member subject).
+			// Use tenant_id as the wf subject_id so the engine has
+			// something non-nil to index on; the executor doesn't
+			// read subject_id — it walks every active account.
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:    tid,
 				Kind:        domain.ApprovalKindShareBonus,
 				Title:       fmt.Sprintf("Bonus issue %s%% to all active accounts", in.PctOfHolding.String()),
+				SubjectID:   tid,
 				Payload:     payload,
 				MakerUserID: userID,
 			})

@@ -15,6 +15,8 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -23,6 +25,93 @@ import (
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/store"
 )
+
+// ── wf_callbacks-facing wrappers ──────────────────────────────────
+//
+// One Run wrapper per Execute method. The pattern matches DepositHandler.Run*Tx
+// in deposit_executors.go — decode the wf context envelope, execute,
+// post the GL (when the kind has a GL leg), return the resulting
+// txn id (or uuid.Nil for kinds with no single representative txn).
+
+func (h *ShareHandler) RunSharePurchaseTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload SharePurchasePayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode share_purchase context: %w", err)
+	}
+	res, err := h.ExecuteSharePurchaseTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := h.postSharePurchaseToGLTx(ctx, tx, tenantID, res, env.Payload.PaymentChannel); err != nil {
+		return uuid.Nil, err
+	}
+	return res.Transaction.ID, nil
+}
+
+// RunShareTransferTx — no GL leg today (see TODO in executePayloadTx
+// case ShareTransfer). Returns the FROM-side txn id for the receipt-
+// line linkage path.
+func (h *ShareHandler) RunShareTransferTx(
+	ctx context.Context, tx pgx.Tx, _ uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload ShareTransferPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode share_transfer context: %w", err)
+	}
+	res, err := h.ExecuteShareTransferTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return res.From.Transaction.ID, nil
+}
+
+// RunShareBonusTx — bonus issue produces many ledger rows; no single
+// representative txn id. The receipt-line linkage path treats uuid.Nil
+// as "no posted_txn_id" and flips the linked line to posted with NULL.
+func (h *ShareHandler) RunShareBonusTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload ShareBonusPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode share_bonus_issue context: %w", err)
+	}
+	res, err := h.ExecuteShareBonusTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := h.postBonusIssueToGLTx(ctx, tx, tenantID, res, env.Payload.Reason); err != nil {
+		return uuid.Nil, err
+	}
+	return uuid.Nil, nil
+}
+
+// RunShareLienTx — lien isn't a ledger txn either. Returns uuid.Nil.
+func (h *ShareHandler) RunShareLienTx(
+	ctx context.Context, tx pgx.Tx, _ uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload ShareLienPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode share_lien context: %w", err)
+	}
+	if _, err := h.ExecuteShareLienTx(ctx, tx, env.Payload, makerID); err != nil {
+		return uuid.Nil, err
+	}
+	return uuid.Nil, nil
+}
 
 // ─────────── Payloads ───────────
 

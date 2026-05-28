@@ -6,6 +6,8 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
+	"github.com/nexussacco/savings/internal/postingops"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -217,4 +220,102 @@ func (h *LoanRepaymentHandler) ExecuteReverseTx(
 		return nil, err
 	}
 	return &LoanReverseResult{Reversal: *rev, Loan: *loan}, nil
+}
+
+// ── wf_callbacks-facing Run wrappers ──────────────────────────────
+
+// RunRepaymentTx — wf_callbacks wrapper for loan_repayment.
+func (h *LoanRepaymentHandler) RunRepaymentTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload LoanRepaymentPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode loan_repayment context: %w", err)
+	}
+	res, err := h.ExecuteRepaymentTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := h.postRepaymentToGLTx(ctx, tx, tenantID, res, env.Payload.Channel); err != nil {
+		return uuid.Nil, err
+	}
+	return res.Transaction.ID, nil
+}
+
+// RunSettleTx — wf_callbacks wrapper for loan_settle. Posts via the
+// settlement-specific postingops helper (distinct source_module from
+// regular repayments).
+func (h *LoanRepaymentHandler) RunSettleTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload LoanSettlePayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode loan_repayment context: %w", err)
+	}
+	res, err := h.ExecuteSettleTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := postingops.PostLoanSettleTx(ctx, tx, postingops.Deps{
+		Posting: h.Posting,
+	}, postingops.LoanSettleInput{
+		TenantID:  tenantID,
+		TxnID:     res.Transaction.ID,
+		LoanNo:    res.Loan.LoanNo,
+		Amount:    res.Transaction.Amount,
+		Principal: res.Allocation.Principal,
+		Interest:  res.Allocation.Interest,
+		Penalty:   res.Allocation.Penalty,
+		Fees:      res.Allocation.Fees,
+		Channel:   env.Payload.Channel,
+	}); err != nil {
+		return uuid.Nil, err
+	}
+	return res.Transaction.ID, nil
+}
+
+// RunReverseTx — wf_callbacks wrapper for loan_reverse. Posts via
+// the repayment-reversal-specific postingops helper.
+func (h *LoanRepaymentHandler) RunReverseTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload LoanReversePayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode loan_repayment context: %w", err)
+	}
+	res, err := h.ExecuteReverseTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	origTxnID := uuid.Nil
+	if res.Reversal.ReversesTxnID != nil {
+		origTxnID = *res.Reversal.ReversesTxnID
+	}
+	if err := postingops.PostLoanRepaymentReversalTx(ctx, tx, postingops.Deps{
+		Posting: h.Posting,
+	}, postingops.LoanRepaymentReversalInput{
+		TenantID:      tenantID,
+		ReversalTxnID: res.Reversal.ID,
+		OriginalTxnID: origTxnID,
+		LoanNo:        res.Loan.LoanNo,
+		Amount:        res.Reversal.Amount,
+		Principal:     res.Reversal.PrincipalComponent,
+		Interest:      res.Reversal.InterestComponent,
+		Penalty:       res.Reversal.PenaltyComponent,
+		Fees:          res.Reversal.FeeComponent,
+		Channel:       "",
+		Reason:        env.Payload.Reason,
+	}); err != nil {
+		return uuid.Nil, err
+	}
+	return res.Reversal.ID, nil
 }

@@ -17,6 +17,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -50,6 +51,26 @@ type ApplicationFeePayload struct {
 type ApplicationFeeExecutor struct {
 	Posting *posting.Client
 	Logger  *slog.Logger
+}
+
+// RunApplicationFeeTx — wf_callbacks wrapper. Same body as the
+// dispatcher case in pending_approvals.executePayloadTx; decode the
+// envelope, post via PostApprovedTx, return the JE id.
+func (e *ApplicationFeeExecutor) RunApplicationFeeTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, _ uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload ApplicationFeePayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode application_fee context: %w", err)
+	}
+	jeID, err := e.PostApprovedTx(ctx, tx, tenantID, env.Payload)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return jeID, nil
 }
 
 // PostApprovedTx is invoked from the dispatcher on approve. It

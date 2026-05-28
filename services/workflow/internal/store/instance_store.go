@@ -262,6 +262,29 @@ func (s *InstanceStore) SetCallbackStatusTx(ctx context.Context, tx pgx.Tx, id u
 	return err
 }
 
+// MarkCallbackPendingTx flags a row for the callback-dispatcher to pick
+// up on its next poll. Idempotent — re-marking a row that's already
+// pending or in-flight does nothing. A no-op when the instance has no
+// callback_url (the original Create didn't ask for delivery).
+//
+// Resets the attempt counter + next-attempt clock so a re-mark after
+// a previous failure restarts the backoff from zero. The dispatcher
+// uses this in two cases today: when the original Action transition
+// is terminal, and (future) when an operator clicks "Retry callback"
+// on a DLQ row.
+func (s *InstanceStore) MarkCallbackPendingTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE wf_instances
+		   SET callback_status        = 'pending',
+		       callback_attempts      = 0,
+		       callback_next_attempt_at = NULL,
+		       callback_last_error    = NULL
+		 WHERE id = $1
+		   AND callback_url IS NOT NULL
+	`, id)
+	return err
+}
+
 // Dashboard counts.
 type DashboardCounts struct {
 	Total       int                       `json:"total"`

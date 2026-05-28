@@ -30,6 +30,7 @@ import (
 	"github.com/nexussacco/savings/internal/postingops"
 	"github.com/nexussacco/savings/internal/receiptops"
 	"github.com/nexussacco/savings/internal/store"
+	"github.com/nexussacco/savings/internal/workflowclient"
 )
 
 type LoanRepaymentHandler struct {
@@ -46,6 +47,10 @@ type LoanRepaymentHandler struct {
 	Notifier     *notifier.Client
 	Posting      *posting.Client
 	Logger       *slog.Logger
+
+	// wf-routed queueing — same shape as DepositHandler.
+	Workflow       *workflowclient.Client
+	SavingsSelfURL string
 }
 
 // ─────────── Repay ───────────
@@ -138,14 +143,21 @@ func (h *LoanRepaymentHandler) Repay(w http.ResponseWriter, r *http.Request) {
 		memberID := loan.CounterpartyID
 		if toggles.LoanRepayment {
 			amount := in.Amount
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tid,
 				Kind:            domain.ApprovalKindLoanRepayment,
 				Title:           "Repayment on loan " + loan.LoanNo,
+				SubjectID:       loanID,
 				SubjectMemberID: &memberID,
 				SubjectLoanID:   &loanID,
 				Amount:          &amount,
 				Payload:         payload,
 				MakerUserID:     userID,
+				SummarySuffix:   " — " + amount.StringFixed(2),
 			})
 			if qerr != nil {
 				return qerr
@@ -476,14 +488,21 @@ func (h *LoanRepaymentHandler) Settle(w http.ResponseWriter, r *http.Request) {
 			}
 			memberID := loan.CounterpartyID
 			payoff := loan.PenaltyBalance.Add(loan.InterestBalance).Add(loan.PrincipalBalance).Add(loan.FeesBalance)
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tid,
 				Kind:            domain.ApprovalKindLoanSettle,
 				Title:           "Early settle loan " + loan.LoanNo,
+				SubjectID:       loanID,
 				SubjectMemberID: &memberID,
 				SubjectLoanID:   &loanID,
 				Amount:          &payoff,
 				Payload:         payload,
 				MakerUserID:     userID,
+				SummarySuffix:   " — payoff " + payoff.StringFixed(2),
 			})
 			if qerr != nil {
 				return qerr
@@ -546,13 +565,20 @@ func (h *LoanRepaymentHandler) Reverse(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			amt := orig.Amount.Abs()
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:      tid,
 				Kind:          domain.ApprovalKindLoanReverse,
 				Title:         "Reverse loan txn " + orig.TxnNo,
+				SubjectID:     orig.LoanID,
 				SubjectLoanID: &orig.LoanID,
 				Amount:        &amt,
 				Payload:       payload,
 				MakerUserID:   userID,
+				SummarySuffix: " — " + amt.StringFixed(2),
 			})
 			if qerr != nil {
 				return qerr

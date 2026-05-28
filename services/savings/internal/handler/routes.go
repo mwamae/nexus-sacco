@@ -33,6 +33,11 @@ type Deps struct {
 	Outbox        *PostingOutboxHandler
 	FeesSummary   *FeesSummaryHandler
 	FinanceHealth *FinanceHealthHandler
+	// WFTerminal receives the workflow callback-dispatcher's POST
+	// when a savings-owned wf_instance reaches a terminal state.
+	// Optional — early-boot tests + the FinanceHealth-only main.go
+	// variants leave it nil and the route below short-circuits to 404.
+	WFTerminal *WorkflowTerminalCallbackHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -84,6 +89,13 @@ func Routes(d Deps) http.Handler {
 	r.Route("/internal/v1", func(r chi.Router) {
 		r.Post("/pending-approvals/{approval_id}/resolve", d.Approvals.ResolveFromWorkflow)
 		r.Post("/loan-applications/{app_id}/resolve", d.LoanApp.ResolveFromWorkflow)
+		// workflow callback-dispatcher delivers terminal-state POSTs
+		// for cash kinds (cash_deposit, share_purchase, …) here.
+		// Routes by inst.process_kind to wf_callbacks/<kind>.go.
+		// Wired in cmd/server/main.go via wf_callbacks.Registry.
+		if d.WFTerminal != nil {
+			r.Post("/workflow-terminal-action", d.WFTerminal.Handle)
+		}
 		// Phase 4 — mpesa's B2C result handler calls this once
 		// Daraja confirms a disbursement landed on the member's
 		// phone. The handler does its own X-Internal-Token check.

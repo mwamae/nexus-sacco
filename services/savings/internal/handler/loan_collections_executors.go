@@ -6,6 +6,8 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
+	"github.com/nexussacco/savings/internal/postingops"
 	"github.com/nexussacco/savings/internal/store"
 )
 
@@ -132,4 +135,123 @@ func (h *LoanReportsHandler) ExecuteWriteoffTx(
 		return nil, err
 	}
 	return &LoanWriteoffResult{Writeoff: *wo, Loan: *loan}, nil
+}
+
+// ── wf_callbacks-facing Run wrappers ──────────────────────────────
+
+// RunRescheduleTx — wf_callbacks wrapper for loan_reschedule.
+// Reschedule has no GL leg; returns uuid.Nil.
+func (h *LoanCollectionsHandler) RunRescheduleTx(
+	ctx context.Context, tx pgx.Tx, _ uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload LoanReschedulePayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode loan_reschedule context: %w", err)
+	}
+	if _, err := h.ExecuteRescheduleTx(ctx, tx, env.Payload, makerID); err != nil {
+		return uuid.Nil, err
+	}
+	return uuid.Nil, nil
+}
+
+// RunMoratoriumTx — wf_callbacks wrapper for loan_moratorium.
+// Moratorium has no GL leg; returns uuid.Nil.
+func (h *LoanCollectionsHandler) RunMoratoriumTx(
+	ctx context.Context, tx pgx.Tx, _ uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload LoanMoratoriumPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode loan_moratorium context: %w", err)
+	}
+	if _, err := h.ExecuteMoratoriumTx(ctx, tx, env.Payload, makerID); err != nil {
+		return uuid.Nil, err
+	}
+	return uuid.Nil, nil
+}
+
+// RunSettlementDiscountTx — wf_callbacks wrapper for
+// loan_settlement_discount. Posts the discount JE via postingops if
+// the executor returned a discount txn id; mirrors the legacy
+// executePayloadTx case behaviour.
+func (h *LoanCollectionsHandler) RunSettlementDiscountTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload LoanSettlementDiscountPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode loan_settlement_discount context: %w", err)
+	}
+	res, err := h.ExecuteSettlementDiscountTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if res.Restructuring.DiscountWriteoffTxnID == nil {
+		return uuid.Nil, nil
+	}
+	id := *res.Restructuring.DiscountWriteoffTxnID
+	discountAmt := decimal.Zero
+	if res.Restructuring.DiscountAmount != nil {
+		discountAmt = *res.Restructuring.DiscountAmount
+	}
+	if err := postingops.PostLoanSettlementDiscountTx(ctx, tx, postingops.Deps{
+		Posting: h.Posting,
+	}, postingops.LoanSettlementDiscountInput{
+		TenantID:        tenantID,
+		DiscountTxnID:   id,
+		LoanNo:          res.Loan.LoanNo,
+		DiscountAmount:  discountAmt,
+		WaivedComponent: "interest",
+		Reason:          env.Payload.Reason,
+	}); err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
+}
+
+// RunWriteoffTx — wf_callbacks wrapper for loan_write_off.
+// Posts the write-off JE via postingops; reads the per-tenant
+// writeoff_through_provision flag to choose the correct legs.
+func (h *LoanReportsHandler) RunWriteoffTx(
+	ctx context.Context, tx pgx.Tx, tenantID uuid.UUID,
+	contextJSON []byte, makerID uuid.UUID,
+) (uuid.UUID, error) {
+	var env struct {
+		Payload LoanWriteoffPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(contextJSON, &env); err != nil {
+		return uuid.Nil, fmt.Errorf("decode loan_write_off context: %w", err)
+	}
+	res, err := h.ExecuteWriteoffTx(ctx, tx, env.Payload, makerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if res.Writeoff.WriteoffTxnID == nil {
+		return uuid.Nil, nil
+	}
+	throughProvision, terr := readWriteoffThroughProvisionTx(ctx, tx)
+	if terr != nil {
+		return uuid.Nil, terr
+	}
+	id := *res.Writeoff.WriteoffTxnID
+	if err := postingops.PostLoanWriteoffTx(ctx, tx, postingops.Deps{
+		Posting: h.Posting,
+	}, postingops.LoanWriteoffInput{
+		TenantID:         tenantID,
+		TxnID:            id,
+		LoanNo:           res.Loan.LoanNo,
+		Amount:           res.Writeoff.TotalWrittenOff,
+		Reason:           env.Payload.Reason,
+		ThroughProvision: throughProvision,
+	}); err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
 }

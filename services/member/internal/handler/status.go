@@ -995,19 +995,11 @@ func processKindForTarget(target domain.MemberStatus) string {
 	return ""
 }
 
-// tenantHasUnifiedInbox queries the per-tenant flag. False on lookup
-// failure so the page stays usable when the column hasn't been added
-// (services that haven't run identity migration 0020 yet). Cheap
-// single-row read; called at most once per Change request.
-func (h *StatusHandler) tenantHasUnifiedInbox(ctx context.Context, tenantID uuid.UUID) bool {
-	var enabled bool
-	err := h.DB.WithTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
-			`SELECT COALESCE(unified_inbox_enabled, false) FROM tenants WHERE id = $1`,
-			tenantID).Scan(&enabled)
-	})
-	if err != nil {
-		return false
-	}
-	return enabled
+// tenantHasUnifiedInbox is hard-pinned to true post the unified-
+// approvals migration. See the same helper in
+// services/accounting/internal/handler/journal_workflow.go for the
+// full rationale + the panic-revert path. Both helpers and their
+// callers' legacy branches get deleted in the next major release.
+func (h *StatusHandler) tenantHasUnifiedInbox(_ context.Context, _ uuid.UUID) bool {
+	return true
 }

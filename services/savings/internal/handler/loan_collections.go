@@ -35,7 +35,9 @@ import (
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/notifier"
+	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
+	"github.com/nexussacco/savings/internal/workflowclient"
 )
 
 type LoanCollectionsHandler struct {
@@ -49,6 +51,13 @@ type LoanCollectionsHandler struct {
 	Approvals      *store.ApprovalsStore
 	Notifier       *notifier.Client
 	Logger         *slog.Logger
+
+	// Posting is wired by settlement_discount which posts its own JE
+	// (the LoanCollect path doesn't have an inline Posting client today;
+	// main.go injects the shared one).
+	Posting        *posting.Client
+	Workflow       *workflowclient.Client
+	SavingsSelfURL string
 }
 
 // ─────────── Cases ───────────
@@ -411,9 +420,15 @@ func (h *LoanCollectionsHandler) Reschedule(w http.ResponseWriter, r *http.Reque
 				return err
 			}
 			memberID := loan.CounterpartyID
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tid,
 				Kind:            domain.ApprovalKindLoanReschedule,
 				Title:           "Reschedule loan " + loan.LoanNo,
+				SubjectID:       loanID,
 				SubjectMemberID: &memberID,
 				SubjectLoanID:   &loanID,
 				Payload:         payload,
@@ -483,9 +498,15 @@ func (h *LoanCollectionsHandler) Moratorium(w http.ResponseWriter, r *http.Reque
 				return err
 			}
 			memberID := loan.CounterpartyID
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tid,
 				Kind:            domain.ApprovalKindLoanMoratorium,
 				Title:           "Moratorium on loan " + loan.LoanNo,
+				SubjectID:       loanID,
 				SubjectMemberID: &memberID,
 				SubjectLoanID:   &loanID,
 				Payload:         payload,
@@ -554,14 +575,21 @@ func (h *LoanCollectionsHandler) SettlementDiscount(w http.ResponseWriter, r *ht
 			}
 			memberID := loan.CounterpartyID
 			amount := in.DiscountAmount
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tid,
 				Kind:            domain.ApprovalKindLoanSettlementDiscount,
 				Title:           "Settlement discount on loan " + loan.LoanNo,
+				SubjectID:       loanID,
 				SubjectMemberID: &memberID,
 				SubjectLoanID:   &loanID,
 				Amount:          &amount,
 				Payload:         payload,
 				MakerUserID:     userID,
+				SummarySuffix:   " — " + amount.StringFixed(2),
 			})
 			if qerr != nil {
 				return qerr

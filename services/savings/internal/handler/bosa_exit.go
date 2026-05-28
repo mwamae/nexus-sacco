@@ -27,12 +27,16 @@ import (
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/store"
+	"github.com/nexussacco/savings/internal/workflowclient"
 )
 
 type BOSAExitHandler struct {
 	DB        *db.Pool
 	Deposit   *DepositHandler
 	Approvals *store.ApprovalsStore
+
+	Workflow       *workflowclient.Client
+	SavingsSelfURL string
 }
 
 type bosaExitReq struct {
@@ -79,15 +83,23 @@ func (h *BOSAExitHandler) RequestExit(w http.ResponseWriter, r *http.Request) {
 		memberID := acct.CounterpartyID
 		amount := acct.CurrentBalance
 		reason := in.Reason
-		pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+		// queueApproval doesn't currently carry MakerNote — the wf
+		// path stores it in instance.context instead. Embed in the
+		// payload map so the BOSA-exit executor can read it later.
+		pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+			Workflow:       h.Workflow,
+			Approvals:      h.Approvals,
+			SavingsSelfURL: h.SavingsSelfURL,
+		}, QueueApprovalInput{
+			TenantID:         tid,
 			Kind:             domain.ApprovalKindBOSAExit,
 			Title:            fmt.Sprintf("BOSA exit refund · a/c %s · %s", acct.AccountNo, amount.StringFixed(2)),
+			SubjectID:        memberID,
 			SubjectMemberID:  &memberID,
 			SubjectAccountID: &accountID,
 			Amount:           &amount,
-			Payload:          map[string]any{"account_id": accountID, "reason": reason},
+			Payload:          map[string]any{"account_id": accountID, "reason": reason, "maker_note": reason},
 			MakerUserID:      userID,
-			MakerNote:        &reason,
 		})
 		if qerr != nil {
 			return qerr

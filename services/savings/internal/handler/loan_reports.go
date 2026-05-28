@@ -26,6 +26,7 @@ import (
 	"github.com/nexussacco/savings/internal/middleware"
 	"github.com/nexussacco/savings/internal/posting"
 	"github.com/nexussacco/savings/internal/store"
+	"github.com/nexussacco/savings/internal/workflowclient"
 )
 
 type LoanReportsHandler struct {
@@ -38,6 +39,9 @@ type LoanReportsHandler struct {
 	// tests; nil disables the JE write.
 	Posting *posting.Client
 	Logger  *slog.Logger
+
+	Workflow       *workflowclient.Client
+	SavingsSelfURL string
 }
 
 // ─────────── Portfolio summary ───────────
@@ -181,14 +185,21 @@ func (h *LoanReportsHandler) WriteOff(w http.ResponseWriter, r *http.Request) {
 			}
 			memberID := loan.CounterpartyID
 			amt := loan.PrincipalBalance.Add(loan.InterestBalance).Add(loan.FeesBalance).Add(loan.PenaltyBalance)
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:        tid,
 				Kind:            domain.ApprovalKindLoanWriteoff,
 				Title:           "Write off loan " + loan.LoanNo,
+				SubjectID:       loanID,
 				SubjectMemberID: &memberID,
 				SubjectLoanID:   &loanID,
 				Amount:          &amt,
 				Payload:         payload,
 				MakerUserID:     userID,
+				SummarySuffix:   " — " + amt.StringFixed(2),
 			})
 			if qerr != nil {
 				return qerr

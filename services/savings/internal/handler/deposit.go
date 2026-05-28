@@ -27,6 +27,7 @@ import (
 	"github.com/nexussacco/savings/internal/postingops"
 	"github.com/nexussacco/savings/internal/receiptops"
 	"github.com/nexussacco/savings/internal/store"
+	"github.com/nexussacco/savings/internal/workflowclient"
 )
 
 type DepositHandler struct {
@@ -43,6 +44,15 @@ type DepositHandler struct {
 	Notifier     *notifier.Client
 	Posting      *posting.Client
 	Logger       *slog.Logger
+
+	// Workflow + SavingsSelfURL drive the new workflow-engine
+	// queue path. When Workflow is nil OR no active wf_definition
+	// exists for cash_deposit on this tenant, every queued approval
+	// falls back to the legacy Approvals.QueueTx path. SavingsSelfURL
+	// is the base for the callback URL the workflow dispatcher posts
+	// to on terminal transition.
+	Workflow       *workflowclient.Client
+	SavingsSelfURL string
 
 	// DuplicateLookback is how far back we look for a same-channel-ref
 	// duplicate before flagging a deposit. Default 10 minutes.
@@ -607,14 +617,22 @@ func (h *DepositHandler) executeDepositInlineTx(
 
 	if toggles != nil && toggles.Deposit {
 		amount := payload.Amount
-		pa, qerr := h.Approvals.QueueTx(ctx, tx, store.QueueInput{
+		title := fmt.Sprintf("Deposit to a/c %s", acct.AccountNo)
+		pa, qerr := queueApproval(ctx, tx, QueueApprovalDeps{
+			Workflow:       h.Workflow,
+			Approvals:      h.Approvals,
+			SavingsSelfURL: h.SavingsSelfURL,
+		}, QueueApprovalInput{
+			TenantID:         tenantID,
 			Kind:             domain.ApprovalKindDeposit,
-			Title:            fmt.Sprintf("Deposit to a/c %s", acct.AccountNo),
+			Title:            title,
+			SubjectID:        payload.AccountID,
 			SubjectMemberID:  &memberID,
 			SubjectAccountID: &payload.AccountID,
 			Amount:           &amount,
 			Payload:          payload,
 			MakerUserID:      userID,
+			SummarySuffix:    " — " + amount.StringFixed(2),
 		})
 		if qerr != nil {
 			return nil, nil, nil, qerr
@@ -626,6 +644,10 @@ func (h *DepositHandler) executeDepositInlineTx(
 			return nil, nil, nil, rerr
 		}
 		if len(rec.Lines) > 0 {
+			// AttachApprovalTx writes a plain UUID into
+			// receipt_lines.approval_id (no FK). For wf-routed
+			// approvals this is the wf_instance.ID; for legacy
+			// it's the pending_approvals.id. Same column either way.
 			if aerr := h.Receipts.AttachApprovalTx(ctx, tx, rec.Lines[0].ID, pa.ID); aerr != nil {
 				return nil, nil, nil, aerr
 			}
@@ -732,14 +754,22 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 			}
 			memberID := acct.CounterpartyID
 			amount := in.Amount
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			title := fmt.Sprintf("Withdrawal from a/c %s", acct.AccountNo)
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:         tid,
 				Kind:             domain.ApprovalKindWithdrawal,
-				Title:            fmt.Sprintf("Withdrawal from a/c %s", acct.AccountNo),
+				Title:            title,
+				SubjectID:        accountID,
 				SubjectMemberID:  &memberID,
 				SubjectAccountID: &accountID,
 				Amount:           &amount,
 				Payload:          payload,
 				MakerUserID:      userID,
+				SummarySuffix:    " — " + amount.StringFixed(2),
 			})
 			if qerr != nil {
 				return qerr
@@ -1120,14 +1150,21 @@ func (h *DepositHandler) TransferBetweenOwn(w http.ResponseWriter, r *http.Reque
 			}
 			memberID := fromMember.ID
 			amount := in.Amount
-			pa, qerr := h.Approvals.QueueTx(r.Context(), tx, store.QueueInput{
+			pa, qerr := queueApproval(r.Context(), tx, QueueApprovalDeps{
+				Workflow:       h.Workflow,
+				Approvals:      h.Approvals,
+				SavingsSelfURL: h.SavingsSelfURL,
+			}, QueueApprovalInput{
+				TenantID:         tid,
 				Kind:             domain.ApprovalKindDepositTransfer,
 				Title:            fmt.Sprintf("Transfer from a/c %s", fromAcct.AccountNo),
+				SubjectID:        fromID,
 				SubjectMemberID:  &memberID,
 				SubjectAccountID: &fromID,
 				Amount:           &amount,
 				Payload:          payload,
 				MakerUserID:      userID,
+				SummarySuffix:    " — " + amount.StringFixed(2),
 			})
 			if qerr != nil {
 				return qerr
