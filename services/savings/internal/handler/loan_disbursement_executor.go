@@ -266,6 +266,15 @@ func (h *LoanHandler) ExecuteDisbursementTx(
 				"loan_id", updated.ID, "err", err.Error())
 		}
 	}
+
+	// Phase 6 — place a credit-life insurance policy when the loan's
+	// product has insurance_provider_id set. Non-fatal on failure;
+	// admin can retry via POST /v1/loans/{id}/insurance-policy.
+	// Stub adapters today; real vendor calls wire here in a follow-up.
+	if _, ierr := placeInsuranceForLoanTx(ctx, tx, updated); ierr != nil {
+		h.Logger.Warn("insurance placement failed",
+			"loan_id", updated.ID, "err", ierr.Error())
+	}
 	return out, nil
 }
 

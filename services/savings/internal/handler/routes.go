@@ -67,6 +67,10 @@ type Deps struct {
 	DividendOffset *DividendOffsetHandler
 	// Checkoff — Phase 5 salary check-off batch upload + validate + post.
 	Checkoff *CheckoffHandler
+	// CRB — Phase 6 credit reference bureau pulls.
+	CRB *CRBHandler
+	// Insurance — Phase 6 credit-life insurance policy management.
+	Insurance *InsuranceHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -274,6 +278,16 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/group-officers", d.LoanApp.ListGroupOfficers)
 			r.With(middleware.RequirePermission("loans:apply")).Post("/loan-applications/{app_id}/group-officers/{consent_id}/respond", d.LoanApp.RespondGroupOfficer)
 			r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/group-apportionment", d.LoanApp.GetGroupApportionment)
+
+			// Loans Phase 6 — CRB + insurance.
+			if d.CRB != nil {
+				r.With(middleware.RequirePermission("loans:crb:pull")).Post("/loans/crb/pulls", d.CRB.Pull)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/crb/pulls", d.CRB.ListByMember)
+			}
+			if d.Insurance != nil {
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/insurance-policy", d.Insurance.Get)
+				r.With(middleware.RequirePermission("loans:insurance:configure")).Post("/loans/{loan_id}/insurance-policy", d.Insurance.Place)
+			}
 
 			// Loans Phase 5 — salary check-off.
 			if d.Checkoff != nil {

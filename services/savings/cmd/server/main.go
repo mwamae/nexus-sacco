@@ -320,6 +320,20 @@ func main() {
 		Loans:  loanStore,
 		Logger: logger,
 	}
+	// Loans Phase 6 — CRB + insurance handlers. Sealer is nil for now;
+	// when credential storage moves to envelope-encrypted ciphertext
+	// in prod, wire a cryptox.Sealer here (master key from env, same
+	// pattern as services/mpesa).
+	crbH := &handler.CRBHandler{
+		DB:     pool,
+		Sealer: nil, // sandbox mode — stubs ignore creds
+		Logger: logger,
+	}
+	insuranceH := &handler.InsuranceHandler{
+		DB:     pool,
+		Loans:  loanStore,
+		Logger: logger,
+	}
 	memberStmtStore := store.NewMemberStatementStore(pool.Pool)
 	memberStmtH := &handler.MemberStatementHandler{
 		DB:         pool,
@@ -536,6 +550,9 @@ func main() {
 		DividendOffset:        dividendOffsetH,
 		// Loans Phase 5 — salary check-off batches.
 		Checkoff: checkoffH,
+		// Loans Phase 6 — CRB + insurance.
+		CRB:       crbH,
+		Insurance: insuranceH,
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),
