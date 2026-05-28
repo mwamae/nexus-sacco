@@ -57,6 +57,14 @@ type Deps struct {
 	// LoanPolicy backs /v1/loans/policy/* (DPD thresholds + ECL matrix
 	// editor) and /v1/loans/{id}/classification-history. Optional.
 	LoanPolicy *LoanPolicyHandler
+	// LoanCollectionsEvents — Phase 4 workflow surface mounted under
+	// /v1/loans/{loan_id}/collections/* plus tenant-wide reads
+	// (/v1/loans/collections/queue, /v1/loans/collections/ptp-summary).
+	// Sits alongside the legacy /v1/collection-cases/* surface.
+	LoanCollectionsEvents *LoanCollectionsEventsHandler
+	// DividendOffset — Phase 4 dividend offset preview + manual post.
+	// Mounted at /v1/dividends/runs/{run_id}/arrears-offset-*.
+	DividendOffset *DividendOffsetHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -234,6 +242,12 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("dividends:run")).Post("/dividend-runs/{run_id}/submit", d.Dividend.Submit)
 			r.With(middleware.RequirePermission("dividends:approve")).Post("/dividend-runs/{run_id}/approve", d.Dividend.Approve)
 			r.With(middleware.RequirePermission("dividends:approve")).Post("/dividend-runs/{run_id}/post", d.Dividend.Post)
+
+			// Loans Phase 4 — dividend offset preview + manual post.
+			if d.DividendOffset != nil {
+				r.With(middleware.RequirePermission("loans:view")).Get("/dividends/runs/{run_id}/arrears-offset-preview", d.DividendOffset.Preview)
+				r.With(middleware.RequirePermission("dividends:approve")).Post("/dividends/runs/{run_id}/arrears-offset-postings", d.DividendOffset.PostOffsets)
+			}
 			r.With(middleware.RequirePermission("dividends:approve")).Post("/dividend-runs/{run_id}/lock", d.Dividend.Lock)
 			r.With(middleware.RequirePermission("dividends:run")).Post("/dividend-runs/{run_id}/cancel", d.Dividend.Cancel)
 
@@ -309,7 +323,7 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("loans:reverse")).Post("/loan-transactions/{txn_id}/reverse", d.LoanRepay.Reverse)
 			r.With(middleware.RequirePermission("loans:view")).Post("/loans/{loan_id}/recalc-dpd", d.LoanRepay.RecalcDPD)
 
-			// ─────────── Collections ───────────
+			// ─────────── Collections (legacy /v1/collection-cases/* — Phase 6e) ───────────
 			r.With(middleware.RequirePermission("collections:view")).Get("/collection-cases", d.LoanCollect.ListCases)
 			r.With(middleware.RequirePermission("collections:view")).Get("/collection-cases/{case_id}", d.LoanCollect.GetCase)
 			r.With(middleware.RequirePermission("collections:act")).Post("/collection-cases/{case_id}/assign", d.LoanCollect.Assign)
@@ -317,6 +331,25 @@ func Routes(d Deps) http.Handler {
 			r.With(middleware.RequirePermission("collections:act")).Post("/collection-cases/{case_id}/contacts", d.LoanCollect.LogContact)
 			r.With(middleware.RequirePermission("collections:act")).Post("/collection-cases/{case_id}/promises", d.LoanCollect.CreatePTP)
 			r.With(middleware.RequirePermission("collections:act")).Post("/promises/{ptp_id}/resolve", d.LoanCollect.ResolvePTP)
+
+			// ─────────── Loans Phase 4 — collections workflow ───────────
+			if d.LoanCollectionsEvents != nil {
+				cev := d.LoanCollectionsEvents
+				r.With(middleware.RequirePermission("loans:collect")).Post("/loans/{loan_id}/collections/calls", cev.LogCall)
+				r.With(middleware.RequirePermission("loans:collect")).Post("/loans/{loan_id}/collections/visits", cev.LogVisit)
+				r.With(middleware.RequirePermission("loans:collect")).Post("/loans/{loan_id}/collections/notes", cev.Note)
+				r.With(middleware.RequirePermission("loans:collect")).Post("/loans/{loan_id}/collections/ptp", cev.CreatePTP)
+				r.With(middleware.RequirePermission("loans:collect")).Post("/loans/{loan_id}/collections/ptp/{ptp_id}/cancel", cev.CancelPTP)
+				r.With(middleware.RequirePermission("loans:collect")).Post("/loans/{loan_id}/collections/escalate", cev.Escalate)
+				r.With(middleware.RequirePermission("loans:collect:legal")).Post("/loans/{loan_id}/collections/legal-handover", cev.LegalHandover)
+				r.With(middleware.RequirePermission("loans:collect")).Post("/loans/{loan_id}/collections/sms", cev.SendSMS)
+				r.With(middleware.RequirePermission("loans:collect")).Post("/loans/{loan_id}/collections/letter", cev.GenerateLetter)
+				r.With(middleware.RequirePermission("loans:collect:assign")).Post("/loans/{loan_id}/collections/assign", cev.Assign)
+				r.With(middleware.RequirePermission("loans:collect:assign")).Post("/loans/{loan_id}/collections/unassign", cev.Unassign)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/collections/events", cev.Events)
+				r.With(middleware.RequirePermission("loans:collect")).Get("/loans/collections/queue", cev.Queue)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/collections/ptp-summary", cev.PTPSummary)
+			}
 
 			// ─────────── Restructuring ───────────
 			r.With(middleware.RequirePermission("loans:restructure")).Post("/loans/{loan_id}/reschedule", d.LoanCollect.Reschedule)
@@ -370,6 +403,7 @@ func Routes(d Deps) http.Handler {
 				r.With(middleware.RequirePermission("loans:view")).Get("/loans/policy", d.LoanPolicy.Get)
 				r.With(middleware.RequirePermission("loans:policy:write")).Put("/loans/policy/thresholds", d.LoanPolicy.UpdateThresholds)
 				r.With(middleware.RequirePermission("loans:policy:write")).Put("/loans/policy/ecl-matrix", d.LoanPolicy.UpdateMatrix)
+				r.With(middleware.RequirePermission("loans:policy:write")).Put("/loans/policy/dividend-offset", d.LoanPolicy.UpdateDividendOffsetPolicy)
 				r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/classification-history", d.LoanPolicy.LoanClassificationHistory)
 			}
 

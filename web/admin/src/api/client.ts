@@ -5472,9 +5472,12 @@ export type ECLMatrixRow = {
   notes?: string | null;
 };
 
+export type DividendOffsetPolicy = 'disabled' | 'manual_preview' | 'automatic';
+
 export type LoansPolicySnapshot = {
   thresholds: LoansPolicyThresholds;
   ecl_matrix: ECLMatrixRow[];
+  dividend_offset_policy: DividendOffsetPolicy;
 };
 
 export async function getLoansPolicy(): Promise<LoansPolicySnapshot> {
@@ -5488,6 +5491,39 @@ export async function updateLoansPolicyThresholds(t: LoansPolicyThresholds): Pro
 
 export async function updateLoansPolicyMatrix(rows: ECLMatrixRow[]): Promise<void> {
   await api.put('/v1/loans/policy/ecl-matrix', { rows });
+}
+
+export async function updateDividendOffsetPolicy(policy: DividendOffsetPolicy): Promise<void> {
+  await api.put('/v1/loans/policy/dividend-offset', { policy });
+}
+
+// ─────────── Dividend offset preview + post ───────────
+
+export type DividendOffsetPreviewRow = {
+  member_id: string;
+  member_name: string;
+  dividend_payable: string;
+  total_arrears: string;
+  suggested_offset: string;
+  residual_payout: string;
+  loans: Array<{
+    loan_id: string;
+    loan_no: string;
+    principal_overdue: string;
+    interest_balance: string;
+    penalty_balance: string;
+    total_arrears: string;
+  }>;
+};
+
+export async function getDividendOffsetPreview(runID: string): Promise<{ items: DividendOffsetPreviewRow[]; total: number }> {
+  const r = await api.get(`/v1/dividends/runs/${runID}/arrears-offset-preview`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function postDividendOffsets(runID: string, payload: { all?: boolean; member_ids?: string[] }): Promise<any> {
+  const r = await api.post(`/v1/dividends/runs/${runID}/arrears-offset-postings`, payload);
+  return r.data.data;
 }
 
 export type LoanClassificationHistoryRow = {
@@ -6769,4 +6805,151 @@ export async function verifySASRAPeriod(period: string, verifiedFormVersion: str
   await api.post('/v1/loans/reports/sasra/verify', {
     period, verified_form_version: verifiedFormVersion, note,
   });
+}
+
+// ─────────── Loans Phase 4 — collections workflow ───────────
+
+export type CollectionEventKind =
+  | 'note'
+  | 'auto_sms' | 'auto_email'
+  | 'ptp_created' | 'ptp_kept' | 'ptp_broken' | 'ptp_cancelled'
+  | 'escalation' | 'legal_handover'
+  | 'assigned' | 'unassigned'
+  | 'letter_generated';
+
+export type CollectionLetterKind = 'pre_collection' | 'demand' | 'final_demand' | 'legal_notice';
+
+export type CollectionEvent = {
+  id: string;
+  tenant_id: string;
+  case_id?: string | null;
+  loan_id: string;
+  kind: CollectionEventKind;
+  occurred_at: string;
+  created_by?: string | null;
+  details: any;
+  letter_kind?: CollectionLetterKind | null;
+  amount?: string | null;
+  promised_date?: string | null;
+};
+
+export type PhaseFourQueueRow = {
+  loan_id: string;
+  loan_no: string;
+  member_name: string;
+  outstanding_principal: string;
+  outstanding_total: string;
+  dpd_days: number;
+  classification: string;
+  assigned_officer?: string | null;
+  open_ptp_status?: string | null;
+  open_ptp_date?: string | null;
+  last_event_kind?: string | null;
+  last_event_at?: string | null;
+  case_id?: string | null;
+  case_priority: number;
+};
+
+export type PhaseFourPTPSummary = {
+  open: number;
+  kept: number;
+  broken: number;
+  cancelled: number;
+  due_this_week: number;
+  overdue: number;
+};
+
+export type QueueFilter = {
+  officer_id?: string;
+  unassigned?: boolean;
+  dpd_min?: number;
+  dpd_max?: number;
+  ptp_status?: string;
+  product_id?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function collectionsQueue(f: QueueFilter = {}): Promise<{ items: PhaseFourQueueRow[]; total: number }> {
+  const p = new URLSearchParams();
+  if (f.officer_id) p.set('officer_id', f.officer_id);
+  if (f.unassigned) p.set('unassigned', 'true');
+  if (f.dpd_min != null) p.set('dpd_min', String(f.dpd_min));
+  if (f.dpd_max != null) p.set('dpd_max', String(f.dpd_max));
+  if (f.ptp_status) p.set('ptp_status', f.ptp_status);
+  if (f.product_id) p.set('product_id', f.product_id);
+  if (f.limit != null) p.set('limit', String(f.limit));
+  if (f.offset != null) p.set('offset', String(f.offset));
+  const r = await api.get('/v1/loans/collections/queue' + (p.toString() ? '?' + p.toString() : ''));
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function collectionsPTPSummary(): Promise<PhaseFourPTPSummary> {
+  const r = await api.get('/v1/loans/collections/ptp-summary');
+  return r.data.data;
+}
+
+export async function loanCollectionsEvents(loanID: string): Promise<{
+  events: CollectionEvent[];
+  contacts: any[];
+  ptps: any[];
+}> {
+  const r = await api.get(`/v1/loans/${loanID}/collections/events`);
+  return r.data.data;
+}
+
+export async function logCall(loanID: string, payload: {
+  outcome: string; note?: string; duration_seconds?: number;
+  promised_amount?: string; promised_date?: string;
+}): Promise<any> {
+  const r = await api.post(`/v1/loans/${loanID}/collections/calls`, payload);
+  return r.data.data;
+}
+
+export async function logVisit(loanID: string, payload: {
+  outcome: string; note?: string; geo_lat?: string; geo_lng?: string;
+}): Promise<void> {
+  await api.post(`/v1/loans/${loanID}/collections/visits`, payload);
+}
+
+export async function logCollectionNote(loanID: string, text: string): Promise<void> {
+  await api.post(`/v1/loans/${loanID}/collections/notes`, { text });
+}
+
+export async function createCollectionPTP(loanID: string, payload: {
+  promised_amount: string; promised_date: string; note?: string;
+}): Promise<any> {
+  const r = await api.post(`/v1/loans/${loanID}/collections/ptp`, payload);
+  return r.data.data;
+}
+
+export async function cancelCollectionPTP(loanID: string, ptpID: string, reason: string): Promise<any> {
+  const r = await api.post(`/v1/loans/${loanID}/collections/ptp/${ptpID}/cancel`, { reason });
+  return r.data.data;
+}
+
+export async function escalateCollection(loanID: string, toRole: string, reason: string): Promise<void> {
+  await api.post(`/v1/loans/${loanID}/collections/escalate`, { to_role: toRole, reason });
+}
+
+export async function legalHandover(loanID: string, reason: string, attachedDocs: string[] = []): Promise<void> {
+  await api.post(`/v1/loans/${loanID}/collections/legal-handover`, { reason, attached_docs: attachedDocs });
+}
+
+export async function sendCollectionSMS(loanID: string, message: string): Promise<void> {
+  await api.post(`/v1/loans/${loanID}/collections/sms`, { message });
+}
+
+export async function generateCollectionLetter(loanID: string, kind: CollectionLetterKind, delivery: 'email' | 'physical'): Promise<any> {
+  const r = await api.post(`/v1/loans/${loanID}/collections/letter`, { kind, delivery });
+  return r.data.data;
+}
+
+export async function assignLoanToOfficer(loanID: string, officerID: string): Promise<any> {
+  const r = await api.post(`/v1/loans/${loanID}/collections/assign`, { officer_id: officerID });
+  return r.data.data;
+}
+
+export async function unassignLoan(loanID: string, reason: string): Promise<void> {
+  await api.post(`/v1/loans/${loanID}/collections/unassign`, { reason });
 }

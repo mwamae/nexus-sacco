@@ -279,6 +279,26 @@ func (s *LoanStore) PostRepaymentTx(
 	if _, err := s.RecalcDPDTx(ctx, tx, loan.ID, in.ValueDate); err != nil {
 		return nil, nil, err
 	}
+
+	// Phase 4 — auto-resolve any open PTP on this loan against the new
+	// repayment. Best-effort: collections store wired via SetCollections;
+	// nil-safe so unit tests + tools that boot without the wire don't break.
+	if s.collections != nil {
+		resolved, err := s.collections.AutoResolveOpenPTPOnRepaymentTx(
+			ctx, tx, loan.ID, t.ID, in.Amount, in.ValueDate,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("auto-resolve PTP: %w", err)
+		}
+		if resolved != nil && resolved.Status == domain.PTPKept {
+			amtCopy := in.Amount
+			_, _ = s.collections.LogEventTx(ctx, tx, loan.ID, &resolved.CaseID,
+				domain.EventPTPKept, &in.InitiatedBy,
+				[]byte(`{"ptp_id":"`+resolved.ID.String()+`","txn_id":"`+t.ID.String()+`"}`),
+				nil, &amtCopy, nil,
+			)
+		}
+	}
 	return t, alloc, nil
 }
 

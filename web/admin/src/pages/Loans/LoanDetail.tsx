@@ -28,12 +28,23 @@ import {
   getLoan,
   repayLoan,
   getLoanClassificationHistory,
+  loanCollectionsEvents,
+  logCall,
+  logCollectionNote,
+  createCollectionPTP,
+  cancelCollectionPTP,
+  sendCollectionSMS,
+  generateCollectionLetter,
+  escalateCollection,
+  legalHandover,
   type LoanDetail as LoanDetailType,
   type LoanInstallment,
   type LoanTransaction,
   type LoanGuarantee,
   type LoanCollateralItem,
   type LoanClassificationHistoryRow,
+  type CollectionEvent,
+  type CollectionLetterKind,
   extractError,
 } from '../../api/client';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
@@ -182,7 +193,7 @@ export default function LoanDetail() {
           {activeTab === 'guarantors'   && <GuarantorsTab gs={detail.guarantees} currency={currency} />}
           {activeTab === 'collateral'   && <CollateralTab cs={detail.collateral} currency={currency} />}
           {activeTab === 'documents'    && <PlaceholderTab phase="Phase 2" what="Documents (upload + download)" />}
-          {activeTab === 'collections'  && <PlaceholderTab phase="Phase 4" what="Collections timeline + PTPs" />}
+          {activeTab === 'collections'  && <CollectionsTab loanID={id} />}
           {activeTab === 'restructure'  && <RestructureTab txns={detail.transactions} currency={currency} />}
           {activeTab === 'classification' && <ClassificationTab loanID={id} />}
           {activeTab === 'comments'     && <PlaceholderTab phase="Phase 2" what="Comments thread" />}
@@ -358,6 +369,253 @@ function PlaceholderTab({ phase, what }: { phase: string; what: string }) {
     <div className="empty">
       {what} — coming in {phase}. The underlying data already exists in the schema;
       this tab is waiting on the matching UI components.
+    </div>
+  );
+}
+
+// ─────────────── Collections timeline + actions (Phase 4) ───────────────
+
+function CollectionsTab({ loanID }: { loanID: string }) {
+  const [data, setData] = useState<{ events: CollectionEvent[]; contacts: any[]; ptps: any[] } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [modal, setModal] = useState<null | 'call' | 'note' | 'ptp' | 'sms' | 'letter' | 'escalate' | 'legal'>(null);
+
+  const reload = async () => {
+    setErr(null);
+    try { setData(await loanCollectionsEvents(loanID)); }
+    catch (e) { setErr(extractError(e)); }
+  };
+  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [loanID]);
+
+  if (err) return <div className="alert alert-error">{err}</div>;
+  if (!data) return <div className="empty">Loading collections timeline…</div>;
+
+  const openPTPs = (data.ptps as any[]).filter((p) => p.status === 'open');
+
+  // Build a unified timeline: events + contacts merged by timestamp,
+  // most-recent first.
+  type TimelineItem =
+    | { kind: 'event'; t: string; ev: CollectionEvent }
+    | { kind: 'contact'; t: string; c: any };
+  const timeline: TimelineItem[] = [
+    ...data.events.map((e): TimelineItem => ({ kind: 'event', t: e.occurred_at, ev: e })),
+    ...(data.contacts as any[]).map((c): TimelineItem => ({ kind: 'contact', t: c.contacted_at, c })),
+  ].sort((a, b) => (a.t < b.t ? 1 : -1));
+
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      {/* Open PTPs strip — surfaces prominently at top. */}
+      {openPTPs.length > 0 && (
+        <div className="card" style={{ borderLeft: '4px solid var(--warn)' }}>
+          <div className="card-hd"><h4 style={{ margin: 0 }}>Open promise{openPTPs.length === 1 ? '' : 's'} to pay</h4></div>
+          <div className="card-body" style={{ display: 'grid', gap: 8 }}>
+            {openPTPs.map((p) => {
+              const daysLeft = Math.ceil((new Date(p.promised_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+              return (
+                <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="mono">{p.promised_amount}</span>
+                  <span className="muted">by {p.promised_date}</span>
+                  <span style={{ color: daysLeft < 0 ? 'var(--neg)' : daysLeft <= 2 ? 'var(--warn)' : 'var(--muted)' }}>
+                    ({daysLeft < 0 ? `${-daysLeft}d overdue` : `${daysLeft}d left`})
+                  </span>
+                  {p.notes && <span className="muted tiny">— {p.notes}</span>}
+                  <button className="btn btn-sm" style={{ marginLeft: 'auto' }} disabled={busy} onClick={async () => {
+                    const reason = window.prompt('Cancel reason?');
+                    if (!reason) return;
+                    setBusy(true);
+                    try { await cancelCollectionPTP(loanID, p.id, reason); await reload(); }
+                    catch (e) { setErr(extractError(e)); }
+                    finally { setBusy(false); }
+                  }}>Cancel</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Action bar */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button className="btn" onClick={() => setModal('call')}>Log call</button>
+        <button className="btn" onClick={() => setModal('note')}>Add note</button>
+        <button className="btn" onClick={() => setModal('ptp')}>Create PTP</button>
+        <button className="btn" onClick={() => setModal('sms')}>Send SMS</button>
+        <button className="btn" onClick={() => setModal('letter')}>Send letter</button>
+        <button className="btn" onClick={() => setModal('escalate')}>Escalate</button>
+        <button className="btn btn-danger" onClick={() => setModal('legal')}>Hand to legal</button>
+      </div>
+
+      {/* Timeline */}
+      <div className="card">
+        <div className="card-hd"><h4 style={{ margin: 0 }}>Timeline</h4>
+          <span className="card-sub">{timeline.length} entr{timeline.length === 1 ? 'y' : 'ies'}</span></div>
+        <div className="card-body" style={{ display: 'grid', gap: 6 }}>
+          {timeline.length === 0
+            ? <div className="empty">No collections activity yet.</div>
+            : timeline.map((it, i) => (
+              <div key={i} style={{ display: 'flex', gap: 8, padding: '4px 0', borderBottom: '1px solid var(--border)' }}>
+                <span className="muted tiny mono" style={{ minWidth: 130 }}>{new Date(it.t).toLocaleString()}</span>
+                {it.kind === 'event'
+                  ? <EventLine ev={it.ev} />
+                  : <ContactLine c={it.c} />}
+              </div>
+            ))}
+        </div>
+      </div>
+
+      {modal && <ActionModal
+        loanID={loanID}
+        kind={modal}
+        onClose={() => setModal(null)}
+        onDone={async () => { setModal(null); await reload(); }}
+      />}
+    </div>
+  );
+}
+
+function EventLine({ ev }: { ev: CollectionEvent }) {
+  const label = ev.kind.replaceAll('_', ' ');
+  let detail = '';
+  if (ev.kind === 'ptp_created' && ev.amount) detail = `· ${ev.amount} by ${ev.promised_date ?? '—'}`;
+  if (ev.kind === 'letter_generated' && ev.letter_kind) detail = `· ${ev.letter_kind}`;
+  if (ev.kind === 'note') detail = `: ${(ev.details as any)?.text ?? ''}`;
+  return <span><strong>{label}</strong> <span className="muted tiny">{detail}</span></span>;
+}
+
+function ContactLine({ c }: { c: any }) {
+  return <span><strong>{c.kind}</strong> · {c.outcome}{c.note && <span className="muted tiny"> — {c.note}</span>}</span>;
+}
+
+function ActionModal({ loanID, kind, onClose, onDone }: {
+  loanID: string;
+  kind: 'call' | 'note' | 'ptp' | 'sms' | 'letter' | 'escalate' | 'legal';
+  onClose: () => void;
+  onDone: () => void | Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [text, setText] = useState('');
+  const [outcome, setOutcome] = useState('reached_promised');
+  const [amt, setAmt] = useState('');
+  const [date, setDate] = useState('');
+  const [letterKind, setLetterKind] = useState<CollectionLetterKind>('demand');
+  const [role, setRole] = useState('branch_manager');
+
+  async function submit() {
+    setBusy(true); setErr(null);
+    try {
+      if (kind === 'call') {
+        await logCall(loanID, {
+          outcome, note: text, duration_seconds: 0,
+          promised_amount: outcome === 'reached_promised' ? amt : undefined,
+          promised_date: outcome === 'reached_promised' ? date : undefined,
+        });
+      } else if (kind === 'note') {
+        await logCollectionNote(loanID, text);
+      } else if (kind === 'ptp') {
+        await createCollectionPTP(loanID, { promised_amount: amt, promised_date: date, note: text });
+      } else if (kind === 'sms') {
+        await sendCollectionSMS(loanID, text);
+      } else if (kind === 'letter') {
+        await generateCollectionLetter(loanID, letterKind, 'email');
+      } else if (kind === 'escalate') {
+        await escalateCollection(loanID, role, text);
+      } else if (kind === 'legal') {
+        await legalHandover(loanID, text);
+      }
+      await onDone();
+    } catch (e) { setErr(extractError(e)); }
+    finally { setBusy(false); }
+  }
+
+  const title = ({
+    call: 'Log call', note: 'Add note', ptp: 'Create PTP', sms: 'Send SMS',
+    letter: 'Generate letter', escalate: 'Escalate', legal: 'Hand to legal',
+  })[kind];
+
+  return (
+    <div role="dialog" aria-modal="true" style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+    }}>
+      <div style={{ background: 'var(--surface)', borderRadius: 8, width: '90%', maxWidth: 520, padding: 20 }}>
+        <h3 style={{ marginTop: 0 }}>{title}</h3>
+        {kind === 'call' && (
+          <>
+            <label><div className="muted tiny">Outcome</div>
+              <select className="input" value={outcome} onChange={(e) => setOutcome(e.target.value)}>
+                <option value="reached_promised">Reached — promised</option>
+                <option value="reached_refused">Reached — refused</option>
+                <option value="reached_dispute">Reached — dispute</option>
+                <option value="voicemail">Voicemail</option>
+                <option value="no_answer">No answer</option>
+                <option value="wrong_number">Wrong number</option>
+              </select>
+            </label>
+            {outcome === 'reached_promised' && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <label><div className="muted tiny">Promised amount</div>
+                  <input className="input" value={amt} onChange={(e) => setAmt(e.target.value)} />
+                </label>
+                <label><div className="muted tiny">Promised by</div>
+                  <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                </label>
+              </div>
+            )}
+            <label><div className="muted tiny">Note</div>
+              <textarea className="input" rows={3} value={text} onChange={(e) => setText(e.target.value)} />
+            </label>
+          </>
+        )}
+        {kind === 'note' && (
+          <textarea className="input" rows={4} value={text} onChange={(e) => setText(e.target.value)} placeholder="Free-form note" />
+        )}
+        {kind === 'ptp' && (
+          <>
+            <label><div className="muted tiny">Promised amount</div>
+              <input className="input" value={amt} onChange={(e) => setAmt(e.target.value)} />
+            </label>
+            <label><div className="muted tiny">Promised date</div>
+              <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            </label>
+            <textarea className="input" rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder="Note (optional)" />
+          </>
+        )}
+        {kind === 'sms' && (
+          <textarea className="input" rows={4} value={text} onChange={(e) => setText(e.target.value)} placeholder="SMS body" />
+        )}
+        {kind === 'letter' && (
+          <label><div className="muted tiny">Letter kind</div>
+            <select className="input" value={letterKind} onChange={(e) => setLetterKind(e.target.value as CollectionLetterKind)}>
+              <option value="pre_collection">Pre-collection</option>
+              <option value="demand">Demand</option>
+              <option value="final_demand">Final demand</option>
+              <option value="legal_notice">Legal notice</option>
+            </select>
+          </label>
+        )}
+        {kind === 'escalate' && (
+          <>
+            <label><div className="muted tiny">Escalate to role</div>
+              <select className="input" value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="branch_manager">Branch Manager</option>
+                <option value="sacco_admin">SACCO Admin</option>
+                <option value="legal">Legal</option>
+              </select>
+            </label>
+            <textarea className="input" rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder="Reason" />
+          </>
+        )}
+        {kind === 'legal' && (
+          <textarea className="input" rows={4} value={text} onChange={(e) => setText(e.target.value)} placeholder="Why is this going to legal? Include the recovery posture (demand letter, court filing, etc.)" />
+        )}
+        {err && <div className="alert alert-error" style={{ marginTop: 8 }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={busy} onClick={() => void submit()}>{busy ? 'Saving…' : 'Save'}</button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -62,8 +62,9 @@ type eclRow struct {
 }
 
 type policySnapshot struct {
-	Thresholds thresholdsPayload `json:"thresholds"`
-	ECLMatrix  []eclRow          `json:"ecl_matrix"`
+	Thresholds           thresholdsPayload `json:"thresholds"`
+	ECLMatrix            []eclRow          `json:"ecl_matrix"`
+	DividendOffsetPolicy string            `json:"dividend_offset_policy"` // disabled | manual_preview | automatic
 }
 
 func (h *LoanPolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +73,8 @@ func (h *LoanPolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
 	err := h.Pool.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(r.Context(), `
 			SELECT sasra_watch_dpd, dpd_substandard_days, dpd_doubtful_days,
-			       dpd_loss_days, ifrs9_stage2_dpd, ifrs9_stage3_dpd
+			       dpd_loss_days, ifrs9_stage2_dpd, ifrs9_stage3_dpd,
+			       dividend_offset_policy
 			  FROM tenant_operations
 		`).Scan(
 			&snap.Thresholds.SASRAWatchDPD,
@@ -81,6 +83,7 @@ func (h *LoanPolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
 			&snap.Thresholds.DPDLossDays,
 			&snap.Thresholds.IFRS9Stage2DPD,
 			&snap.Thresholds.IFRS9Stage3DPD,
+			&snap.DividendOffsetPolicy,
 		); err != nil {
 			return err
 		}
@@ -257,4 +260,38 @@ func (h *LoanPolicyHandler) LoanClassificationHistory(w http.ResponseWriter, r *
 		return
 	}
 	httpx.OK(w, map[string]any{"items": out, "total": len(out)})
+}
+
+// ─────────── Dividend offset policy ───────────
+
+type dividendOffsetPolicyReq struct {
+	Policy string `json:"policy"` // disabled | manual_preview | automatic
+}
+
+func (h *LoanPolicyHandler) UpdateDividendOffsetPolicy(w http.ResponseWriter, r *http.Request) {
+	var in dividendOffsetPolicyReq
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	switch in.Policy {
+	case "disabled", "manual_preview", "automatic":
+	default:
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("policy must be disabled | manual_preview | automatic"))
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	err := h.Pool.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		_, err := tx.Exec(r.Context(), `
+			UPDATE tenant_operations SET
+			  dividend_offset_policy = $1,
+			  updated_at             = now()
+		`, in.Policy)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

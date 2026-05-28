@@ -79,6 +79,7 @@ import FinanceDashboardPage from './pages/Accounting/FinanceDashboard';
 import MpesaReconciliationPage from './pages/Accounting/MpesaReconciliation';
 import MemberStatementPage from './pages/Members/MemberStatement';
 import ProvisioningPage from './pages/Loans/Provisioning';
+import CollectionsQueuePage from './pages/Loans/CollectionsQueue';
 import CollectionDesk from './pages/CollectionDesk';
 import CollectionReceipts from './pages/CollectionReceipts';
 
@@ -156,7 +157,7 @@ function Gate() {
   else if (path === '/loans/reports/sasra') page = <SASRAPage />;
   else if (path === '/loans/reports' || path.startsWith('/loans/reports')) page = <LoansReports />;
   else if (path === '/loans/provisioning' || path.startsWith('/loans/provisioning/')) page = <ProvisioningPage />;
-  else if (path === '/loans/collections') page = <LoansRedirectPage to="/loans" label="Loans dashboard (Collections lands in Phase 4)" />;
+  else if (path === '/loans/collections') page = <CollectionsQueuePage />;
   else if (path === '/loans') page = <LoansDashboard />;
 
   // Legacy paths — redirect for one release so bookmarks survive,

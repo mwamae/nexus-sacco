@@ -26,6 +26,8 @@ import {
   getLoansPolicy,
   updateLoansPolicyThresholds,
   updateLoansPolicyMatrix,
+  updateDividendOffsetPolicy,
+  type DividendOffsetPolicy,
   type ECLMatrixRow,
   type LoansPolicyThresholds,
 } from '../../api/client';
@@ -55,6 +57,7 @@ export default function LoansPolicyPage() {
 
   const [thresholds, setThresholds] = useState<LoansPolicyThresholds | null>(null);
   const [matrix, setMatrix] = useState<ECLMatrixRow[]>([]);
+  const [dividendPolicy, setDividendPolicy] = useState<DividendOffsetPolicy>('manual_preview');
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -65,9 +68,20 @@ export default function LoansPolicyPage() {
       const snap = await getLoansPolicy();
       setThresholds(snap.thresholds);
       setMatrix(snap.ecl_matrix);
+      setDividendPolicy(snap.dividend_offset_policy ?? 'manual_preview');
     } catch (e) { setErr(asMsg(e)); }
   }
   useEffect(() => { void load(); }, []);
+
+  async function saveDividendPolicy(p: DividendOffsetPolicy) {
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      await updateDividendOffsetPolicy(p);
+      setDividendPolicy(p);
+      setMsg('Dividend offset policy saved.');
+    } catch (e) { setErr(asMsg(e)); }
+    finally { setBusy(false); }
+  }
 
   async function saveThresholds() {
     if (!thresholds) return;
@@ -238,7 +252,65 @@ export default function LoansPolicyPage() {
           )}
         </div>
       </div>
+
+      {/* ─────────── Dividend offset policy (Phase 4) ─────────── */}
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="card-hd">
+          <h3>Dividend offset policy</h3>
+          <span className="card-sub">How dividend payouts handle members with loan arrears</span>
+        </div>
+        <div className="card-body">
+          <p className="muted tiny" style={{ marginBottom: 12 }}>
+            When a dividend run produces payouts for members who have outstanding
+            arrears on active loans, this setting determines what happens.
+          </p>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <PolicyRadio
+              value="manual_preview" current={dividendPolicy}
+              label="Manual preview (recommended)"
+              hint="The dividend run produces a per-member offset preview. The operator reviews and chooses to post or skip each offset. Default."
+              disabled={!canWrite || busy} onChange={(v) => void saveDividendPolicy(v)}
+            />
+            <PolicyRadio
+              value="automatic" current={dividendPolicy}
+              label="Automatic"
+              hint="The dividend run automatically offsets each member's arrears against their payout, in one transaction. No preview shown. Currently storage-only; the inline offset hook ships in a follow-up PR."
+              disabled={!canWrite || busy} onChange={(v) => void saveDividendPolicy(v)}
+            />
+            <PolicyRadio
+              value="disabled" current={dividendPolicy}
+              label="Disabled"
+              hint="Members in arrears receive their full dividend regardless. No offsets are posted."
+              disabled={!canWrite || busy} onChange={(v) => void saveDividendPolicy(v)}
+            />
+          </div>
+        </div>
+      </div>
     </div>
+  );
+}
+
+function PolicyRadio({ value, current, label, hint, disabled, onChange }: {
+  value: DividendOffsetPolicy;
+  current: DividendOffsetPolicy;
+  label: string;
+  hint: string;
+  disabled?: boolean;
+  onChange: (v: DividendOffsetPolicy) => void;
+}) {
+  return (
+    <label style={{
+      display: 'flex', gap: 10, padding: '10px 12px',
+      border: `2px solid ${current === value ? 'var(--accent)' : 'var(--border)'}`,
+      borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
+      opacity: disabled ? 0.6 : 1,
+    }}>
+      <input type="radio" checked={current === value} disabled={disabled} onChange={() => onChange(value)} />
+      <div>
+        <div style={{ fontWeight: 600 }}>{label}</div>
+        <div className="muted tiny" style={{ marginTop: 4 }}>{hint}</div>
+      </div>
+    </label>
   );
 }
 

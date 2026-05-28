@@ -296,6 +296,21 @@ func main() {
 		Pool:   pool,
 		Logger: logger,
 	}
+	// Loans Phase 4 — collections workflow handlers.
+	collectionsEventsH := &handler.LoanCollectionsEventsHandler{
+		DB:          pool,
+		Loans:       loanStore,
+		Collections: loanCollectionsStore,
+		Notifier:    notifyClient,
+		Logger:      logger,
+	}
+	dividendOffsetH := &handler.DividendOffsetHandler{
+		DB:        pool,
+		Dividends: dividendStore,
+		Loans:     loanStore,
+		Posting:   postingClient,
+		Logger:    logger,
+	}
 	memberStmtStore := store.NewMemberStatementStore(pool.Pool)
 	memberStmtH := &handler.MemberStatementHandler{
 		DB:         pool,
@@ -504,8 +519,11 @@ func main() {
 		// signs off on the column layout for the period.
 		SASRA: &handler.SASRAHandler{DB: pool},
 		// Loans Phase 3 — v2 provisioning + per-tenant policy admin.
-		LoanProvisioningV2: provisioningV2H,
-		LoanPolicy:         loanPolicyH,
+		LoanProvisioningV2:    provisioningV2H,
+		LoanPolicy:            loanPolicyH,
+		// Loans Phase 4 — collections workflow + dividend offset.
+		LoanCollectionsEvents: collectionsEventsH,
+		DividendOffset:        dividendOffsetH,
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),
