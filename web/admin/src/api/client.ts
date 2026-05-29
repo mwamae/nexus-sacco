@@ -5505,6 +5505,27 @@ export async function updateDividendOffsetPolicy(policy: DividendOffsetPolicy): 
   await api.put('/v1/loans/policy/dividend-offset', { policy });
 }
 
+// ─────────── Guarantor SMS-consent policy ───────────
+
+export type GuarantorSMSPolicy = {
+  enabled: boolean;
+  template: string;
+  token_expiry_days: number;
+  reminder_hours_first: number;
+  reminder_hours_second: number;
+  max_otp_attempts: number;
+  public_base_url: string;
+};
+
+export async function getGuarantorSMSPolicy(): Promise<GuarantorSMSPolicy> {
+  const r = await api.get('/v1/loans/policy/guarantor-sms');
+  return r.data.data;
+}
+
+export async function updateGuarantorSMSPolicy(p: GuarantorSMSPolicy): Promise<void> {
+  await api.put('/v1/loans/policy/guarantor-sms', p);
+}
+
 // ─────────── Dividend offset preview + post ───────────
 
 export type DividendOffsetPreviewRow = {

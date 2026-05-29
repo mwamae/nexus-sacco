@@ -27,6 +27,9 @@ const (
 	// accounting service via the outbox) is the dependency that
 	// effectively failed.
 	CodeGLPostFailed ErrorCode = "gl_post_failed"
+	// CodeRateLimited — used by the public guarantor-consent
+	// endpoints when the per-IP / per-token token bucket is empty.
+	CodeRateLimited ErrorCode = "rate_limited"
 )
 
 // ErrGLPostFailed wraps the detail from the underlying posting

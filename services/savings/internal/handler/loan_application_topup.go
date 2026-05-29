@@ -131,8 +131,32 @@ func (h *LoanApplicationHandler) TopUp(w http.ResponseWriter, r *http.Request) {
 		}
 		created = c
 		// Copy guarantors.
-		if err := copyGuarantorsFromBaseAppTx(r.Context(), tx, h.Guarantees, base.ApplicationID, created.ID, userID, rebroadcast); err != nil {
+		copied, err := copyGuarantorsFromBaseAppTx(r.Context(), tx, h.Guarantees, base.ApplicationID, created.ID, userID, rebroadcast)
+		if err != nil {
 			return err
+		}
+		// Phase 5 follow-up — fire consent SMS for each re-broadcast row.
+		if h.Consent != nil && len(copied) > 0 {
+			settings, _ := LoadConsentSettingsTx(r.Context(), tx, tid)
+			if settings != nil {
+				var applicantName string
+				_ = tx.QueryRow(r.Context(),
+					`SELECT COALESCE(full_name, '') FROM counterparty_directory WHERE counterparty_id = $1`,
+					created.CounterpartyID,
+				).Scan(&applicantName)
+				var productName string
+				_ = tx.QueryRow(r.Context(),
+					`SELECT name FROM loan_products WHERE id = $1`, created.ProductID,
+				).Scan(&productName)
+				for _, g := range copied {
+					_ = IssueConsentForGuarantee(r.Context(), tx,
+						h.Consent, h.Notifier, h.Logger,
+						tid, g.ID, userID, settings,
+						applicantName, productName,
+						created.RequestedAmount, g.AmountGuaranteed, 1,
+					)
+				}
+			}
 		}
 		return nil
 	})
@@ -251,8 +275,32 @@ func (h *LoanApplicationHandler) Refinance(w http.ResponseWriter, r *http.Reques
 		}
 		created = c
 		// Copy guarantors from the largest source loan's application.
-		if err := copyGuarantorsFromBaseAppTx(r.Context(), tx, h.Guarantees, largest.ApplicationID, created.ID, userID, rebroadcast); err != nil {
+		copied, err := copyGuarantorsFromBaseAppTx(r.Context(), tx, h.Guarantees, largest.ApplicationID, created.ID, userID, rebroadcast)
+		if err != nil {
 			return err
+		}
+		// Phase 5 follow-up — fire consent SMS per re-broadcast row.
+		if h.Consent != nil && len(copied) > 0 {
+			settings, _ := LoadConsentSettingsTx(r.Context(), tx, tid)
+			if settings != nil {
+				var applicantName string
+				_ = tx.QueryRow(r.Context(),
+					`SELECT COALESCE(full_name, '') FROM counterparty_directory WHERE counterparty_id = $1`,
+					created.CounterpartyID,
+				).Scan(&applicantName)
+				var productName string
+				_ = tx.QueryRow(r.Context(),
+					`SELECT name FROM loan_products WHERE id = $1`, created.ProductID,
+				).Scan(&productName)
+				for _, g := range copied {
+					_ = IssueConsentForGuarantee(r.Context(), tx,
+						h.Consent, h.Notifier, h.Logger,
+						tid, g.ID, userID, settings,
+						applicantName, productName,
+						created.RequestedAmount, g.AmountGuaranteed, 1,
+					)
+				}
+			}
 		}
 		return nil
 	})
@@ -318,19 +366,24 @@ func carryAffordabilityFromBaseApplicationTx(
 // copyGuarantorsFromBaseAppTx duplicates the prior application's
 // guarantee rows onto the new application. Status starts at
 // pending_consent so each guarantor must re-affirm.
+//
+// Returns the freshly-created guarantee rows so the caller can issue
+// fresh consent SMS tokens (Phase 5 follow-up); empty slice when
+// rebroadcast=false.
 func copyGuarantorsFromBaseAppTx(
 	ctx context.Context, tx pgx.Tx,
 	guarantees *store.LoanGuaranteeStore,
 	srcAppID, dstAppID, userID uuid.UUID,
 	rebroadcast bool,
-) error {
+) ([]domain.LoanGuarantee, error) {
 	if !rebroadcast {
-		return nil
+		return nil, nil
 	}
 	rows, err := guarantees.ByApplicationTx(ctx, tx, srcAppID)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	out := make([]domain.LoanGuarantee, 0, len(rows))
 	for _, g := range rows {
 		copy := &domain.LoanGuarantee{
 			ApplicationID:     dstAppID,
@@ -338,11 +391,13 @@ func copyGuarantorsFromBaseAppTx(
 			AmountGuaranteed:  g.AmountGuaranteed,
 			RequestedBy:       userID,
 		}
-		if _, err := guarantees.CreateTx(ctx, tx, copy); err != nil {
-			return err
+		created, err := guarantees.CreateTx(ctx, tx, copy)
+		if err != nil {
+			return nil, err
 		}
+		out = append(out, *created)
 	}
-	return nil
+	return out, nil
 }
 
 // writeApplicationErr maps store-level errors to HTTP codes consistently

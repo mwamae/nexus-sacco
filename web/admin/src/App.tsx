@@ -8,6 +8,7 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import ResetPassword from './pages/ResetPassword';
 import AcceptInvite from './pages/AcceptInvite';
+import GuarantorConsent from './pages/GuarantorConsent';
 import Roles from './pages/Roles';
 import Users from './pages/Users';
 import Members from './pages/Members';
@@ -91,6 +92,9 @@ function Gate() {
   // Anonymous pages — live outside the auth gate.
   if (path === '/reset') return <ResetPassword />;
   if (path === '/invite/accept') return <AcceptInvite />;
+  // Phase 5 — SMS guarantor-consent link lands here. The token in
+  // the URL is the only credential; the page handles ID + OTP itself.
+  if (path.startsWith('/g/')) return <GuarantorConsent />;
 
   if (status === 'loading') {
     return (

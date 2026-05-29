@@ -137,6 +137,15 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        // Phase 5 — public guarantor-consent flow (no auth). The
+        // visible SMS link is /g/{token}; the SPA page calls these
+        // API routes which the savings service exposes outside its
+        // /v1 auth wing.
+        '/api/p/guarantor-consent': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/loan-transactions': {
           target: savingsTarget,
           changeOrigin: false,

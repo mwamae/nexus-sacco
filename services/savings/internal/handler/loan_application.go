@@ -40,6 +40,7 @@ type LoanApplicationHandler struct {
 	Applications   *store.LoanApplicationStore
 	Guarantees     *store.LoanGuaranteeStore
 	Loans          *store.LoanStore // Phase 5 — needed by topup/refinance to read parent loans
+	Consent        *store.GuarantorConsentStore // Phase 5 — token issuance for consent SMS
 	Notifier       *notifier.Client
 	Logger         *slog.Logger
 
@@ -179,7 +180,22 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 			return err
 		}
 
-		// Insert guarantees + collateral
+		// Insert guarantees + collateral.
+		//
+		// Phase 5 follow-up — after each guarantee row we issue a
+		// consent token + fire an SMS to the guarantor. Settings are
+		// loaded once and passed in to avoid N+1 tenant_operations
+		// reads. SMS dispatch is best-effort; transport failures
+		// don't abort the application create.
+		var consentSettings *ConsentSettings
+		var applicantName string
+		if h.Consent != nil && len(in.Guarantors) > 0 {
+			consentSettings, _ = LoadConsentSettingsTx(r.Context(), tx, tid)
+			_ = tx.QueryRow(r.Context(),
+				`SELECT COALESCE(full_name, '') FROM counterparty_directory WHERE counterparty_id = $1`,
+				in.CounterpartyID,
+			).Scan(&applicantName)
+		}
 		for _, g := range in.Guarantors {
 			if g.CounterpartyID == uuid.Nil || g.AmountGuaranteed.LessThanOrEqual(decimal.Zero) {
 				return httpx.ErrBadRequest("each guarantor needs counterparty_id and a positive amount_guaranteed")
@@ -194,6 +210,16 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 				return err
 			}
 			resp.Guarantees = append(resp.Guarantees, *gp)
+
+			if consentSettings != nil {
+				if ierr := IssueConsentForGuarantee(r.Context(), tx,
+					h.Consent, h.Notifier, h.Logger,
+					tid, gp.ID, userID, consentSettings,
+					applicantName, product.Name, app.RequestedAmount, g.AmountGuaranteed, 1,
+				); ierr != nil {
+					h.Logger.Warn("issue consent token", "guarantee", gp.ID, "err", ierr)
+				}
+			}
 		}
 		for _, c := range in.Collateral {
 			var vd *time.Time

@@ -27,8 +27,11 @@ import {
   updateLoansPolicyThresholds,
   updateLoansPolicyMatrix,
   updateDividendOffsetPolicy,
+  getGuarantorSMSPolicy,
+  updateGuarantorSMSPolicy,
   type DividendOffsetPolicy,
   type ECLMatrixRow,
+  type GuarantorSMSPolicy,
   type LoansPolicyThresholds,
 } from '../../api/client';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
@@ -58,6 +61,7 @@ export default function LoansPolicyPage() {
   const [thresholds, setThresholds] = useState<LoansPolicyThresholds | null>(null);
   const [matrix, setMatrix] = useState<ECLMatrixRow[]>([]);
   const [dividendPolicy, setDividendPolicy] = useState<DividendOffsetPolicy>('manual_preview');
+  const [smsPolicy, setSMSPolicy] = useState<GuarantorSMSPolicy | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -65,13 +69,24 @@ export default function LoansPolicyPage() {
   async function load() {
     setErr(null);
     try {
-      const snap = await getLoansPolicy();
+      const [snap, sms] = await Promise.all([getLoansPolicy(), getGuarantorSMSPolicy()]);
       setThresholds(snap.thresholds);
       setMatrix(snap.ecl_matrix);
       setDividendPolicy(snap.dividend_offset_policy ?? 'manual_preview');
+      setSMSPolicy(sms);
     } catch (e) { setErr(asMsg(e)); }
   }
   useEffect(() => { void load(); }, []);
+
+  async function saveSMSPolicy() {
+    if (!smsPolicy) return;
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      await updateGuarantorSMSPolicy(smsPolicy);
+      setMsg('Guarantor SMS settings saved. New consent invites use the updated config.');
+    } catch (e) { setErr(asMsg(e)); }
+    finally { setBusy(false); }
+  }
 
   async function saveDividendPolicy(p: DividendOffsetPolicy) {
     setBusy(true); setErr(null); setMsg(null);
@@ -286,7 +301,131 @@ export default function LoansPolicyPage() {
           </div>
         </div>
       </div>
+
+      {/* ─────────── Guarantor SMS-consent settings (Phase 5) ─────────── */}
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="card-hd">
+          <h3>Guarantor SMS consent</h3>
+          <span className="card-sub">SMS-driven tokenised consent flow + reminders</span>
+        </div>
+        <div className="card-body">
+          {!smsPolicy ? <div className="muted">Loading…</div> : (
+            <>
+              <p className="muted tiny" style={{ marginBottom: 12 }}>
+                When officers add guarantors to a loan application, each guarantor receives an SMS
+                with a one-time link to consent online. The reminder worker re-sends the link if
+                they don&rsquo;t respond. Disable to fall back to admin-captured paper consent only.
+              </p>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={smsPolicy.enabled}
+                  disabled={!canWrite || busy}
+                  onChange={(e) => setSMSPolicy({ ...smsPolicy, enabled: e.target.checked })}
+                />
+                <span>Send SMS consent invites automatically when guarantors are added</span>
+              </label>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <NumberRow
+                  label="Token expiry (days)"
+                  value={smsPolicy.token_expiry_days}
+                  min={1} max={90}
+                  disabled={!canWrite || busy}
+                  onChange={(n) => setSMSPolicy({ ...smsPolicy, token_expiry_days: n })}
+                  hint="How long the consent link stays valid (1–90)."
+                />
+                <NumberRow
+                  label="Max OTP attempts"
+                  value={smsPolicy.max_otp_attempts}
+                  min={1} max={10}
+                  disabled={!canWrite || busy}
+                  onChange={(n) => setSMSPolicy({ ...smsPolicy, max_otp_attempts: n })}
+                  hint="Wrong-code tries before the link is disabled (1–10)."
+                />
+                <NumberRow
+                  label="1st reminder (hours)"
+                  value={smsPolicy.reminder_hours_first}
+                  min={1} max={720}
+                  disabled={!canWrite || busy}
+                  onChange={(n) => setSMSPolicy({ ...smsPolicy, reminder_hours_first: n })}
+                  hint="Default 48h after the original invite."
+                />
+                <NumberRow
+                  label="2nd reminder (hours)"
+                  value={smsPolicy.reminder_hours_second}
+                  min={2} max={2160}
+                  disabled={!canWrite || busy}
+                  onChange={(n) => setSMSPolicy({ ...smsPolicy, reminder_hours_second: n })}
+                  hint="Default 144h (6 days). Must be greater than the 1st reminder."
+                />
+              </div>
+
+              <label style={{ display: 'block', marginTop: 12 }}>
+                <div className="muted tiny" style={{ marginBottom: 4 }}>Public base URL</div>
+                <input
+                  className="input"
+                  style={{ width: '100%' }}
+                  placeholder="https://tenant.nexussacco.app"
+                  value={smsPolicy.public_base_url}
+                  disabled={!canWrite || busy}
+                  onChange={(e) => setSMSPolicy({ ...smsPolicy, public_base_url: e.target.value })}
+                />
+                <div className="muted tiny" style={{ marginTop: 4 }}>
+                  The SMS link will look like <code>{`${smsPolicy.public_base_url || 'https://your.host'}/g/{token}`}</code>.
+                </div>
+              </label>
+
+              <label style={{ display: 'block', marginTop: 12 }}>
+                <div className="muted tiny" style={{ marginBottom: 4 }}>SMS template</div>
+                <textarea
+                  className="input"
+                  style={{ width: '100%', fontFamily: 'monospace' }}
+                  rows={4}
+                  value={smsPolicy.template}
+                  disabled={!canWrite || busy}
+                  onChange={(e) => setSMSPolicy({ ...smsPolicy, template: e.target.value })}
+                  placeholder="Hi {{guarantor_name}}. {{applicant_name}} has requested you to guarantee a {{product_name}} of KES {{amount}}. To respond: {{link}}"
+                />
+                <div className="muted tiny" style={{ marginTop: 4 }}>
+                  Placeholders: <code>{`{{guarantor_name}}`}</code>, <code>{`{{applicant_name}}`}</code>, <code>{`{{product_name}}`}</code>, <code>{`{{amount}}`}</code>, <code>{`{{requested_amount}}`}</code>, <code>{`{{link}}`}</code>, <code>{`{{tenant_name}}`}</code>, <code>{`{{expiry_days}}`}</code>, <code>{`{{token_short}}`}</code>. Must include <code>{`{{link}}`}</code>.
+                </div>
+              </label>
+
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+                <button className="btn btn-primary" disabled={busy || !canWrite} onClick={() => void saveSMSPolicy()}>
+                  {busy ? 'Saving…' : 'Save SMS settings'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
+  );
+}
+
+function NumberRow({ label, value, min, max, disabled, onChange, hint }: {
+  label: string; value: number; min: number; max: number;
+  disabled?: boolean; onChange: (v: number) => void; hint?: string;
+}) {
+  return (
+    <label style={{ display: 'block' }}>
+      <div className="muted tiny" style={{ marginBottom: 4 }}>{label}</div>
+      <input
+        className="input"
+        type="number"
+        min={min} max={max}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => {
+          const n = parseInt(e.target.value, 10);
+          if (!Number.isNaN(n)) onChange(n);
+        }}
+        style={{ width: 110 }}
+      />
+      {hint && <div className="muted tiny" style={{ marginTop: 4 }}>{hint}</div>}
+    </label>
   );
 }
 

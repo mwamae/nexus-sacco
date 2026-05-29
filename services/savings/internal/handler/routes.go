@@ -57,6 +57,10 @@ type Deps struct {
 	// LoanPolicy backs /v1/loans/policy/* (DPD thresholds + ECL matrix
 	// editor) and /v1/loans/{id}/classification-history. Optional.
 	LoanPolicy *LoanPolicyHandler
+	// GuarantorSMSPolicy — Phase 5. Mounted at
+	// /v1/loans/policy/guarantor-sms (GET + PUT). Same loans:policy:write
+	// permission as LoanPolicy.
+	GuarantorSMSPolicy *GuarantorSMSPolicyHandler
 	// LoanCollectionsEvents — Phase 4 workflow surface mounted under
 	// /v1/loans/{loan_id}/collections/* plus tenant-wide reads
 	// (/v1/loans/collections/queue, /v1/loans/collections/ptp-summary).
@@ -81,6 +85,9 @@ type Deps struct {
 	QualifyingAmount *QualifyingAmountHandler
 	// GuarantorConsent — admin respond-with-proof + portal self-service.
 	GuarantorConsent *GuarantorConsentHandler
+	// PublicConsent — no-auth /p/guarantor-consent/* endpoints driven
+	// by tokenised SMS links. Mounted outside the auth middleware.
+	PublicConsent *PublicGuarantorConsentHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -124,6 +131,30 @@ func Routes(d Deps) http.Handler {
 	// deployment automation can gate rollouts on it without a token.
 	if d.FinanceHealth != nil {
 		r.Get("/healthz/finance", d.FinanceHealth.Handle)
+	}
+
+	// ─────────── Public guarantor-consent endpoints ───────────
+	//
+	// /p/* is the no-auth wing for SMS-link-driven flows. The URL
+	// token IS the credential; ID + OTP verification on the public
+	// page proves the visitor IS the named guarantor.
+	//
+	// Per-IP and per-token token-bucket rate limiters defend against
+	// enumeration + OTP brute-force. ResolveTenant is a no-op when
+	// the request has no slug (default localhost / dev) — the public
+	// handler discovers the tenant from the token itself and sets
+	// app.tenant_id explicitly inside its tx.
+	if d.PublicConsent != nil {
+		ipLimiter := middleware.NewRateLimiter(20, 1, middleware.KeyByIP)
+		tokenLimiter := middleware.NewRateLimiter(10, 0.25, middleware.KeyByURLParam("token"))
+		r.Route("/p/guarantor-consent/{token}", func(r chi.Router) {
+			r.Use(ipLimiter.Middleware)
+			r.Use(tokenLimiter.Middleware)
+			r.Get("/", d.PublicConsent.Get)
+			r.Post("/verify-id", d.PublicConsent.VerifyID)
+			r.Post("/verify-otp", d.PublicConsent.VerifyOTP)
+			r.Post("/respond", d.PublicConsent.Respond)
+		})
 	}
 
 	// Service-to-service endpoints — no JWT auth. Each handler does
@@ -471,6 +502,10 @@ func Routes(d Deps) http.Handler {
 				r.With(middleware.RequirePermission("loans:policy:write")).Put("/loans/policy/ecl-matrix", d.LoanPolicy.UpdateMatrix)
 				r.With(middleware.RequirePermission("loans:policy:write")).Put("/loans/policy/dividend-offset", d.LoanPolicy.UpdateDividendOffsetPolicy)
 				r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/classification-history", d.LoanPolicy.LoanClassificationHistory)
+			}
+			if d.GuarantorSMSPolicy != nil {
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/policy/guarantor-sms", d.GuarantorSMSPolicy.Get)
+				r.With(middleware.RequirePermission("loans:policy:write")).Put("/loans/policy/guarantor-sms", d.GuarantorSMSPolicy.Update)
 			}
 
 			// ─────────── Collection Desk (single cashier's counter) ───────────

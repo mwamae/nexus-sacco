@@ -301,6 +301,11 @@ func main() {
 		Pool:   pool,
 		Logger: logger,
 	}
+	// Phase 5 — guarantor SMS-consent settings editor.
+	guarantorSMSPolicyH := &handler.GuarantorSMSPolicyHandler{
+		Pool:   pool,
+		Logger: logger,
+	}
 	// Loans Phase 4 — collections workflow handlers.
 	collectionsEventsH := &handler.LoanCollectionsEventsHandler{
 		DB:          pool,
@@ -367,6 +372,15 @@ func main() {
 		Files:      filestoreSt,
 		Logger:     logger,
 	}
+	// Phase 5 follow-up — SMS-token-driven public consent flow.
+	consentStore := store.NewGuarantorConsentStore(pool.Pool)
+	publicConsentH := &handler.PublicGuarantorConsentHandler{
+		DB:       pool,
+		Consent:  consentStore,
+		Notifier: notifyClient,
+		Logger:   logger,
+	}
+	loanAppH.Consent = consentStore
 	memberStmtStore := store.NewMemberStatementStore(pool.Pool)
 	memberStmtH := &handler.MemberStatementHandler{
 		DB:         pool,
@@ -578,6 +592,7 @@ func main() {
 		// Loans Phase 3 — v2 provisioning + per-tenant policy admin.
 		LoanProvisioningV2:    provisioningV2H,
 		LoanPolicy:            loanPolicyH,
+		GuarantorSMSPolicy:    guarantorSMSPolicyH,
 		// Loans Phase 4 — collections workflow + dividend offset.
 		LoanCollectionsEvents: collectionsEventsH,
 		DividendOffset:        dividendOffsetH,
@@ -591,6 +606,8 @@ func main() {
 		QualifyingAmount:  qualifyingAmountH,
 		// Phase 5 follow-up — admin consent-with-proof + portal self-service.
 		GuarantorConsent: guarantorConsentH,
+		// Phase 5 follow-up — public SMS-token consent (no auth).
+		PublicConsent: publicConsentH,
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),
