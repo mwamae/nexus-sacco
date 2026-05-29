@@ -3909,7 +3909,9 @@ export type CollectionCaseStatus =
 export type CollectionContactKind = 'call' | 'sms' | 'whatsapp' | 'email' | 'in_person_visit' | 'letter';
 export type ContactOutcome =
   | 'reached' | 'no_answer' | 'wrong_number' | 'busy'
-  | 'left_message' | 'promise_made' | 'dispute' | 'refused' | 'visited_not_home';
+  | 'left_message' | 'promise_made' | 'dispute' | 'refused' | 'visited_not_home'
+  // Phase 4 follow-up — distinct visit outcomes (previously collapsed).
+  | 'not_found_work' | 'moved';
 export type PTPStatus = 'open' | 'kept' | 'partial' | 'broken' | 'cancelled';
 
 export type CollectionCase = {
@@ -6815,7 +6817,10 @@ export type CollectionEventKind =
   | 'ptp_created' | 'ptp_kept' | 'ptp_broken' | 'ptp_cancelled'
   | 'escalation' | 'legal_handover'
   | 'assigned' | 'unassigned'
-  | 'letter_generated';
+  | 'letter_generated'
+  // Phase 4 follow-up — first-class kinds for officer-initiated actions.
+  | 'manual_sms' | 'manual_email'
+  | 'call_attempt' | 'field_visit';
 
 export type CollectionLetterKind = 'pre_collection' | 'demand' | 'final_demand' | 'legal_notice';
 

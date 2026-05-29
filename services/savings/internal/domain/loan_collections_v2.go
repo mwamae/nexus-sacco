@@ -35,6 +35,13 @@ const (
 	EventAssigned        CollectionEventKind = "assigned"
 	EventUnassigned      CollectionEventKind = "unassigned"
 	EventLetterGenerated CollectionEventKind = "letter_generated"
+	// Phase 4 follow-up — first-class event kinds for officer-initiated
+	// actions. Added via migration 0043 so reporting queries can group
+	// by kind without inspecting payload JSON.
+	EventManualSMS   CollectionEventKind = "manual_sms"
+	EventManualEmail CollectionEventKind = "manual_email"
+	EventCallAttempt CollectionEventKind = "call_attempt"
+	EventFieldVisit  CollectionEventKind = "field_visit"
 )
 
 func (k CollectionEventKind) Valid() bool {
@@ -42,7 +49,8 @@ func (k CollectionEventKind) Valid() bool {
 	case EventNote, EventAutoSMS, EventAutoEmail,
 		EventPTPCreated, EventPTPKept, EventPTPBroken, EventPTPCancelled,
 		EventEscalation, EventLegalHandover, EventAssigned, EventUnassigned,
-		EventLetterGenerated:
+		EventLetterGenerated,
+		EventManualSMS, EventManualEmail, EventCallAttempt, EventFieldVisit:
 		return true
 	}
 	return false

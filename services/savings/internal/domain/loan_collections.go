@@ -54,12 +54,17 @@ const (
 	OutcomeDispute       ContactOutcome = "dispute"
 	OutcomeRefused       ContactOutcome = "refused"
 	OutcomeVisitedNotHome ContactOutcome = "visited_not_home"
+	// Phase 4 follow-up — visit outcomes the original Phase 6e enum
+	// couldn't express. Added via migration 0043.
+	OutcomeNotFoundWork  ContactOutcome = "not_found_work"
+	OutcomeMoved         ContactOutcome = "moved"
 )
 
 func (o ContactOutcome) Valid() bool {
 	switch o {
 	case OutcomeReached, OutcomeNoAnswer, OutcomeWrongNumber, OutcomeBusy,
-		OutcomeLeftMessage, OutcomePromiseMade, OutcomeDispute, OutcomeRefused, OutcomeVisitedNotHome:
+		OutcomeLeftMessage, OutcomePromiseMade, OutcomeDispute, OutcomeRefused,
+		OutcomeVisitedNotHome, OutcomeNotFoundWork, OutcomeMoved:
 		return true
 	}
 	return false

@@ -407,12 +407,27 @@ function CollectionsTab({ loanID }: { loanID: string }) {
 
   // Build a unified timeline: events + contacts merged by timestamp,
   // most-recent first.
+  //
+  // Phase 4 follow-up dedupe: officer-initiated actions (calls,
+  // visits, manual SMS, letters) now write BOTH a contact row AND a
+  // matching event row whose details.source_contact_id points at the
+  // contact. We suppress the contact entry when a referencing event
+  // exists so the timeline shows each action exactly once. Without
+  // this, every call/visit would render twice now that they emit
+  // a parallel event for queryability.
   type TimelineItem =
     | { kind: 'event'; t: string; ev: CollectionEvent }
     | { kind: 'contact'; t: string; c: any };
+  const linkedContactIDs = new Set<string>(
+    data.events
+      .map((e) => (e.details as any)?.source_contact_id)
+      .filter((id): id is string => typeof id === 'string'),
+  );
   const timeline: TimelineItem[] = [
     ...data.events.map((e): TimelineItem => ({ kind: 'event', t: e.occurred_at, ev: e })),
-    ...(data.contacts as any[]).map((c): TimelineItem => ({ kind: 'contact', t: c.contacted_at, c })),
+    ...(data.contacts as any[])
+      .filter((c) => !linkedContactIDs.has(c.id))
+      .map((c): TimelineItem => ({ kind: 'contact', t: c.contacted_at, c })),
   ].sort((a, b) => (a.t < b.t ? 1 : -1));
 
   return (
@@ -488,10 +503,22 @@ function CollectionsTab({ loanID }: { loanID: string }) {
 
 function EventLine({ ev }: { ev: CollectionEvent }) {
   const label = ev.kind.replaceAll('_', ' ');
+  const d = (ev.details ?? {}) as Record<string, any>;
   let detail = '';
   if (ev.kind === 'ptp_created' && ev.amount) detail = `· ${ev.amount} by ${ev.promised_date ?? '—'}`;
   if (ev.kind === 'letter_generated' && ev.letter_kind) detail = `· ${ev.letter_kind}`;
-  if (ev.kind === 'note') detail = `: ${(ev.details as any)?.text ?? ''}`;
+  if (ev.kind === 'note') detail = `: ${d.text ?? ''}`;
+  // Phase 4 follow-up — render the useful detail for officer events
+  // that now have their own kinds.
+  if (ev.kind === 'call_attempt' && d.outcome) detail = `· ${d.outcome}`;
+  if (ev.kind === 'field_visit') {
+    detail = d.outcome ? `· ${d.outcome}` : '';
+    if (d.geo_lat && d.geo_lng) detail += ` · GPS ${Number(d.geo_lat).toFixed(4)},${Number(d.geo_lng).toFixed(4)}`;
+  }
+  if ((ev.kind === 'manual_sms' || ev.kind === 'manual_email') && d.message) {
+    const msg = String(d.message);
+    detail = `: ${msg.length > 80 ? msg.slice(0, 80) + '…' : msg}`;
+  }
   return <span><strong>{label}</strong> <span className="muted tiny">{detail}</span></span>;
 }
 

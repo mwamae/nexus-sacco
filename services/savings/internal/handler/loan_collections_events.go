@@ -140,11 +140,28 @@ func (h *LoanCollectionsEventsHandler) LogCall(w http.ResponseWriter, r *http.Re
 			return err
 		}
 		notePtr := optStr(in.Note)
-		_, err = h.Collections.LogContactTx(r.Context(), tx, &domain.CollectionContact{
+		contact, err := h.Collections.LogContactTx(r.Context(), tx, &domain.CollectionContact{
 			CaseID: c.ID, Kind: domain.ContactCall, Outcome: domain.ContactOutcome(outcome),
 			Note: notePtr, ContactedBy: uid,
 		}, "call: "+outcome)
 		if err != nil {
+			return err
+		}
+
+		// Phase 4 follow-up — also emit a call_attempt event linked to
+		// the contact via source_contact_id. The timeline UNION dedupes
+		// contacts that have a referencing event so nothing renders
+		// twice; queries against loan_collection_events.kind can now
+		// find calls.
+		if _, err := h.Collections.LogEventTx(r.Context(), tx, loan.ID, &c.ID,
+			domain.EventCallAttempt, &uid,
+			detailsJSON(map[string]any{
+				"source_contact_id": contact.ID,
+				"outcome":           outcome,
+				"duration_seconds":  in.DurationSeconds,
+			}),
+			nil, nil, nil,
+		); err != nil {
 			return err
 		}
 
@@ -250,10 +267,31 @@ func (h *LoanCollectionsEventsHandler) LogVisit(w http.ResponseWriter, r *http.R
 		if in.GeoLng != nil {
 			if v, err := decimal.NewFromString(*in.GeoLng); err == nil { lng = &v }
 		}
-		_, err = h.Collections.LogContactTx(r.Context(), tx, &domain.CollectionContact{
+		contact, err := h.Collections.LogContactTx(r.Context(), tx, &domain.CollectionContact{
 			CaseID: c.ID, Kind: domain.ContactVisit, Outcome: domain.ContactOutcome(outcome),
 			Note: notePtr, GPSLat: lat, GPSLng: lng, ContactedBy: uid,
 		}, "visit: "+outcome)
+		if err != nil {
+			return err
+		}
+		// Phase 4 follow-up — also emit a field_visit event linked
+		// back to the contact. Timeline dedupes via source_contact_id.
+		evDetails := map[string]any{
+			"source_contact_id": contact.ID,
+			"outcome":           outcome,
+		}
+		if in.GeoLat != nil && in.GeoLng != nil {
+			evDetails["geo_lat"] = *in.GeoLat
+			evDetails["geo_lng"] = *in.GeoLng
+		}
+		if in.PhotoPath != nil {
+			evDetails["photo_path"] = *in.PhotoPath
+		}
+		_, err = h.Collections.LogEventTx(r.Context(), tx, loan.ID, &c.ID,
+			domain.EventFieldVisit, &uid,
+			detailsJSON(evDetails),
+			nil, nil, nil,
+		)
 		return err
 	})
 	if err != nil { writeCollErr(w, r, err); return }
@@ -270,10 +308,12 @@ func normaliseVisitOutcome(s string) string {
 		return "dispute"
 	case "not_found_home", "visited_not_home":
 		return "visited_not_home"
+	// Phase 4 follow-up — migration 0043 added these as first-class
+	// loan_contact_outcome enum values; no longer collapsed.
 	case "not_found_work":
-		return "visited_not_home" // collapse: legacy enum lacks this
+		return "not_found_work"
 	case "moved":
-		return "wrong_number"     // best-fit: member no longer at address
+		return "moved"
 	}
 	return ""
 }
@@ -519,15 +559,20 @@ func (h *LoanCollectionsEventsHandler) SendSMS(w http.ResponseWriter, r *http.Re
 		caseID = c.ID
 		counterpartyID = loan.CounterpartyID
 
-		_, err = h.Collections.LogContactTx(r.Context(), tx, &domain.CollectionContact{
+		contact, err := h.Collections.LogContactTx(r.Context(), tx, &domain.CollectionContact{
 			CaseID: c.ID, Kind: domain.ContactSMS, Outcome: domain.OutcomeReached,
 			Note: &in.Message, ContactedBy: uid,
 		}, "sms sent")
 		if err != nil { return err }
+		// Phase 4 follow-up — distinct manual_sms event kind (was
+		// previously auto_sms with payload.trigger='manual', which made
+		// queries grouping by kind blur officer + system sends).
 		_, err = h.Collections.LogEventTx(r.Context(), tx, loan.ID, &c.ID,
-			"auto_sms", // event kind: re-use auto_sms for manual too; payload distinguishes
-			&uid,
-			detailsJSON(map[string]any{"message": in.Message, "trigger": "manual"}),
+			domain.EventManualSMS, &uid,
+			detailsJSON(map[string]any{
+				"source_contact_id": contact.ID,
+				"message":           in.Message,
+			}),
 			nil, nil, nil)
 		return err
 	})
@@ -643,14 +688,18 @@ func (h *LoanCollectionsEventsHandler) GenerateLetter(w http.ResponseWriter, r *
 				return err
 			}
 		}
-		_, err := h.Collections.LogContactTx(r.Context(), tx, &domain.CollectionContact{
+		contact, err := h.Collections.LogContactTx(r.Context(), tx, &domain.CollectionContact{
 			CaseID: caseID, Kind: domain.ContactLetter, Outcome: domain.OutcomeReached,
 			Note: strPtr("letter: " + string(kind)), ContactedBy: uid,
 		}, "letter: "+string(kind))
 		if err != nil { return err }
 
 		letterKindCopy := kind
-		details := map[string]any{"kind": string(kind), "delivery": in.Delivery}
+		details := map[string]any{
+			"kind":              string(kind),
+			"delivery":          in.Delivery,
+			"source_contact_id": contact.ID, // Phase 4 follow-up — timeline dedupe pointer
+		}
 		if pdfResp != nil {
 			details["document_id"] = pdfResp.ID
 			details["storage_path"] = pdfResp.StoragePath

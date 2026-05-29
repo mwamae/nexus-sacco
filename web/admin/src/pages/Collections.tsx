@@ -56,6 +56,9 @@ const OUTCOME_LABEL: Record<ContactOutcome, string> = {
   dispute: 'Dispute',
   refused: 'Refused',
   visited_not_home: 'Visited / not home',
+  // Phase 4 follow-up — labels for the previously-collapsed visit outcomes.
+  not_found_work: 'Not found at work',
+  moved: 'Member has moved',
 };
 
 export default function CollectionsPage() {
