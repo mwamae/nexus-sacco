@@ -976,6 +976,35 @@ function OperationsTab({ operations, currency, canEdit, onSaved }: {
         </div>
       </Section>
 
+      {/* Phase 1.5a — collateral defaults inherited by new loan products. */}
+      <Section title="Collateral defaults" hint="Applied as defaults when new loan products are created. Existing products keep their per-product overrides.">
+        <div className="grid-3">
+          <Field label="Default security model" hint="One of none, guarantor_only, collateral_only, either, both.">
+            <select
+              className="select"
+              disabled={!canEdit || busy}
+              value={o.default_security_model}
+              onChange={(e) => setO({ ...o, default_security_model: e.target.value as TenantOperations['default_security_model'] })}
+            >
+              <option value="none">None</option>
+              <option value="guarantor_only">Guarantors only</option>
+              <option value="collateral_only">Collateral only</option>
+              <option value="either">Either</option>
+              <option value="both">Both</option>
+            </select>
+          </Field>
+          <Field label="Default min guarantor cover (%)">
+            <input className="input mono" type="number" min={0} max={1000} step={1} disabled={!canEdit || busy} value={o.default_min_guarantor_cover_pct} onChange={(e) => num('default_min_guarantor_cover_pct')(e.target.value)} />
+          </Field>
+          <Field label="Default min collateral cover (%)">
+            <input className="input mono" type="number" min={0} max={1000} step={1} disabled={!canEdit || busy} value={o.default_min_collateral_cover_pct} onChange={(e) => num('default_min_collateral_cover_pct')(e.target.value)} />
+          </Field>
+          <Field label="Revaluation cadence (months)" hint="How often to re-value pledged collateral. Drives the upcoming revaluation-due report.">
+            <input className="input mono" type="number" min={1} max={120} step={1} disabled={!canEdit || busy} value={o.collateral_revaluation_months} onChange={(e) => num('collateral_revaluation_months')(e.target.value)} />
+          </Field>
+        </div>
+      </Section>
+
       {canEdit && <SaveBar disabled={!isDirty} busy={busy} onSave={save} />}
     </>
   );

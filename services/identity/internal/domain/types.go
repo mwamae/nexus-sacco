@@ -161,6 +161,14 @@ type TenantOperations struct {
 	ApprovalCreditLimit float64 `json:"approval_credit_limit"`
 	ApprovalBoardLimit  float64 `json:"approval_board_limit"`
 
+	// Phase 1.5a — defaults applied when new loan products are created
+	// + tenant-wide revaluation cadence for the upcoming collateral
+	// revaluation report.
+	DefaultSecurityModel          string  `json:"default_security_model"`
+	DefaultMinGuarantorCoverPct   float64 `json:"default_min_guarantor_cover_pct"`
+	DefaultMinCollateralCoverPct  float64 `json:"default_min_collateral_cover_pct"`
+	CollateralRevaluationMonths   int     `json:"collateral_revaluation_months"`
+
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

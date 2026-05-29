@@ -256,6 +256,15 @@ type LoanProduct struct {
 	MaxGuarantorExposurePct  decimal.Decimal           `json:"max_guarantor_exposure_pct"`
 	GuarantorMustBeMember    bool                      `json:"guarantor_must_be_member"`
 	CollateralRequirement    LoanCollateralRequirement `json:"collateral_requirement"`
+	// Phase 1.5a — per-product security policy. SecurityModel is one of
+	// 'none' | 'guarantor_only' | 'collateral_only' | 'either' | 'both'.
+	// Defaults set by migration 0048.
+	SecurityModel              string          `json:"security_model"`
+	MinGuarantorCoverPct       decimal.Decimal `json:"min_guarantor_cover_pct"`
+	MinCollateralCoverPct      decimal.Decimal `json:"min_collateral_cover_pct"`
+	// AcceptedCollateralKinds — NULL/empty means all kinds. Non-empty
+	// limits which loan_collateral_kind values count as security.
+	AcceptedCollateralKinds    []string        `json:"accepted_collateral_kinds,omitempty"`
 	MinMembershipMonths      int                       `json:"min_membership_months"`
 	MinSharesRequired        int                       `json:"min_shares_required"`
 	AllowConcurrent          bool                      `json:"allow_concurrent"`
@@ -376,9 +385,60 @@ type LoanCollateralItem struct {
 	ValuationDate     *time.Time         `json:"valuation_date,omitempty"`
 	ValuationPath     *string            `json:"valuation_path,omitempty"`
 	OwnershipPath     *string            `json:"ownership_path,omitempty"`
+	// Status walks the offered → verified → valued → pledged → released/auctioned
+	// chain after migration 0048. Pre-0048 rows default to 'pledged'.
 	Status            string             `json:"status"`
 	Notes             *string            `json:"notes,omitempty"`
 	CreatedAt         time.Time          `json:"created_at"`
+
+	// Lifecycle audit columns (0048). Each transition stamps its actor + timestamp.
+	ProposedBy         *uuid.UUID `json:"proposed_by,omitempty"`
+	ProposedAt         *time.Time `json:"proposed_at,omitempty"`
+	VerifiedBy         *uuid.UUID `json:"verified_by,omitempty"`
+	VerifiedAt         *time.Time `json:"verified_at,omitempty"`
+	VerificationNotes  *string    `json:"verification_notes,omitempty"`
+	VerificationPhotos []string   `json:"verification_photos,omitempty"`
+	PledgedBy          *uuid.UUID `json:"pledged_by,omitempty"`
+	PledgedAt          *time.Time `json:"pledged_at,omitempty"`
+	ReleasedBy         *uuid.UUID `json:"released_by,omitempty"`
+	ReleasedAt         *time.Time `json:"released_at,omitempty"`
+	ReleasedReason     *string    `json:"released_reason,omitempty"`
+	RejectedReason     *string    `json:"rejected_reason,omitempty"`
+
+	// Display-only — joined from collateral_valuations where is_current = true.
+	// Empty when the loader didn't join (e.g. legacy create-return path).
+	CurrentValuation *CollateralValuation `json:"current_valuation,omitempty"`
+}
+
+// CollateralValuation — one row per (collateral_id, valuation date).
+// Only one row per collateral_id has is_current = true (unique partial index).
+type CollateralValuation struct {
+	ID                  uuid.UUID       `json:"id"`
+	TenantID            uuid.UUID       `json:"tenant_id"`
+	CollateralID        uuid.UUID       `json:"collateral_id"`
+	ValuerName          string          `json:"valuer_name"`
+	ValuerContact       *string         `json:"valuer_contact,omitempty"`
+	ValuationDate       time.Time       `json:"valuation_date"`
+	MarketValue         decimal.Decimal `json:"market_value"`
+	ForcedSaleValue     decimal.Decimal `json:"forced_sale_value"`
+	ValuationReportPath *string         `json:"valuation_report_path,omitempty"`
+	ExpiresAt           *time.Time      `json:"expires_at,omitempty"`
+	IsCurrent           bool            `json:"is_current"`
+	SupersededByID      *uuid.UUID      `json:"superseded_by_id,omitempty"`
+	Notes               *string         `json:"notes,omitempty"`
+	CreatedAt           time.Time       `json:"created_at"`
+	CreatedBy           uuid.UUID       `json:"created_by"`
+}
+
+// CollateralEvent — one row per lifecycle transition for the timeline tab.
+type CollateralEvent struct {
+	ID           uuid.UUID              `json:"id"`
+	TenantID     uuid.UUID              `json:"tenant_id"`
+	CollateralID uuid.UUID              `json:"collateral_id"`
+	OccurredAt   time.Time              `json:"occurred_at"`
+	ActorUserID  *uuid.UUID             `json:"actor_user_id,omitempty"`
+	Kind         string                 `json:"kind"`
+	Details      map[string]interface{} `json:"details,omitempty"`
 }
 
 type LoanDocument struct {

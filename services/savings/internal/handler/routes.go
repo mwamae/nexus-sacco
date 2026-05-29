@@ -88,6 +88,9 @@ type Deps struct {
 	// PublicConsent — no-auth /p/guarantor-consent/* endpoints driven
 	// by tokenised SMS links. Mounted outside the auth middleware.
 	PublicConsent *PublicGuarantorConsentHandler
+	// Collateral — Phase 1.5a lifecycle endpoints (verify/value/pledge/
+	// release) + security-coverage card. Mounted under /v1.
+	Collateral *CollateralHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -349,6 +352,31 @@ func Routes(d Deps) http.Handler {
 			// (who are the ones initiating the workflow); the actual
 			// decision is gated per-level inside the workflow service.
 			r.With(middleware.RequirePermission("loans:assess")).Post("/loan-applications/{app_id}/submit-for-decision", d.LoanApp.SubmitForDecision)
+
+			// ─────────── Collateral (Phase 1.5a) ───────────
+			//
+			// Lifecycle endpoints. The state-transition matrix is enforced
+			// server-side; invalid transitions return 409.
+			if d.Collateral != nil {
+				// Per-application + per-loan + per-item listing.
+				r.With(middleware.RequirePermission("loans:apply")).Post("/loan-applications/{app_id}/collateral", d.Collateral.CreateForApplication)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/collateral", d.Collateral.ListByApplication)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/collateral", d.Collateral.ListByLoan)
+				r.With(middleware.RequirePermission("loans:view")).Get("/collateral/{id}", d.Collateral.Get)
+				r.With(middleware.RequirePermission("loans:apply")).Patch("/collateral/{id}", d.Collateral.Patch)
+				r.With(middleware.RequirePermission("loans:apply")).Delete("/collateral/{id}", d.Collateral.Delete)
+				// Field-team verification (inspect + photos).
+				r.With(middleware.RequirePermission("loans:verify_collateral")).Post("/collateral/{id}/verify", d.Collateral.Verify)
+				// Soft reject — collateral stays on the row for resubmission.
+				r.With(middleware.RequirePermission("loans:verify_collateral")).Post("/collateral/{id}/reject", d.Collateral.Reject)
+				// Valuation desk attaches market + FSV + report.
+				r.With(middleware.RequirePermission("loans:value_collateral")).Post("/collateral/{id}/valuation", d.Collateral.Valuation)
+				// Approve-time pledge + post-settlement release.
+				r.With(middleware.RequirePermission("loans:approve")).Post("/collateral/{id}/pledge", d.Collateral.Pledge)
+				r.With(middleware.RequirePermission("loans:approve")).Post("/collateral/{id}/release", d.Collateral.Release)
+				// Security-coverage card for the application detail page.
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/security-coverage", d.Collateral.SecurityCoverage)
+			}
 
 			// Guarantor consent
 			r.With(middleware.RequirePermission("loans:guarantee")).Post("/loan-guarantees/{guarantee_id}/respond", d.LoanApp.GuaranteeRespond)

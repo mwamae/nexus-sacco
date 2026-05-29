@@ -523,6 +523,12 @@ export type TenantOperations = {
   approval_branch_limit: number;
   approval_credit_limit: number;
   approval_board_limit: number;
+  // Phase 1.5a — defaults inherited by new loan products + tenant-wide
+  // revaluation cadence for the future Collateral Revaluation report.
+  default_security_model: SecurityModel;
+  default_min_guarantor_cover_pct: number;
+  default_min_collateral_cover_pct: number;
+  collateral_revaluation_months: number;
   updated_at: string;
 };
 
@@ -3311,6 +3317,8 @@ export type LoanProductFee = {
   display_order: number;
 };
 export type LoanCollateralRequirement = 'required' | 'optional' | 'not_applicable';
+// Phase 1.5a — security_model values mirror migration 0048.
+export type SecurityModel = 'none' | 'guarantor_only' | 'collateral_only' | 'either' | 'both';
 // 'deposits' and 'shares_plus_deposits' are kept for backward
 // compatibility with existing tenants but are deprecated. New loan
 // products should pick 'bosa' or 'bosa_plus_shares' to match SACCO
@@ -3347,6 +3355,11 @@ export type LoanProduct = {
   max_guarantor_exposure_pct: string;
   guarantor_must_be_member: boolean;
   collateral_requirement: LoanCollateralRequirement;
+  // Phase 1.5a — per-product security policy.
+  security_model: SecurityModel;
+  min_guarantor_cover_pct: string;
+  min_collateral_cover_pct: string;
+  accepted_collateral_kinds?: string[];
   min_membership_months: number;
   min_shares_required: number;
   allow_concurrent: boolean;
@@ -3500,7 +3513,159 @@ export type LoanCollateralItem = {
   forced_sale_value?: string;
   valuation_date?: string;
   status: string;
+  ownership_path?: string;
+  notes?: string;
+
+  // Phase 1.5a — lifecycle audit + valuation join.
+  proposed_by?: string;
+  proposed_at?: string;
+  verified_by?: string;
+  verified_at?: string;
+  verification_notes?: string;
+  verification_photos?: string[];
+  pledged_by?: string;
+  pledged_at?: string;
+  released_by?: string;
+  released_at?: string;
+  released_reason?: string;
+  rejected_reason?: string;
+  current_valuation?: CollateralValuation;
 };
+
+export type CollateralValuation = {
+  id: string;
+  collateral_id: string;
+  valuer_name: string;
+  valuer_contact?: string;
+  valuation_date: string;
+  market_value: string;
+  forced_sale_value: string;
+  valuation_report_path?: string;
+  expires_at?: string;
+  is_current: boolean;
+  superseded_by_id?: string;
+  notes?: string;
+  created_at: string;
+  created_by: string;
+};
+
+export type CollateralEvent = {
+  id: string;
+  collateral_id: string;
+  occurred_at: string;
+  actor_user_id?: string;
+  kind: string;
+  details?: Record<string, unknown>;
+};
+
+// ─────────── Phase 1.5a — security-coverage card ───────────
+
+export type SecurityCoverage = {
+  coverage: {
+    guarantor_pledged: string;
+    collateral_fsv: string;
+    loan_amount: string;
+    loan_amount_basis: 'approved' | 'requested';
+  };
+  policy: {
+    security_model: SecurityModel;
+    min_guarantor_cover_pct: string;
+    min_collateral_cover_pct: string;
+  };
+  result: {
+    guarantor_pct: string;
+    collateral_pct: string;
+    guarantor_passes: boolean;
+    collateral_passes: boolean;
+    policy_met: boolean;
+    reason: string;
+    guarantor_shortfall: string;
+    collateral_shortfall: string;
+  };
+};
+
+export async function getSecurityCoverage(appId: string): Promise<SecurityCoverage> {
+  const r = await api.get(`/v1/loan-applications/${appId}/security-coverage`);
+  return r.data.data;
+}
+
+export async function listApplicationCollateral(appId: string): Promise<{ items: LoanCollateralItem[]; total: number }> {
+  const r = await api.get(`/v1/loan-applications/${appId}/collateral`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function listLoanCollateral(loanId: string): Promise<{ items: LoanCollateralItem[]; total: number }> {
+  const r = await api.get(`/v1/loans/${loanId}/collateral`);
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export type CollateralDetail = {
+  item: LoanCollateralItem;
+  valuation_history: CollateralValuation[];
+  events: CollateralEvent[];
+};
+
+export async function getCollateralDetail(id: string): Promise<CollateralDetail> {
+  const r = await api.get(`/v1/collateral/${id}`);
+  return r.data.data;
+}
+
+export async function createApplicationCollateral(
+  appId: string,
+  body: { kind: LoanCollateralKind; description: string; estimated_value: string; ownership_path?: string; notes?: string },
+): Promise<LoanCollateralItem> {
+  const r = await api.post(`/v1/loan-applications/${appId}/collateral`, body);
+  return r.data.data;
+}
+
+export async function patchCollateral(
+  id: string,
+  body: { description?: string; estimated_value?: string; ownership_path?: string; notes?: string },
+): Promise<LoanCollateralItem> {
+  const r = await api.patch(`/v1/collateral/${id}`, body);
+  return r.data.data;
+}
+
+export async function deleteCollateral(id: string): Promise<void> {
+  await api.delete(`/v1/collateral/${id}`);
+}
+
+export async function verifyCollateral(id: string, notes: string, photos?: string[]): Promise<LoanCollateralItem> {
+  const r = await api.post(`/v1/collateral/${id}/verify`, { notes, photos });
+  return r.data.data;
+}
+
+export async function rejectCollateral(id: string, reason: string): Promise<LoanCollateralItem> {
+  const r = await api.post(`/v1/collateral/${id}/reject`, { reason });
+  return r.data.data;
+}
+
+export async function valueCollateral(
+  id: string,
+  body: {
+    valuer_name: string;
+    valuer_contact?: string;
+    valuation_date: string;
+    market_value: string;
+    forced_sale_value: string;
+    valuation_report_path?: string;
+    expires_at?: string;
+    notes?: string;
+  },
+): Promise<{ item: LoanCollateralItem; valuation: CollateralValuation }> {
+  const r = await api.post(`/v1/collateral/${id}/valuation`, body);
+  return r.data.data;
+}
+
+export async function pledgeCollateral(id: string): Promise<LoanCollateralItem> {
+  const r = await api.post(`/v1/collateral/${id}/pledge`, {});
+  return r.data.data;
+}
+
+export async function releaseCollateral(id: string, reason: string): Promise<LoanCollateralItem> {
+  const r = await api.post(`/v1/collateral/${id}/release`, { reason });
+  return r.data.data;
+}
 
 export type LoanScoreFactor = { name: string; score: number; weight: number; note: string };
 export type LoanScoreFlag = { severity: 'hard_block' | 'soft_flag' | 'advisory'; code: string; message: string };

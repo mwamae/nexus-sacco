@@ -47,8 +47,12 @@ import {
   type LoanClassificationHistoryRow,
   type CollectionEvent,
   type CollectionLetterKind,
+  getSecurityCoverage,
+  type SecurityCoverage,
   extractError,
 } from '../../api/client';
+import CollateralTab from '../../components/CollateralTab';
+import SecurityCoverageCard from '../../components/SecurityCoverageCard';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
 
 type TabId = 'overview' | 'schedule' | 'transactions' | 'guarantors' | 'collateral' | 'documents' | 'collections' | 'restructure' | 'classification' | 'comments';
@@ -193,7 +197,14 @@ export default function LoanDetail() {
           {activeTab === 'schedule'     && <ScheduleTab rows={detail.schedule} currency={currency} />}
           {activeTab === 'transactions' && <TransactionsTab txns={detail.transactions} currency={currency} />}
           {activeTab === 'guarantors'   && <GuarantorsTab gs={detail.guarantees} currency={currency} />}
-          {activeTab === 'collateral'   && <CollateralTab cs={detail.collateral} currency={currency} />}
+          {activeTab === 'collateral'   && (
+            <CollateralTabWithCoverage
+              loanId={l.id}
+              applicationId={l.application_id}
+              currency={currency}
+              onChanged={() => { void refresh(); }}
+            />
+          )}
           {activeTab === 'documents'    && <PlaceholderTab phase="Phase 2" what="Documents (upload + download)" />}
           {activeTab === 'collections'  && <CollectionsTab loanID={id} />}
           {activeTab === 'restructure'  && <RestructureTab txns={detail.transactions} currency={currency} />}
@@ -334,22 +345,35 @@ function GuarantorsTab({ gs, currency }: { gs: LoanGuarantee[]; currency: string
   );
 }
 
-function CollateralTab({ cs, currency }: { cs: LoanCollateralItem[]; currency: string }) {
-  if (cs.length === 0) return <div className="empty">No collateral.</div>;
+// Phase 1.5a — full Collateral tab. Loads the security-coverage
+// alongside the items list. Post-disbursement view fetches collateral
+// by loan_id; the coverage call still goes through application_id.
+function CollateralTabWithCoverage({
+  loanId, applicationId, currency, onChanged,
+}: {
+  loanId: string;
+  applicationId: string;
+  currency: string;
+  onChanged: () => void;
+}) {
+  const [cov, setCov] = useState<SecurityCoverage | null>(null);
+  const [covErr, setCovErr] = useState<string | null>(null);
+  async function loadCov() {
+    setCovErr(null);
+    try { setCov(await getSecurityCoverage(applicationId)); }
+    catch (e: any) { setCovErr(e?.response?.data?.error?.message || e?.message || 'Failed to load coverage.'); }
+  }
+  useEffect(() => { void loadCov(); }, [applicationId]);
   return (
-    <table className="tbl">
-      <thead><tr><th>Type</th><th>Description</th><th className="num">Estimated value</th><th>Status</th></tr></thead>
-      <tbody>
-        {cs.map((c) => (
-          <tr key={c.id}>
-            <td>{c.kind}</td>
-            <td>{c.description}</td>
-            <td className="num mono">{currency} {fmt(c.estimated_value)}</td>
-            <td>{c.status}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      {covErr && <div className="alert alert-error" style={{ marginBottom: 8 }}>{covErr}</div>}
+      {cov && <SecurityCoverageCard data={cov} />}
+      <CollateralTab
+        loanId={loanId}
+        currency={currency}
+        onChanged={() => { void loadCov(); onChanged(); }}
+      />
+    </>
   );
 }
 

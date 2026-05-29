@@ -235,6 +235,10 @@ func (s *SettingsStore) GetOrInitOperationsTx(ctx context.Context, tx pgx.Tx, te
 		       penalty_late_fee_rate, penalty_grace_period_days,
 		       guarantor_min_count, guarantor_self_max_amount,
 		       approval_branch_limit, approval_credit_limit, approval_board_limit,
+		       COALESCE(default_security_model, 'guarantor_only'),
+		       COALESCE(default_min_guarantor_cover_pct, 100),
+		       COALESCE(default_min_collateral_cover_pct, 125),
+		       COALESCE(collateral_revaluation_months, 24),
 		       updated_at
 		FROM tenant_operations WHERE tenant_id = $1
 	`, tenantID).Scan(
@@ -246,6 +250,8 @@ func (s *SettingsStore) GetOrInitOperationsTx(ctx context.Context, tx pgx.Tx, te
 		&o.PenaltyLateFeeRate, &o.PenaltyGracePeriodDays,
 		&o.GuarantorMinCount, &o.GuarantorSelfMaxAmount,
 		&o.ApprovalBranchLimit, &o.ApprovalCreditLimit, &o.ApprovalBoardLimit,
+		&o.DefaultSecurityModel, &o.DefaultMinGuarantorCoverPct,
+		&o.DefaultMinCollateralCoverPct, &o.CollateralRevaluationMonths,
 		&o.UpdatedAt,
 	)
 	return &o, err
@@ -274,6 +280,12 @@ type OperationsPatch struct {
 	ApprovalBranchLimit *float64
 	ApprovalCreditLimit *float64
 	ApprovalBoardLimit  *float64
+
+	// Phase 1.5a — collateral defaults editor.
+	DefaultSecurityModel         *string
+	DefaultMinGuarantorCoverPct  *float64
+	DefaultMinCollateralCoverPct *float64
+	CollateralRevaluationMonths  *int
 }
 
 func (s *SettingsStore) UpdateOperationsTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, p OperationsPatch) error {
@@ -306,7 +318,12 @@ func (s *SettingsStore) UpdateOperationsTx(ctx context.Context, tx pgx.Tx, tenan
 
 		  approval_branch_limit       = COALESCE($16, approval_branch_limit),
 		  approval_credit_limit       = COALESCE($17, approval_credit_limit),
-		  approval_board_limit        = COALESCE($18, approval_board_limit)
+		  approval_board_limit        = COALESCE($18, approval_board_limit),
+
+		  default_security_model           = COALESCE($19, default_security_model),
+		  default_min_guarantor_cover_pct  = COALESCE($20, default_min_guarantor_cover_pct),
+		  default_min_collateral_cover_pct = COALESCE($21, default_min_collateral_cover_pct),
+		  collateral_revaluation_months    = COALESCE($22, collateral_revaluation_months)
 		WHERE tenant_id = $1
 	`, tenantID,
 		p.LoanMinAmount, p.LoanMaxAmount, p.LoanMaxTermMonths,
@@ -321,6 +338,9 @@ func (s *SettingsStore) UpdateOperationsTx(ctx context.Context, tx pgx.Tx, tenan
 		p.GuarantorMinCount, p.GuarantorSelfMaxAmount,
 
 		p.ApprovalBranchLimit, p.ApprovalCreditLimit, p.ApprovalBoardLimit,
+
+		p.DefaultSecurityModel, p.DefaultMinGuarantorCoverPct,
+		p.DefaultMinCollateralCoverPct, p.CollateralRevaluationMonths,
 	)
 	return err
 }

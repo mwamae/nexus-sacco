@@ -41,6 +41,7 @@ type LoanApplicationHandler struct {
 	Guarantees     *store.LoanGuaranteeStore
 	Loans          *store.LoanStore // Phase 5 — needed by topup/refinance to read parent loans
 	Consent        *store.GuarantorConsentStore // Phase 5 — token issuance for consent SMS
+	Collaterals    *store.CollateralStore       // Phase 1.5a — coverage gate at approval time
 	Notifier       *notifier.Client
 	Logger         *slog.Logger
 

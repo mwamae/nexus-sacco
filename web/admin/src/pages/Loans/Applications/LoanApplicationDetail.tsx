@@ -31,12 +31,16 @@ import {
   declineLoanApplication,
   rescoreLoanApplication,
   adminRespondGuaranteeWithProof,
+  getSecurityCoverage,
   type LoanAppDetail,
   type LoanApplication,
   type LoanGuarantee,
   type LoanCollateralItem,
+  type SecurityCoverage,
   extractError,
 } from '../../../api/client';
+import CollateralTab from '../../../components/CollateralTab';
+import SecurityCoverageCard from '../../../components/SecurityCoverageCard';
 import { useDocumentTitle } from '../../../lib/useDocumentTitle';
 
 type TabId = 'overview' | 'income' | 'guarantors' | 'collateral' | 'documents' | 'score' | 'schedule' | 'timeline' | 'comments';
@@ -227,7 +231,13 @@ export default function LoanApplicationDetail() {
               onChanged={() => { void refresh(); }}
             />
           )}
-          {activeTab === 'collateral' && <CollateralTab cs={detail.collateral} currency={currency} />}
+          {activeTab === 'collateral' && (
+            <CollateralTabWithCoverage
+              applicationId={a.id}
+              currency={currency}
+              onChanged={() => { void refresh(); }}
+            />
+          )}
           {activeTab === 'documents'  && <DocumentsTab />}
           {activeTab === 'score'      && <ScoreTab a={a} />}
           {activeTab === 'schedule'   && <ScheduleTab d={detail} currency={currency} />}
@@ -485,22 +495,34 @@ function ConsentModal({ kind, row, currency, onClose, onDone }: {
   );
 }
 
-function CollateralTab({ cs, currency }: { cs: LoanCollateralItem[]; currency: string }) {
-  if (cs.length === 0) return <div className="empty">No collateral on file.</div>;
+// Phase 1.5a — full Collateral tab. Loads the security-coverage card
+// alongside the items list so the operator sees both at once. The
+// shared CollateralTab component handles items + add modal + drawer.
+function CollateralTabWithCoverage({
+  applicationId, currency, onChanged,
+}: {
+  applicationId: string;
+  currency: string;
+  onChanged: () => void;
+}) {
+  const [cov, setCov] = useState<SecurityCoverage | null>(null);
+  const [covErr, setCovErr] = useState<string | null>(null);
+  async function loadCov() {
+    setCovErr(null);
+    try { setCov(await getSecurityCoverage(applicationId)); }
+    catch (e: any) { setCovErr(e?.response?.data?.error?.message || e?.message || 'Failed to load coverage.'); }
+  }
+  useEffect(() => { void loadCov(); }, [applicationId]);
   return (
-    <table className="tbl">
-      <thead><tr><th>Type</th><th>Description</th><th className="num">Estimated value</th><th>Status</th></tr></thead>
-      <tbody>
-        {cs.map((c) => (
-          <tr key={c.id}>
-            <td>{c.kind}</td>
-            <td>{c.description}</td>
-            <td className="num mono">{currency} {fmt(c.estimated_value)}</td>
-            <td>{c.status}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      {covErr && <div className="alert alert-error" style={{ marginBottom: 8 }}>{covErr}</div>}
+      {cov && <SecurityCoverageCard data={cov} />}
+      <CollateralTab
+        applicationId={applicationId}
+        currency={currency}
+        onChanged={() => { void loadCov(); onChanged(); }}
+      />
+    </>
   );
 }
 

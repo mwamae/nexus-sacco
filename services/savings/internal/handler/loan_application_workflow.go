@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
+	"github.com/nexussacco/savings/internal/coverage"
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/middleware"
@@ -304,6 +305,57 @@ func (h *LoanApplicationHandler) ResolveFromWorkflow(w http.ResponseWriter, r *h
 		switch env.Event {
 		case "approved":
 			amount, term, rate := approvedFieldsFromContext(env.Instance.Context, app)
+
+			// Phase 1.5a — security-coverage gate. Run the policy evaluator
+			// against the current (pre-update) coverage + the policy on
+			// the application's product, with loan_amount = the workflow's
+			// approval amount (falls back to requested). PolicyMet=false
+			// returns 409 with the human reason; the workflow surfaces
+			// it to the approver in the inbox.
+			//
+			// Override path: when env.Instance.Context.override_coverage_reason
+			// is non-empty the approver explicitly bypassed the gate (the
+			// override button is permission-gated in the inbox UI to
+			// loans:override_coverage). We record the override in
+			// loan_coverage_overrides + carry on.
+			if h.Collaterals != nil {
+				cov, pol, _, cerr := LoadCoverageAndPolicyTx(r.Context(), tx, h.Collaterals, app.ID)
+				if cerr != nil {
+					return cerr
+				}
+				// Use the approval amount, not the requested amount, when
+				// computing the gate — the workflow has the final say on
+				// the amount.
+				if amount.GreaterThan(decimal.Zero) {
+					cov.LoanAmount = amount
+				}
+				res := coverage.Evaluate(cov, pol)
+				if !res.PolicyMet {
+					reason := strFromContext(env.Instance.Context, "override_coverage_reason")
+					if reason == nil {
+						return httpx.ErrConflict("Cannot approve: " + res.Reason)
+					}
+					// Override path — log the audit row before letting
+					// the approval proceed.
+					if oerr := h.Collaterals.RecordCoverageOverrideTx(r.Context(), tx, store.RecordOverrideInput{
+						ApplicationID:         app.ID,
+						OverriddenBy:          actor,
+						Reason:                *reason,
+						SecurityModel:         pol.SecurityModel,
+						LoanAmount:            cov.LoanAmount,
+						GuarantorPledged:      cov.GuarantorPledged,
+						CollateralFSV:         cov.CollateralFSV,
+						MinGuarantorCoverPct:  pol.MinGuarantorCoverPct,
+						MinCollateralCoverPct: pol.MinCollateralCoverPct,
+						GuarantorCoverPct:     res.GuarantorPct,
+						CollateralCoverPct:    res.CollateralPct,
+						EvaluatorReason:       res.Reason,
+					}); oerr != nil {
+						return oerr
+					}
+				}
+			}
+
 			updated, uerr := h.Applications.UpdateStatusTx(r.Context(), tx, app.ID, store.AppTransition{
 				To:                  domain.AppApproved,
 				By:                  actor,

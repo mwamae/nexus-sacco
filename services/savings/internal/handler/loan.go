@@ -59,6 +59,13 @@ type LoanHandler struct {
 	// settle/writeoff. Optional in test main.go variants; the hook
 	// is nil-safe.
 	BOSALiens *store.BOSALienStore
+
+	// Loans Phase 1.5a — second hard gate at disbursement time. Checks
+	// that the security coverage that was promised at approval time
+	// has actually been pledged. Approve-time overrides flow through;
+	// disburse-time is binary (no override) — the operational team is
+	// expected to have fulfilled the approver's conditions.
+	Collaterals *store.CollateralStore
 }
 
 // ─────────── Send offer ───────────

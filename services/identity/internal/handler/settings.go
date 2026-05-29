@@ -341,6 +341,12 @@ type operationsPatchDTO struct {
 	ApprovalBranchLimit *float64 `json:"approval_branch_limit"`
 	ApprovalCreditLimit *float64 `json:"approval_credit_limit"`
 	ApprovalBoardLimit  *float64 `json:"approval_board_limit"`
+
+	// Phase 1.5a — collateral defaults.
+	DefaultSecurityModel         *string  `json:"default_security_model"`
+	DefaultMinGuarantorCoverPct  *float64 `json:"default_min_guarantor_cover_pct"`
+	DefaultMinCollateralCoverPct *float64 `json:"default_min_collateral_cover_pct"`
+	CollateralRevaluationMonths  *int     `json:"collateral_revaluation_months"`
 }
 
 func (h *SettingsHandler) UpdateOperations(w http.ResponseWriter, r *http.Request) {
@@ -375,6 +381,11 @@ func (h *SettingsHandler) UpdateOperations(w http.ResponseWriter, r *http.Reques
 			ApprovalBranchLimit: req.ApprovalBranchLimit,
 			ApprovalCreditLimit: req.ApprovalCreditLimit,
 			ApprovalBoardLimit:  req.ApprovalBoardLimit,
+
+			DefaultSecurityModel:         req.DefaultSecurityModel,
+			DefaultMinGuarantorCoverPct:  req.DefaultMinGuarantorCoverPct,
+			DefaultMinCollateralCoverPct: req.DefaultMinCollateralCoverPct,
+			CollateralRevaluationMonths:  req.CollateralRevaluationMonths,
 		}
 		if err := h.Settings.UpdateOperationsTx(r.Context(), tx, tenant.ID, patch); err != nil {
 			return err
@@ -447,6 +458,23 @@ func validateOps(p operationsPatchDTO) error {
 	}
 	if p.ApprovalCreditLimit != nil && p.ApprovalBoardLimit != nil && *p.ApprovalCreditLimit > *p.ApprovalBoardLimit {
 		return httpx.ErrBadRequest("approval_credit_limit must be ≤ approval_board_limit")
+	}
+	if p.DefaultSecurityModel != nil {
+		m := strings.ToLower(strings.TrimSpace(*p.DefaultSecurityModel))
+		switch m {
+		case "none", "guarantor_only", "collateral_only", "either", "both":
+		default:
+			return httpx.ErrBadRequest("default_security_model must be none, guarantor_only, collateral_only, either, or both")
+		}
+	}
+	if p.DefaultMinGuarantorCoverPct != nil && (*p.DefaultMinGuarantorCoverPct < 0 || *p.DefaultMinGuarantorCoverPct > 1000) {
+		return httpx.ErrBadRequest("default_min_guarantor_cover_pct must be between 0 and 1000")
+	}
+	if p.DefaultMinCollateralCoverPct != nil && (*p.DefaultMinCollateralCoverPct < 0 || *p.DefaultMinCollateralCoverPct > 1000) {
+		return httpx.ErrBadRequest("default_min_collateral_cover_pct must be between 0 and 1000")
+	}
+	if p.CollateralRevaluationMonths != nil && (*p.CollateralRevaluationMonths < 1 || *p.CollateralRevaluationMonths > 120) {
+		return httpx.ErrBadRequest("collateral_revaluation_months must be between 1 and 120")
 	}
 	return nil
 }

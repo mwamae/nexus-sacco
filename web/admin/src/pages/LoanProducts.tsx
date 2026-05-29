@@ -22,6 +22,7 @@ import {
   type LoanProduct,
   type LoanPurposeCategory,
   type LoanRepaymentMethod,
+  type SecurityModel,
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { Badge } from '../components/Badge';
@@ -247,6 +248,11 @@ function ProductModal({ initial, currency, onClose, onSaved }: {
   const [maxGuarExp, setMaxGuarExp] = useState(initial?.max_guarantor_exposure_pct ?? '100');
   const [guarMember, setGuarMember] = useState(initial?.guarantor_must_be_member ?? true);
   const [collateralReq, setCollateralReq] = useState<LoanCollateralRequirement>(initial?.collateral_requirement ?? 'not_applicable');
+  // Phase 1.5a — per-product security policy.
+  const [securityModel, setSecurityModel] = useState<SecurityModel>(initial?.security_model ?? 'guarantor_only');
+  const [minGuarCoverPct, setMinGuarCoverPct] = useState(initial?.min_guarantor_cover_pct ?? '100');
+  const [minCollatCoverPct, setMinCollatCoverPct] = useState(initial?.min_collateral_cover_pct ?? '125');
+  const [acceptedKinds, setAcceptedKinds] = useState<string[]>(initial?.accepted_collateral_kinds ?? []);
 
   const [minMembership, setMinMembership] = useState(initial?.min_membership_months ?? 0);
   const [minShares, setMinShares] = useState(initial?.min_shares_required ?? 0);
@@ -291,6 +297,10 @@ function ProductModal({ initial, currency, onClose, onSaved }: {
       max_guarantor_exposure_pct: maxGuarExp,
       guarantor_must_be_member: guarMember,
       collateral_requirement: collateralReq,
+      security_model: securityModel,
+      min_guarantor_cover_pct: minGuarCoverPct,
+      min_collateral_cover_pct: minCollatCoverPct,
+      accepted_collateral_kinds: acceptedKinds.length > 0 ? acceptedKinds : undefined,
       min_membership_months: minMembership,
       min_shares_required: minShares,
       allow_concurrent: allowConcurrent,
@@ -497,6 +507,80 @@ function ProductModal({ initial, currency, onClose, onSaved }: {
                 </select>
               </Field>
             </div>
+          </Section>
+
+          {/* Phase 1.5a — per-product security policy. */}
+          <Section title="Security policy">
+            <div className="muted tiny" style={{ marginBottom: 10 }}>
+              Approval-time gate. Sum of accepted guarantor pledges + pledged collateral FSV must
+              meet these thresholds before the workflow lets the application proceed.
+            </div>
+            <Field label="Security model">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {([
+                  { v: 'none',            l: 'None',           h: 'No external security required.' },
+                  { v: 'guarantor_only',  l: 'Guarantors only', h: 'Sum of guarantor pledges must meet the min cover %.' },
+                  { v: 'collateral_only', l: 'Collateral only', h: 'Sum of pledged collateral FSV must meet the min cover %.' },
+                  { v: 'either',          l: 'Either',          h: 'One side must meet its threshold.' },
+                  { v: 'both',            l: 'Both',            h: 'Both sides must meet their thresholds.' },
+                ] as const).map((opt) => (
+                  <label key={opt.v} style={{
+                    display: 'flex', gap: 8, alignItems: 'flex-start',
+                    padding: '6px 10px',
+                    border: `2px solid ${securityModel === opt.v ? 'var(--accent)' : 'var(--border)'}`,
+                    borderRadius: 6, cursor: 'pointer',
+                  }}>
+                    <input
+                      type="radio"
+                      name="security_model"
+                      checked={securityModel === opt.v}
+                      onChange={() => setSecurityModel(opt.v as SecurityModel)}
+                    />
+                    <div>
+                      <div style={{ fontWeight: 600 }}>{opt.l}</div>
+                      <div className="muted tiny" style={{ marginTop: 2 }}>{opt.h}</div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </Field>
+            <div className="grid-2">
+              {(securityModel === 'guarantor_only' || securityModel === 'either' || securityModel === 'both') && (
+                <Field label="Min guarantor cover (%)" hint="Default 100. Sum of accepted guarantor pledges ÷ loan amount × 100.">
+                  <input className="input mono" inputMode="decimal" value={minGuarCoverPct} onChange={(e) => setMinGuarCoverPct(e.target.value)} />
+                </Field>
+              )}
+              {(securityModel === 'collateral_only' || securityModel === 'either' || securityModel === 'both') && (
+                <Field label="Min collateral cover (%)" hint="Default 125. Sum of pledged collateral FSV ÷ loan amount × 100.">
+                  <input className="input mono" inputMode="decimal" value={minCollatCoverPct} onChange={(e) => setMinCollatCoverPct(e.target.value)} />
+                </Field>
+              )}
+            </div>
+            {securityModel !== 'none' && securityModel !== 'guarantor_only' && (
+              <Field label="Accepted collateral kinds" hint="Empty = all kinds. Narrow to restrict (e.g. a property loan that only accepts title deeds).">
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {(['title_deed','vehicle_logbook','equipment','listed_shares','fixed_deposit_lien','other'] as const).map((k) => {
+                    const on = acceptedKinds.includes(k);
+                    return (
+                      <label key={k} style={{
+                        display: 'flex', gap: 4, alignItems: 'center',
+                        padding: '4px 8px',
+                        background: on ? 'var(--accent-soft, #e6f0ff)' : 'var(--surface-2, #f7f7f9)',
+                        border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
+                        borderRadius: 12, cursor: 'pointer',
+                      }}>
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={(e) => setAcceptedKinds((cur) => e.target.checked ? [...cur, k] : cur.filter((x) => x !== k))}
+                        />
+                        <span style={{ fontSize: 12 }}>{k.replace(/_/g, ' ')}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </Field>
+            )}
           </Section>
 
           <Section title="Auto-approval (optional)">

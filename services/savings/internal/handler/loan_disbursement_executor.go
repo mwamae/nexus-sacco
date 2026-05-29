@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
+	"github.com/nexussacco/savings/internal/coverage"
 	"github.com/nexussacco/savings/internal/domain"
 	"github.com/nexussacco/savings/internal/httpx"
 	"github.com/nexussacco/savings/internal/posting"
@@ -86,6 +87,24 @@ func (h *LoanHandler) ExecuteDisbursementTx(
 	product, err := h.LoanProducts.GetTx(ctx, tx, loan.ProductID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Phase 1.5a — second hard gate. Re-check security coverage at
+	// disbursement time using the loan's actual principal (which is
+	// the final approved amount). Catches the "approver waved through
+	// pending conditions but the ops team didn't actually pledge the
+	// collateral" case.
+	if h.Collaterals != nil {
+		cov, pol, _, cerr := LoadCoverageAndPolicyTx(ctx, tx, h.Collaterals, loan.ApplicationID)
+		if cerr != nil {
+			return nil, cerr
+		}
+		// At disbursement the loan principal is the source of truth.
+		cov.LoanAmount = loan.Principal
+		res := coverage.Evaluate(cov, pol)
+		if !res.PolicyMet {
+			return nil, httpx.ErrConflict("Cannot disburse: " + res.Reason)
+		}
 	}
 	schedule := domain.GenerateSchedule(
 		loan.Principal, loan.InterestRatePct,

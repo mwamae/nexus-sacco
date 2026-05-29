@@ -381,6 +381,18 @@ func main() {
 		Logger:   logger,
 	}
 	loanAppH.Consent = consentStore
+	// Phase 1.5a — collateral lifecycle store + handler + approval-gate
+	// wiring. loanAppH.Collaterals is also set so the workflow callback
+	// can run coverage.Evaluate at approve-time. loanH.Collaterals
+	// gives the disbursement executor the same gate.
+	collateralStore := store.NewCollateralStore(pool.Pool)
+	collateralH := &handler.CollateralHandler{
+		DB:          pool,
+		Collaterals: collateralStore,
+		Logger:      logger,
+	}
+	loanAppH.Collaterals = collateralStore
+	loanH.Collaterals = collateralStore
 	memberStmtStore := store.NewMemberStatementStore(pool.Pool)
 	memberStmtH := &handler.MemberStatementHandler{
 		DB:         pool,
@@ -608,6 +620,8 @@ func main() {
 		GuarantorConsent: guarantorConsentH,
 		// Phase 5 follow-up — public SMS-token consent (no auth).
 		PublicConsent: publicConsentH,
+		// Phase 1.5a — collateral lifecycle + security-coverage card.
+		Collateral: collateralH,
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),
