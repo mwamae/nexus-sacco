@@ -3482,6 +3482,12 @@ export type LoanGuarantee = {
   requested_at: string;
   responded_at?: string;
   decline_reason?: string;
+  // Display-only fields populated by the application-detail endpoint
+  // via a JOIN on counterparty_directory. Optional so non-detail code
+  // paths that don't enrich (e.g. CreateTx response echoes the raw row)
+  // still type-check.
+  guarantor_name?: string;
+  guarantor_member_no?: string;
 };
 
 export type LoanCollateralItem = {
@@ -7056,4 +7062,24 @@ export async function listGroupOfficers(appID: string): Promise<{ items: any[]; 
 export async function getGroupApportionment(loanID: string): Promise<{ items: { member_id: string; share_pct: string }[]; total: number }> {
   const r = await api.get(`/v1/loans/${loanID}/group-apportionment`);
   return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+// ─────────── Guarantor capacity ───────────
+
+export type GuarantorCapacity = {
+  counterparty_id: string;
+  bosa_balance: string;
+  own_loan_principal: string;
+  existing_guarantees: string;
+  available_capacity: string;
+  active_guarantee_count: number;
+  active_loan_count: number;
+};
+
+export async function getGuarantorCapacity(counterpartyID: string): Promise<GuarantorCapacity> {
+  // /v1/loans prefix (not /v1/counterparties) — see the savings
+  // handler header for why; short version: the admin dev proxy
+  // routes /api/v1/counterparties/* to the member service.
+  const r = await api.get(`/v1/loans/guarantor-capacity?counterparty_id=${counterpartyID}`);
+  return r.data.data;
 }

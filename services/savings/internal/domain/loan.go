@@ -354,6 +354,14 @@ type LoanGuarantee struct {
 	CalledUponAt      *time.Time          `json:"called_upon_at,omitempty"`
 	DeclineReason     *string             `json:"decline_reason,omitempty"`
 	Notes             *string             `json:"notes,omitempty"`
+
+	// Display-only fields populated by ByApplicationTx via a join on
+	// counterparty_directory. Empty when the row is loaded by a code
+	// path that doesn't join (e.g. CreateTx returns the raw row).
+	// Nullable so older callers that don't populate them still
+	// marshal cleanly.
+	GuarantorName     string `json:"guarantor_name,omitempty"`
+	GuarantorMemberNo string `json:"guarantor_member_no,omitempty"`
 }
 
 type LoanCollateralItem struct {

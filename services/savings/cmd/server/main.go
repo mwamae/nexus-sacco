@@ -334,6 +334,10 @@ func main() {
 		Loans:  loanStore,
 		Logger: logger,
 	}
+	guarantorCapacityH := &handler.GuarantorCapacityHandler{
+		DB:     pool,
+		Logger: logger,
+	}
 	memberStmtStore := store.NewMemberStatementStore(pool.Pool)
 	memberStmtH := &handler.MemberStatementHandler{
 		DB:         pool,
@@ -553,6 +557,8 @@ func main() {
 		// Loans Phase 6 — CRB + insurance.
 		CRB:       crbH,
 		Insurance: insuranceH,
+		// Phase 5 follow-up — guarantor capacity lookup.
+		GuarantorCapacity: guarantorCapacityH,
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),

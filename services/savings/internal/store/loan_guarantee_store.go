@@ -51,12 +51,23 @@ func (s *LoanGuaranteeStore) CreateTx(ctx context.Context, tx pgx.Tx, g *domain.
 }
 
 func (s *LoanGuaranteeStore) ByApplicationTx(ctx context.Context, tx pgx.Tx, appID uuid.UUID) ([]domain.LoanGuarantee, error) {
+	// LEFT JOIN counterparty_directory so the UI can render the
+	// guarantor's display name + member_no without a follow-up call
+	// per row. LEFT (not INNER) because a counterparty might lack a
+	// directory row in degraded data states; we still want the
+	// guarantee row to render with empty display fields rather than
+	// disappear entirely.
 	rows, err := tx.Query(ctx, `
-		SELECT id, tenant_id, application_id, loan_id, guarantor_counterparty_id,
-		       amount_guaranteed, status, requested_at, requested_by,
-		       responded_at, released_at, called_upon_at, decline_reason, notes
-		FROM loan_guarantees WHERE application_id = $1
-		ORDER BY requested_at
+		SELECT g.id, g.tenant_id, g.application_id, g.loan_id, g.guarantor_counterparty_id,
+		       g.amount_guaranteed, g.status, g.requested_at, g.requested_by,
+		       g.responded_at, g.released_at, g.called_upon_at, g.decline_reason, g.notes,
+		       COALESCE(cd.full_name, '') AS guarantor_name,
+		       COALESCE(cd.member_no, '') AS guarantor_member_no
+		  FROM loan_guarantees g
+		  LEFT JOIN counterparty_directory cd
+		    ON cd.counterparty_id = g.guarantor_counterparty_id
+		 WHERE g.application_id = $1
+		 ORDER BY g.requested_at
 	`, appID)
 	if err != nil {
 		return nil, err
@@ -69,6 +80,7 @@ func (s *LoanGuaranteeStore) ByApplicationTx(ctx context.Context, tx pgx.Tx, app
 			&g.ID, &g.TenantID, &g.ApplicationID, &g.LoanID, &g.GuarantorMemberID,
 			&g.AmountGuaranteed, &g.Status, &g.RequestedAt, &g.RequestedBy,
 			&g.RespondedAt, &g.ReleasedAt, &g.CalledUponAt, &g.DeclineReason, &g.Notes,
+			&g.GuarantorName, &g.GuarantorMemberNo,
 		); err != nil {
 			return nil, err
 		}

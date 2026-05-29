@@ -733,6 +733,13 @@ func (s *LoanReportsStore) PARHistoryTx(ctx context.Context, tx pgx.Tx, days int
 	if days <= 0 || days > 365 {
 		days = 90
 	}
+	// pgx will not implicitly text-encode an int for the
+	// `($1 || ' days')::interval` construction the original Phase 2
+	// draft used — it errors with "cannot find encode plan for OID 25
+	// (text)". make_interval(days => $1) takes an int natively and
+	// avoids the string-concat sidestep that loan_reports_store.go's
+	// Maturing query still uses (which works only because it sprintfs
+	// to text first).
 	rows, err := tx.Query(ctx, `
 		SELECT to_char(snapshot_date, 'YYYY-MM-DD'),
 		       total_principal::text,
@@ -743,7 +750,7 @@ func (s *LoanReportsStore) PARHistoryTx(ctx context.Context, tx pgx.Tx, days int
 		       CASE WHEN total_principal > 0 THEN (par90_principal * 100.0 / total_principal)::numeric(8,4)::text ELSE '0' END,
 		       active_count
 		  FROM loan_portfolio_snapshots
-		 WHERE snapshot_date >= CURRENT_DATE - ($1 || ' days')::interval
+		 WHERE snapshot_date >= CURRENT_DATE - make_interval(days => $1)
 		 ORDER BY snapshot_date
 	`, days)
 	if err != nil {

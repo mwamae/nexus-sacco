@@ -71,6 +71,10 @@ type Deps struct {
 	CRB *CRBHandler
 	// Insurance — Phase 6 credit-life insurance policy management.
 	Insurance *InsuranceHandler
+	// GuarantorCapacity — answers "how much can this counterparty
+	// commit as a new guarantee right now?" Used by the
+	// new-loan-application form to show inline capacity hints.
+	GuarantorCapacity *GuarantorCapacityHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -443,6 +447,13 @@ func Routes(d Deps) http.Handler {
 
 			// ─────────── Collection Desk (single cashier's counter) ───────────
 			r.With(middleware.RequirePermission("members:view")).Get("/counterparties/{id}/outstanding", d.Collection.Outstanding)
+			if d.GuarantorCapacity != nil {
+				// Mounted under /v1/loans/* (not /v1/counterparties/*)
+				// because the admin SPA dev proxy routes the
+				// /api/v1/counterparties prefix to the member service.
+				// See web/admin/vite.config.ts.
+				r.With(middleware.RequirePermission("loans:apply")).Get("/loans/guarantor-capacity", d.GuarantorCapacity.Get)
+			}
 			r.With(middleware.RequirePermission("savings:transact")).Get("/till-sessions/current", d.Collection.CurrentTillSession)
 			r.With(middleware.RequirePermission("savings:transact")).Post("/receipts", d.Collection.CreateReceipt)
 			r.With(middleware.RequirePermission("savings:transact")).Get("/receipts", d.Collection.ListReceipts)

@@ -305,11 +305,26 @@ function GuarantorsTab({ gs, currency }: { gs: LoanGuarantee[]; currency: string
   if (gs.length === 0) return <div className="empty">No guarantors yet.</div>;
   return (
     <table className="tbl">
-      <thead><tr><th>Guarantor</th><th className="num">Amount</th><th>Status</th><th>Requested</th></tr></thead>
+      <thead>
+        <tr>
+          <th>Guarantor</th>
+          <th>Member no</th>
+          <th className="num">Amount</th>
+          <th>Status</th>
+          <th>Requested</th>
+        </tr>
+      </thead>
       <tbody>
         {gs.map((g) => (
           <tr key={g.id}>
-            <td className="mono">{g.guarantor_member_id}</td>
+            <td>
+              {g.guarantor_name
+                ? g.guarantor_name
+                : <span className="muted tiny mono" title={g.guarantor_member_id}>
+                    {g.guarantor_member_id.slice(0, 8)}…
+                  </span>}
+            </td>
+            <td className="mono">{g.guarantor_member_no || <span className="muted">—</span>}</td>
             <td className="num mono">{currency} {fmt(g.amount_guaranteed)}</td>
             <td>{g.status}</td>
             <td className="tiny muted">{new Date(g.requested_at).toLocaleDateString()}</td>

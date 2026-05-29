@@ -344,32 +344,41 @@ func (s *LoanApplicationStore) UpdateStatusTx(ctx context.Context, tx pgx.Tx, ap
 // ─────────── Scoring inputs gatherer ───────────
 
 // GatherScoringInputsTx assembles the ScoringInputs struct for one
-// member from the system's internal sources. The scorer is pure; this
-// is the one place that hits the DB.
+// borrower from the system's internal sources. The scorer is pure;
+// this is the one place that hits the DB.
+//
+// Param renamed counterpartyID (was memberID) — every caller passes
+// app.CounterpartyID, and members.id is a different UUID from
+// counterparties.id since the Phase D refactor. The previous
+// "members WHERE id = $1" query returned no rows for every
+// form-created application, surfacing as a generic 404 on Create.
 func (s *LoanApplicationStore) GatherScoringInputsTx(
 	ctx context.Context, tx pgx.Tx,
-	memberID, productID uuid.UUID,
+	counterpartyID, productID uuid.UUID,
 ) (*domain.ScoringInputs, error) {
 	in := &domain.ScoringInputs{}
 
-	// Member status + membership duration.
+	// Member status + membership duration. Look up the member via
+	// counterparty_id (the bridge added by the counterparty refactor).
+	// Institutional counterparties have no members row — when missing
+	// we leave status/duration at zero values so scoring still runs;
+	// the scorer's institutional path doesn't read MemberStatus.
 	var createdAt time.Time
 	err := tx.QueryRow(ctx, `
-		SELECT status::text, created_at FROM members WHERE id = $1
-	`, memberID).Scan(&in.MemberStatus, &createdAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
+		SELECT status::text, created_at FROM members WHERE counterparty_id = $1
+	`, counterpartyID).Scan(&in.MemberStatus, &createdAt)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
-	in.MembershipMonths = int(time.Since(createdAt).Hours() / 24 / 30)
+	if err == nil {
+		in.MembershipMonths = int(time.Since(createdAt).Hours() / 24 / 30)
+	}
 
 	// Shares.
 	if err := tx.QueryRow(ctx, `
 		SELECT COALESCE(a.shares_held, 0)
 		FROM share_accounts a WHERE a.counterparty_id = $1
-	`, memberID).Scan(&in.SharesHeld); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	`, counterpartyID).Scan(&in.SharesHeld); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
 	var parValue decimal.Decimal
@@ -390,7 +399,7 @@ func (s *LoanApplicationStore) GatherScoringInputsTx(
 		FROM deposit_accounts da
 		JOIN deposit_products dp ON dp.id = da.product_id
 		WHERE da.counterparty_id = $1 AND da.status = 'active'
-	`, memberID).Scan(&in.BosaBalance, &in.FosaBalance)
+	`, counterpartyID).Scan(&in.BosaBalance, &in.FosaBalance)
 
 	_ = tx.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(amount), 0)
@@ -398,7 +407,7 @@ func (s *LoanApplicationStore) GatherScoringInputsTx(
 		WHERE counterparty_id = $1
 		  AND txn_type IN ('deposit', 'transfer_in', 'opening_balance')
 		  AND posted_at > now() - INTERVAL '12 months'
-	`, memberID).Scan(&in.DepositTxnCount12mo, &in.TotalDeposited12mo)
+	`, counterpartyID).Scan(&in.DepositTxnCount12mo, &in.TotalDeposited12mo)
 	if in.TotalDeposited12mo.GreaterThan(decimal.Zero) {
 		in.AvgMonthlyDeposit = in.TotalDeposited12mo.Div(decimal.NewFromInt(12)).Round(2)
 	}
@@ -413,7 +422,7 @@ func (s *LoanApplicationStore) GatherScoringInputsTx(
 			COALESCE(SUM(CASE WHEN status = 'settled' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'written_off' THEN 1 ELSE 0 END), 0)
 		FROM loans WHERE counterparty_id = $1
-	`, memberID, productID).Scan(
+	`, counterpartyID, productID).Scan(
 		&in.ActiveLoans, &in.ActiveLoansInArrears, &in.ActiveLoansSameProduct,
 		&in.SettledLoans, &writtenOff,
 	)

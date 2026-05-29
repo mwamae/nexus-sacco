@@ -329,9 +329,9 @@ func (s *LoanReportsStore) MaturingLoansTx(ctx context.Context, tx pgx.Tx, withi
 		JOIN loan_products p ON p.id = l.product_id
 		JOIN final_dues f ON f.loan_id = l.id
 		WHERE l.status IN ('active', 'in_arrears', 'restructured')
-		  AND f.final_due <= CURRENT_DATE + ($1 || ' days')::interval
+		  AND f.final_due <= CURRENT_DATE + make_interval(days => $1)
 		ORDER BY f.final_due ASC
-	`, fmt.Sprintf("%d", withinDays))
+	`, withinDays)
 	if err != nil {
 		return nil, err
 	}
