@@ -75,6 +75,12 @@ type Deps struct {
 	// commit as a new guarantee right now?" Used by the
 	// new-loan-application form to show inline capacity hints.
 	GuarantorCapacity *GuarantorCapacityHandler
+	// QualifyingAmount — pre-application snapshot of the multiplier
+	// ceiling so the form can show "you qualify for up to KES X" and
+	// block over-ceiling submissions (which the scorer auto-declines).
+	QualifyingAmount *QualifyingAmountHandler
+	// GuarantorConsent — admin respond-with-proof + portal self-service.
+	GuarantorConsent *GuarantorConsentHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -319,6 +325,28 @@ func Routes(d Deps) http.Handler {
 			// with borrower + loan number for the Member Profile People tab.
 			r.With(middleware.RequirePermission("loans:view")).Get("/loan-guarantees/by-counterparty/{counterparty_id}", d.LoanApp.ListByGuarantor)
 
+			// Admin-captured consent with proof upload (multipart). Same
+			// permission as the existing /respond endpoint — any user
+			// who can respond can also upload proof.
+			if d.GuarantorConsent != nil {
+				r.With(middleware.RequirePermission("loans:guarantee")).Post(
+					"/loan-guarantees/{guarantee_id}/respond-with-proof",
+					d.GuarantorConsent.AdminRespond,
+				)
+				// Member-portal self-service. Gated on the portal:self
+				// permission (granted to the Member role in identity 0037).
+				// The handler additionally enforces "you can only respond
+				// to your own guarantees" via the user→member bridge.
+				r.With(middleware.RequirePermission("portal:self")).Get(
+					"/portal/guarantorships",
+					d.GuarantorConsent.PortalList,
+				)
+				r.With(middleware.RequirePermission("portal:self")).Post(
+					"/portal/guarantorships/{guarantee_id}/respond",
+					d.GuarantorConsent.PortalRespond,
+				)
+			}
+
 			// ─────────── Loan offer + acceptance + disbursement ───────────
 			r.With(middleware.RequirePermission("loans:offer")).Post("/loan-applications/{app_id}/send-offer", d.Loan.SendOffer)
 			r.With(middleware.RequirePermission("loans:offer")).Post("/loan-applications/{app_id}/accept-offer", d.Loan.AcceptOffer)
@@ -453,6 +481,9 @@ func Routes(d Deps) http.Handler {
 				// /api/v1/counterparties prefix to the member service.
 				// See web/admin/vite.config.ts.
 				r.With(middleware.RequirePermission("loans:apply")).Get("/loans/guarantor-capacity", d.GuarantorCapacity.Get)
+			}
+			if d.QualifyingAmount != nil {
+				r.With(middleware.RequirePermission("loans:apply")).Get("/loans/qualifying-amount", d.QualifyingAmount.Get)
 			}
 			r.With(middleware.RequirePermission("savings:transact")).Get("/till-sessions/current", d.Collection.CurrentTillSession)
 			r.With(middleware.RequirePermission("savings:transact")).Post("/receipts", d.Collection.CreateReceipt)

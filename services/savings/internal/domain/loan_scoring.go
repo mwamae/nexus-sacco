@@ -379,6 +379,66 @@ func bandForScore(score int) string {
 	}
 }
 
+// QualifyingAmount is the pre-application snapshot of how much a
+// borrower qualifies for under a given product, broken down so the
+// UI can show why. Same math the scorer uses for ComputedMaxAmount.
+type QualifyingAmount struct {
+	Ceiling         decimal.Decimal `json:"ceiling"`           // qualifying amount (after multiplier + product cap)
+	BasisKind       string          `json:"basis_kind"`        // none | shares | bosa | bosa_plus_shares | deposits | shares_plus_deposits
+	BasisValue      decimal.Decimal `json:"basis_value"`       // the amount fed into the multiplier (0 when basis=none)
+	MultiplierValue decimal.Decimal `json:"multiplier_value"`  // the multiplier, e.g. 3.0
+	ProductMin      decimal.Decimal `json:"product_min_amount"`
+	ProductMax      decimal.Decimal `json:"product_max_amount"`
+	CappedByProduct bool            `json:"capped_by_product"` // true when multiplier×basis > ProductMax
+	WarningMessage  string          `json:"warning_message,omitempty"` // populated when a legacy basis was used
+}
+
+// ComputeQualifyingAmount is the exported wrapper around
+// computeMultiplierCeiling that ALSO returns the basis components so
+// the UI can render "your KES 50,000 BOSA × multiplier 3.0 = ceiling
+// of KES 150,000". Pure function; reused by the
+// /v1/loans/qualifying-amount endpoint.
+func ComputeQualifyingAmount(in ScoringInputs, product *LoanProduct, bosaFosaEnabled bool) QualifyingAmount {
+	out := QualifyingAmount{
+		BasisKind:  string(product.MultiplierBasis),
+		ProductMin: product.MinAmount,
+		ProductMax: product.MaxAmount,
+	}
+	if product.MultiplierValue != nil {
+		out.MultiplierValue = *product.MultiplierValue
+	}
+	switch product.MultiplierBasis {
+	case MultiplierShares:
+		out.BasisValue = in.ShareCapital
+	case MultiplierBOSA:
+		out.BasisValue = in.BosaBalance
+	case MultiplierBOSAPlusShares:
+		out.BasisValue = in.ShareCapital.Add(in.BosaBalance)
+	case MultiplierDeposits:
+		if bosaFosaEnabled {
+			out.BasisValue = in.BosaBalance
+		} else {
+			out.BasisValue = in.BosaBalance.Add(in.FosaBalance)
+		}
+	case MultiplierSharesPlusDeps:
+		if bosaFosaEnabled {
+			out.BasisValue = in.ShareCapital.Add(in.BosaBalance)
+		} else {
+			out.BasisValue = in.ShareCapital.Add(in.BosaBalance).Add(in.FosaBalance)
+		}
+	}
+	ceiling, warning := computeMultiplierCeiling(in, product, bosaFosaEnabled)
+	out.Ceiling = ceiling
+	if warning != nil {
+		out.WarningMessage = warning.Message
+	}
+	if product.MultiplierBasis != MultiplierNone && product.MultiplierValue != nil {
+		raw := out.BasisValue.Mul(*product.MultiplierValue).Round(2)
+		out.CappedByProduct = raw.GreaterThan(product.MaxAmount)
+	}
+	return out
+}
+
 // computeMultiplierCeiling returns the multiplier-derived loan amount
 // cap + an optional soft-flag warning when a legacy basis was used
 // under bosaFosaEnabled=true. The warning is non-blocking; the

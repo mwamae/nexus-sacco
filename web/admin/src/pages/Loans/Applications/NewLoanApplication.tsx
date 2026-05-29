@@ -25,9 +25,11 @@ import {
   listLoanProducts,
   listCounterparties,
   getGuarantorCapacity,
+  getQualifyingAmount,
   type LoanProduct,
   type Counterparty,
   type GuarantorCapacity,
+  type QualifyingAmount,
   extractError,
 } from '../../../api/client';
 import { useDocumentTitle } from '../../../lib/useDocumentTitle';
@@ -66,6 +68,12 @@ export default function NewLoanApplication() {
   // every member up-front.
   const [capacityByCP, setCapacityByCP] = useState<Record<string, GuarantorCapacity>>({});
   const [capacityLoading, setCapacityLoading] = useState<Record<string, boolean>>({});
+
+  // Pre-application qualifying amount. Refreshed whenever both
+  // counterparty + product are set; cached by (cp,product) tuple.
+  const [qualifying, setQualifying] = useState<QualifyingAmount | null>(null);
+  const [qualifyingLoading, setQualifyingLoading] = useState(false);
+  const [qualifyingErr, setQualifyingErr] = useState<string | null>(null);
 
   async function fetchCapacity(cpID: string) {
     if (!cpID) return;
@@ -106,6 +114,32 @@ export default function NewLoanApplication() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requiredGuarantors]);
 
+  // Fetch the qualifying ceiling whenever both fields are set + change.
+  useEffect(() => {
+    if (!counterpartyID || !productID) {
+      setQualifying(null);
+      setQualifyingErr(null);
+      return;
+    }
+    let cancelled = false;
+    setQualifyingLoading(true);
+    setQualifyingErr(null);
+    void (async () => {
+      try {
+        const q = await getQualifyingAmount(counterpartyID, productID);
+        if (!cancelled) setQualifying(q);
+      } catch (e) {
+        if (!cancelled) {
+          setQualifyingErr(extractError(e));
+          setQualifying(null);
+        }
+      } finally {
+        if (!cancelled) setQualifyingLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [counterpartyID, productID]);
+
   function updateGuarantor(idx: number, patch: Partial<GuarantorRow>) {
     setGuarantors((prev) => prev.map((g, i) => (i === idx ? { ...g, ...patch } : g)));
   }
@@ -137,6 +171,19 @@ export default function NewLoanApplication() {
     setBusy(true);
     setErr(null);
     try {
+      // Block over-ceiling submission with a clear, pre-emptive
+      // message instead of letting the backend auto-decline the
+      // application with hard_block: multiplier_exceeded.
+      const reqAmt = parseFloat(requestedAmount);
+      if (qualifying && qualifying.basis_kind !== 'none') {
+        const ceiling = parseFloat(qualifying.ceiling);
+        if (isFinite(ceiling) && isFinite(reqAmt) && reqAmt > ceiling) {
+          throw new Error(
+            `Requested amount (${reqAmt.toLocaleString()}) exceeds the qualifying ceiling of ${ceiling.toLocaleString()}. ` +
+            `Reduce the amount or have the borrower increase their ${qualifying.basis_kind} backing first.`,
+          );
+        }
+      }
       // Filter empty guarantor rows; validate the remaining ones.
       const populated = guarantors.filter(
         (g) => g.counterparty_id !== '' || g.amount_guaranteed !== '',
@@ -210,6 +257,16 @@ export default function NewLoanApplication() {
 
       {err && <div className="alert alert-error">{err}</div>}
 
+      {/* Qualifying ceiling banner — visible as soon as both member +
+          product are chosen. Refreshes whenever either changes. */}
+      {counterpartyID && productID && (
+        <QualifyingBanner
+          loading={qualifyingLoading}
+          err={qualifyingErr}
+          q={qualifying}
+        />
+      )}
+
       <form onSubmit={submit} className="card">
         <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
           <label>
@@ -247,15 +304,30 @@ export default function NewLoanApplication() {
           </label>
 
           <label>
-            <div className="muted tiny" style={{ marginBottom: 4 }}>Requested amount</div>
+            <div className="muted tiny" style={{ marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
+              <span>Requested amount</span>
+              {qualifying && qualifying.basis_kind !== 'none' && (
+                <span style={{ color: 'var(--accent, #2c5282)' }}>
+                  max {parseFloat(qualifying.ceiling).toLocaleString()}
+                </span>
+              )}
+            </div>
             <input
               className="input"
               type="number"
               step="0.01"
-              min="0"
+              min={qualifying ? parseFloat(qualifying.product_min_amount) : 0}
+              max={qualifying && qualifying.basis_kind !== 'none' ? parseFloat(qualifying.ceiling) : undefined}
               value={requestedAmount}
               onChange={(e) => setRequestedAmount(e.target.value)}
               required
+              style={
+                qualifying && qualifying.basis_kind !== 'none' &&
+                requestedAmount !== '' &&
+                parseFloat(requestedAmount) > parseFloat(qualifying.ceiling)
+                  ? { borderColor: 'var(--neg, #c33)' }
+                  : undefined
+              }
             />
           </label>
 
@@ -468,6 +540,82 @@ export default function NewLoanApplication() {
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+// ─────────── Qualifying-amount banner ──────────────────────────────
+//
+// Renders the multiplier-driven qualifying ceiling so the operator
+// sees it BEFORE typing an amount that would be auto-declined as
+// hard_block:multiplier_exceeded by the scorer.
+
+function QualifyingBanner({
+  loading, err, q,
+}: { loading: boolean; err: string | null; q: QualifyingAmount | null }) {
+  if (loading) {
+    return (
+      <div className="alert" style={{ marginBottom: 12, background: '#f0f4fa' }}>
+        Checking qualifying ceiling…
+      </div>
+    );
+  }
+  if (err) {
+    return (
+      <div className="alert alert-warn" style={{ marginBottom: 12 }}>
+        Couldn't load qualifying ceiling: {err}. Submitting is still possible
+        but the scorer will auto-decline if the requested amount exceeds the
+        member's multiplier ceiling.
+      </div>
+    );
+  }
+  if (!q) return null;
+
+  const ceiling = parseFloat(q.ceiling);
+  const basisVal = parseFloat(q.basis_value);
+  const productMin = parseFloat(q.product_min_amount);
+  const cantTakeProduct = ceiling < productMin;
+
+  if (q.basis_kind === 'none') {
+    return (
+      <div className="alert" style={{ marginBottom: 12, background: '#f0f4fa' }}>
+        No multiplier on this product. The cap is the product's maximum amount
+        ({parseFloat(q.product_max_amount).toLocaleString()}).
+      </div>
+    );
+  }
+
+  const tone = cantTakeProduct ? 'alert-error'
+    : basisVal <= 0 ? 'alert-error'
+    : 'alert';
+  const bg = cantTakeProduct || basisVal <= 0 ? undefined : '#eef7ee';
+
+  return (
+    <div className={`alert ${tone}`} style={{ marginBottom: 12, background: bg }}>
+      <div style={{ fontWeight: 600 }}>
+        Qualifies for up to <span style={{ fontFamily: 'var(--font-mono)' }}>
+          {ceiling.toLocaleString()}
+        </span>
+      </div>
+      <div className="muted tiny" style={{ marginTop: 4 }}>
+        Basis: {q.basis_kind.replaceAll('_', ' ')} of{' '}
+        <span className="mono">{basisVal.toLocaleString()}</span>
+        {' × multiplier '}
+        <span className="mono">{parseFloat(q.multiplier_value).toString()}</span>
+        {q.capped_by_product && (
+          <span> · capped at product max ({parseFloat(q.product_max_amount).toLocaleString()})</span>
+        )}
+      </div>
+      {q.warning_message && (
+        <div className="muted tiny" style={{ marginTop: 4, fontStyle: 'italic' }}>
+          {q.warning_message}
+        </div>
+      )}
+      {q.notes && q.notes.length > 0 && (
+        <ul style={{ marginTop: 6, paddingLeft: 18, fontSize: 12 }}>
+          {q.notes.map((n, i) => <li key={i}>{n}</li>)}
+        </ul>
+      )}
     </div>
   );
 }

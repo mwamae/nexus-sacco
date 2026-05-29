@@ -30,6 +30,7 @@ import {
   approveLoanApplication,
   declineLoanApplication,
   rescoreLoanApplication,
+  adminRespondGuaranteeWithProof,
   type LoanAppDetail,
   type LoanApplication,
   type LoanGuarantee,
@@ -218,7 +219,14 @@ export default function LoanApplicationDetail() {
         <div className="card-body">
           {activeTab === 'overview'   && <OverviewTab a={a} currency={currency} />}
           {activeTab === 'income'     && <IncomeTab a={a} currency={currency} />}
-          {activeTab === 'guarantors' && <GuarantorsTab gs={detail.guarantees} currency={currency} />}
+          {activeTab === 'guarantors' && (
+            <GuarantorsTab
+              gs={detail.guarantees}
+              currency={currency}
+              canRespond={hasPermission('loans:guarantee')}
+              onChanged={() => { void refresh(); }}
+            />
+          )}
           {activeTab === 'collateral' && <CollateralTab cs={detail.collateral} currency={currency} />}
           {activeTab === 'documents'  && <DocumentsTab />}
           {activeTab === 'score'      && <ScoreTab a={a} />}
@@ -301,37 +309,179 @@ function IncomeTab({ a, currency }: { a: LoanApplication; currency: string }) {
   );
 }
 
-function GuarantorsTab({ gs, currency }: { gs: LoanGuarantee[]; currency: string }) {
+function GuarantorsTab({ gs, currency, canRespond, onChanged }: {
+  gs: LoanGuarantee[];
+  currency: string;
+  canRespond: boolean;
+  onChanged: () => void;
+}) {
+  const [modal, setModal] = useState<null | { kind: 'accept' | 'decline'; row: LoanGuarantee }>(null);
   if (gs.length === 0) return <div className="empty">No guarantors yet.</div>;
   return (
-    <table className="tbl">
-      <thead>
-        <tr>
-          <th>Guarantor</th>
-          <th>Member no</th>
-          <th className="num">Amount</th>
-          <th>Status</th>
-          <th>Requested</th>
-        </tr>
-      </thead>
-      <tbody>
-        {gs.map((g) => (
-          <tr key={g.id}>
-            <td>
-              {g.guarantor_name
-                ? g.guarantor_name
-                : <span className="muted tiny mono" title={g.guarantor_member_id}>
-                    {g.guarantor_member_id.slice(0, 8)}…
-                  </span>}
-            </td>
-            <td className="mono">{g.guarantor_member_no || <span className="muted">—</span>}</td>
-            <td className="num mono">{currency} {fmt(g.amount_guaranteed)}</td>
-            <td>{g.status}</td>
-            <td className="tiny muted">{new Date(g.requested_at).toLocaleDateString()}</td>
+    <>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>Guarantor</th>
+            <th>Member no</th>
+            <th className="num">Amount</th>
+            <th>Status</th>
+            <th>Requested</th>
+            <th></th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {gs.map((g) => (
+            <tr key={g.id}>
+              <td>
+                {g.guarantor_name
+                  ? g.guarantor_name
+                  : <span className="muted tiny mono" title={g.guarantor_member_id}>
+                      {g.guarantor_member_id.slice(0, 8)}…
+                    </span>}
+              </td>
+              <td className="mono">{g.guarantor_member_no || <span className="muted">—</span>}</td>
+              <td className="num mono">{currency} {fmt(g.amount_guaranteed)}</td>
+              <td>
+                {g.status}
+                {g.status === 'declined' && g.decline_reason && (
+                  <div className="muted tiny" style={{ marginTop: 2 }}>
+                    Reason: {g.decline_reason}
+                  </div>
+                )}
+              </td>
+              <td className="tiny muted">{new Date(g.requested_at).toLocaleDateString()}</td>
+              <td>
+                {canRespond && g.status === 'pending_consent' && (
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button
+                      type="button" className="btn btn-sm btn-primary"
+                      onClick={() => setModal({ kind: 'accept', row: g })}
+                    >
+                      Accept (admin)
+                    </button>
+                    <button
+                      type="button" className="btn btn-sm"
+                      onClick={() => setModal({ kind: 'decline', row: g })}
+                    >
+                      Decline
+                    </button>
+                  </div>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {modal && (
+        <ConsentModal
+          kind={modal.kind}
+          row={modal.row}
+          currency={currency}
+          onClose={() => setModal(null)}
+          onDone={() => { setModal(null); onChanged(); }}
+        />
+      )}
+    </>
+  );
+}
+
+// ─────────── Admin consent-capture modal ───────────
+
+function ConsentModal({ kind, row, currency, onClose, onDone }: {
+  kind: 'accept' | 'decline';
+  row: LoanGuarantee;
+  currency: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [note, setNote] = useState('');
+  const [declineReason, setDeclineReason] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    if (kind === 'decline' && !declineReason.trim()) {
+      setErr('Decline reason is required.');
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await adminRespondGuaranteeWithProof(row.id, kind === 'accept', {
+        declineReason: kind === 'decline' ? declineReason : undefined,
+        note: note || undefined,
+        file: file ?? undefined,
+      });
+      onDone();
+    } catch (e) {
+      setErr(extractError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div role="dialog" aria-modal="true" style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+    }}>
+      <div style={{ background: 'var(--surface)', borderRadius: 8, width: '90%', maxWidth: 520, padding: 20 }}>
+        <h3 style={{ marginTop: 0 }}>
+          {kind === 'accept' ? 'Mark consent acquired' : 'Decline guarantee'}
+        </h3>
+        <p className="muted tiny">
+          {row.guarantor_name || row.guarantor_member_id}
+          {' · '}{currency} {row.amount_guaranteed}
+        </p>
+        {kind === 'accept' ? (
+          <>
+            <label>
+              <div className="muted tiny" style={{ marginBottom: 4 }}>
+                Proof of consent (PDF or image)
+              </div>
+              <input
+                type="file" accept=".pdf,.png,.jpg,.jpeg,.webp"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              />
+              <div className="muted tiny" style={{ marginTop: 4 }}>
+                Upload the signed consent form, scanned ID, or photo
+                evidence. Optional but strongly recommended for audit.
+              </div>
+            </label>
+            <label style={{ display: 'block', marginTop: 12 }}>
+              <div className="muted tiny" style={{ marginBottom: 4 }}>Note (optional)</div>
+              <textarea
+                className="input" rows={2} value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="e.g. consent confirmed on phone with member 2026-05-29"
+              />
+            </label>
+          </>
+        ) : (
+          <label>
+            <div className="muted tiny" style={{ marginBottom: 4 }}>Decline reason</div>
+            <textarea
+              className="input" rows={3} value={declineReason}
+              onChange={(e) => setDeclineReason(e.target.value)}
+              placeholder="Why is the guarantor declining?"
+              autoFocus
+            />
+          </label>
+        )}
+        {err && <div className="alert alert-error" style={{ marginTop: 8 }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button
+            className={`btn ${kind === 'accept' ? 'btn-primary' : 'btn-danger'}`}
+            disabled={busy} onClick={() => void submit()}
+          >
+            {busy ? 'Saving…' : kind === 'accept' ? 'Mark accepted' : 'Decline'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

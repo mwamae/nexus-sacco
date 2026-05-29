@@ -6,12 +6,14 @@ import { hasSession, memberLogout } from './api';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Calculator from './pages/Calculator';
+import Guarantorships from './pages/Guarantorships';
 
-type Route = 'login' | 'dashboard' | 'calculator';
+type Route = 'login' | 'dashboard' | 'calculator' | 'guarantorships';
 
 function currentRoute(): Route {
   const hash = window.location.hash.replace('#/', '');
   if (hash === 'calculator') return 'calculator';
+  if (hash === 'guarantorships' && hasSession()) return 'guarantorships';
   if (hash === 'dashboard' && hasSession()) return 'dashboard';
   return hasSession() ? 'dashboard' : 'login';
 }
@@ -32,6 +34,7 @@ export default function App() {
           <nav style={{ display: 'flex', gap: 12 }}>
             <a href="#/dashboard">Dashboard</a>
             <a href="#/calculator">Calculator</a>
+            <a href="#/guarantorships">Guarantorships</a>
             <a onClick={memberLogout} style={{ cursor: 'pointer', color: '#c33' }}>Sign out</a>
           </nav>
         )}
@@ -39,6 +42,7 @@ export default function App() {
       {route === 'login' && <Login onLoggedIn={() => { window.location.hash = '#/dashboard'; }} />}
       {route === 'dashboard' && <Dashboard />}
       {route === 'calculator' && <Calculator />}
+      {route === 'guarantorships' && <Guarantorships />}
     </div>
   );
 }

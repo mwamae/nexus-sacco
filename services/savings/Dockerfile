@@ -39,11 +39,17 @@ RUN go build -ldflags="-s -w" -o /out/savings            ./cmd/server && \
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget && adduser -D -u 10001 app
+# Filestore root (consent proofs etc.). Must exist + be writable by
+# the `app` user before the savings binary starts; main.go fails
+# fast if mkdir is denied. Production deployments mount a volume
+# here so uploads survive container restarts.
+RUN mkdir -p /var/lib/savings-uploads && chown -R app:app /var/lib/savings-uploads
 USER app
 COPY --from=build /out/savings            /usr/local/bin/savings
 COPY --from=build /out/posting-dispatcher /usr/local/bin/posting-dispatcher
 COPY --from=build /out/loan-snapshotter   /usr/local/bin/loan-snapshotter
 COPY --from=build /out/dpd-classifier     /usr/local/bin/dpd-classifier
 COPY --from=build /out/collections-engine /usr/local/bin/collections-engine
+ENV SAVINGS_UPLOADS_DIR=/var/lib/savings-uploads
 EXPOSE 8084
 ENTRYPOINT ["/usr/local/bin/savings"]

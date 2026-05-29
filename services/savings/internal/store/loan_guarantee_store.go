@@ -91,10 +91,20 @@ func (s *LoanGuaranteeStore) ByApplicationTx(ctx context.Context, tx pgx.Tx, app
 
 // RespondTx records a guarantor's accept/decline. Idempotent on the
 // terminal status.
+//
+// `proofDocID` is the optional loan_documents row attached as written
+// consent evidence — set when an admin captures consent on the
+// guarantor's behalf and uploads a signed form. Member self-service
+// passes nil (the JWT identifies the consenting member).
+//
+// `respondedBy` is required: identity-service user id of whoever
+// clicked. For admin path it's the officer; for portal path it's
+// the member's user account.
 func (s *LoanGuaranteeStore) RespondTx(
 	ctx context.Context, tx pgx.Tx,
 	guaranteeID uuid.UUID,
 	accepted bool, declineReason *string,
+	proofDocID *uuid.UUID, respondedBy uuid.UUID,
 ) (*domain.LoanGuarantee, error) {
 	status := "accepted"
 	if !accepted {
@@ -102,20 +112,24 @@ func (s *LoanGuaranteeStore) RespondTx(
 	}
 	row := tx.QueryRow(ctx, `
 		UPDATE loan_guarantees
-		   SET status = $2,
-		       responded_at = now(),
-		       decline_reason = $3
+		   SET status            = $2,
+		       responded_at      = now(),
+		       decline_reason    = $3,
+		       proof_document_id = COALESCE($4, proof_document_id),
+		       responded_by      = $5
 		 WHERE id = $1
 		   AND status = 'pending_consent'
 		 RETURNING id, tenant_id, application_id, loan_id, guarantor_counterparty_id,
 		           amount_guaranteed, status, requested_at, requested_by,
-		           responded_at, released_at, called_upon_at, decline_reason, notes
-	`, guaranteeID, status, declineReason)
+		           responded_at, released_at, called_upon_at, decline_reason, notes,
+		           '' AS guarantor_name, '' AS guarantor_member_no
+	`, guaranteeID, status, declineReason, proofDocID, respondedBy)
 	var g domain.LoanGuarantee
 	err := row.Scan(
 		&g.ID, &g.TenantID, &g.ApplicationID, &g.LoanID, &g.GuarantorMemberID,
 		&g.AmountGuaranteed, &g.Status, &g.RequestedAt, &g.RequestedBy,
 		&g.RespondedAt, &g.ReleasedAt, &g.CalledUponAt, &g.DeclineReason, &g.Notes,
+		&g.GuarantorName, &g.GuarantorMemberNo,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("guarantee not found or not pending consent")
@@ -263,4 +277,58 @@ func (s *LoanGuaranteeStore) CollateralByApplicationTx(ctx context.Context, tx p
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// ReleaseByApplicationTx flips every still-committing guarantee row
+// for an application to 'released'. Called from the chokepoint
+// LoanApplicationStore.UpdateStatusTx whenever an application moves
+// to a terminal-non-success state (declined / cancelled / expired /
+// offer_declined). Idempotent — already-released rows are skipped.
+//
+// Returns the count released for observability + a note that callers
+// can log; never errors on "nothing to do".
+func (s *LoanGuaranteeStore) ReleaseByApplicationTx(
+	ctx context.Context, tx pgx.Tx, appID uuid.UUID, reason string,
+) (int, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE loan_guarantees
+		   SET status      = 'released',
+		       released_at = COALESCE(released_at, now()),
+		       notes       = COALESCE(notes, '') ||
+		                     CASE WHEN COALESCE(notes,'') = '' THEN '' ELSE E'\n' END ||
+		                     '[released] ' || $2
+		 WHERE application_id = $1
+		   AND status IN ('pending_consent','accepted','called_upon')
+	`, appID, reason)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// ReleaseByLoanTx releases every still-committing guarantee tied to
+// a loan. Called when the loan reaches 'settled' (natural repayment
+// chain or manual settle). Idempotent — already-released rows
+// skipped.
+//
+// IMPORTANT: NOT called on 'written_off' loans. A write-off doesn't
+// extinguish the guarantor's obligation; the SACCO may still call
+// upon them. Release write-off guarantees only via explicit policy.
+func (s *LoanGuaranteeStore) ReleaseByLoanTx(
+	ctx context.Context, tx pgx.Tx, loanID uuid.UUID, reason string,
+) (int, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE loan_guarantees
+		   SET status      = 'released',
+		       released_at = COALESCE(released_at, now()),
+		       notes       = COALESCE(notes, '') ||
+		                     CASE WHEN COALESCE(notes,'') = '' THEN '' ELSE E'\n' END ||
+		                     '[released] ' || $2
+		 WHERE loan_id = $1
+		   AND status IN ('pending_consent','accepted','called_upon')
+	`, loanID, reason)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
 }

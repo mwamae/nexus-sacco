@@ -338,7 +338,40 @@ func (s *LoanApplicationStore) UpdateStatusTx(ctx context.Context, tx pgx.Tx, ap
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+
+	// Phase 5 follow-up — when an application enters a terminal-
+	// non-success state, release every still-committing guarantee
+	// so the guarantor's capacity is freed for new requests.
+	// Centralised here because the same release applies regardless
+	// of which handler triggered the transition (auto-decline in
+	// runScoringTx, manual decline endpoint, or workflow callback).
+	//
+	// Done with raw SQL (not via the guarantee store) so this store
+	// stays free of cross-store dependencies. The query body
+	// mirrors LoanGuaranteeStore.ReleaseByApplicationTx.
+	switch t.To {
+	case domain.AppDeclined, domain.AppCancelled, domain.AppExpired, domain.AppOfferDeclined:
+		reason := "application " + string(t.To)
+		if t.DeclineReason != nil && *t.DeclineReason != "" {
+			reason = "application " + string(t.To) + ": " + *t.DeclineReason
+		}
+		if _, rerr := tx.Exec(ctx, `
+			UPDATE loan_guarantees
+			   SET status      = 'released',
+			       released_at = COALESCE(released_at, now()),
+			       notes       = COALESCE(notes, '') ||
+			                     CASE WHEN COALESCE(notes,'') = '' THEN '' ELSE E'\n' END ||
+			                     '[released] ' || $2
+			 WHERE application_id = $1
+			   AND status IN ('pending_consent','accepted','called_upon')
+		`, appID, reason); rerr != nil {
+			return nil, fmt.Errorf("release guarantees on %s: %w", t.To, rerr)
+		}
+	}
+	return out, nil
 }
 
 // ─────────── Scoring inputs gatherer ───────────

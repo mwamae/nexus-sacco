@@ -809,10 +809,11 @@ func (h *LoanApplicationHandler) GuaranteeRespond(w http.ResponseWriter, r *http
 		return
 	}
 	tid, _ := middleware.TenantIDFrom(r)
+	uid, _ := middleware.UserIDFrom(r)
 	var out *domain.LoanGuarantee
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		var err error
-		out, err = h.Guarantees.RespondTx(r.Context(), tx, gID, in.Accept, in.DeclineReason)
+		out, err = h.Guarantees.RespondTx(r.Context(), tx, gID, in.Accept, in.DeclineReason, nil, uid)
 		return err
 	})
 	if err != nil {

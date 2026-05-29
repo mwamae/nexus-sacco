@@ -27,6 +27,7 @@ import (
 	"github.com/nexussacco/savings/internal/auth"
 	"github.com/nexussacco/savings/internal/config"
 	"github.com/nexussacco/savings/internal/db"
+	"github.com/nexussacco/savings/internal/filestore"
 	"github.com/nexussacco/savings/internal/handler"
 	"github.com/nexussacco/savings/internal/handler/wf_callbacks"
 	"github.com/nexussacco/savings/internal/notifier"
@@ -338,6 +339,34 @@ func main() {
 		DB:     pool,
 		Logger: logger,
 	}
+	qualifyingAmountH := &handler.QualifyingAmountHandler{
+		DB:           pool,
+		Applications: loanAppStore,
+		LoanProducts: loanProductStore,
+		Tenants:      tenants,
+		Logger:       logger,
+	}
+	// Phase 5 follow-up — guarantor consent (admin upload-proof +
+	// member portal self-service). The filestore base directory is
+	// SAVINGS_UPLOADS_DIR, defaulting to /var/lib/savings-uploads
+	// which the Dockerfile pre-creates with `app` ownership. When
+	// running `go run` outside the container, override to a
+	// developer-writable path (e.g. ./uploads).
+	uploadsDir := os.Getenv("SAVINGS_UPLOADS_DIR")
+	if uploadsDir == "" {
+		uploadsDir = "/var/lib/savings-uploads"
+	}
+	filestoreSt, ferr := filestore.New(uploadsDir)
+	if ferr != nil {
+		logger.Error("filestore init", "err", ferr, "base_dir", uploadsDir)
+		os.Exit(1)
+	}
+	guarantorConsentH := &handler.GuarantorConsentHandler{
+		DB:         pool,
+		Guarantees: loanGuarStore,
+		Files:      filestoreSt,
+		Logger:     logger,
+	}
 	memberStmtStore := store.NewMemberStatementStore(pool.Pool)
 	memberStmtH := &handler.MemberStatementHandler{
 		DB:         pool,
@@ -557,8 +586,11 @@ func main() {
 		// Loans Phase 6 — CRB + insurance.
 		CRB:       crbH,
 		Insurance: insuranceH,
-		// Phase 5 follow-up — guarantor capacity lookup.
+		// Phase 5 follow-up — guarantor capacity + qualifying-amount lookups.
 		GuarantorCapacity: guarantorCapacityH,
+		QualifyingAmount:  qualifyingAmountH,
+		// Phase 5 follow-up — admin consent-with-proof + portal self-service.
+		GuarantorConsent: guarantorConsentH,
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),

@@ -7083,3 +7083,77 @@ export async function getGuarantorCapacity(counterpartyID: string): Promise<Guar
   const r = await api.get(`/v1/loans/guarantor-capacity?counterparty_id=${counterpartyID}`);
   return r.data.data;
 }
+
+// ─────────── Qualifying amount (pre-application multiplier ceiling) ───────────
+
+export type QualifyingAmount = {
+  counterparty_id: string;
+  product_id: string;
+  ceiling: string;
+  basis_kind: string;             // none | shares | bosa | bosa_plus_shares | deposits | shares_plus_deposits
+  basis_value: string;
+  multiplier_value: string;
+  product_min_amount: string;
+  product_max_amount: string;
+  capped_by_product: boolean;
+  warning_message?: string;
+  notes?: string[];
+};
+
+export async function getQualifyingAmount(
+  counterpartyID: string, productID: string,
+): Promise<QualifyingAmount> {
+  const r = await api.get(
+    `/v1/loans/qualifying-amount?counterparty_id=${counterpartyID}&product_id=${productID}`,
+  );
+  return r.data.data;
+}
+
+// ─────────── Guarantor consent (admin + portal) ───────────
+
+export async function adminRespondGuaranteeWithProof(
+  guaranteeId: string,
+  accept: boolean,
+  opts: { declineReason?: string; note?: string; file?: File },
+): Promise<LoanGuarantee> {
+  const form = new FormData();
+  form.set('accept', String(accept));
+  if (opts.declineReason) form.set('decline_reason', opts.declineReason);
+  if (opts.note) form.set('note', opts.note);
+  if (opts.file) form.set('file', opts.file);
+  const r = await api.post(
+    `/v1/loan-guarantees/${guaranteeId}/respond-with-proof`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  );
+  return r.data.data;
+}
+
+export type PortalGuarantorship = {
+  id: string;
+  application_id: string;
+  application_no: string;
+  borrower_name: string;
+  borrower_member_no: string;
+  amount_guaranteed: string;
+  requested_amount: string;
+  product_name: string;
+  status: string;
+  requested_at: string;
+  responded_at?: string;
+  decline_reason?: string;
+};
+
+export async function listPortalGuarantorships(): Promise<{ items: PortalGuarantorship[]; total: number }> {
+  const r = await api.get('/v1/portal/guarantorships');
+  return { items: r.data.data.items ?? [], total: r.data.data.total ?? 0 };
+}
+
+export async function respondPortalGuarantorship(
+  guaranteeId: string, accept: boolean, declineReason?: string,
+): Promise<LoanGuarantee> {
+  const r = await api.post(`/v1/portal/guarantorships/${guaranteeId}/respond`, {
+    accept, decline_reason: declineReason,
+  });
+  return r.data.data;
+}

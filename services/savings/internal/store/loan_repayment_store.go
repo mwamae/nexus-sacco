@@ -280,6 +280,27 @@ func (s *LoanStore) PostRepaymentTx(
 		return nil, nil, err
 	}
 
+	// Phase 5 follow-up — when this repayment settled the loan
+	// (recomputeNextDueTx flips status='settled' once all schedule
+	// rows are paid), release every still-committing guarantee tied
+	// to it. The EXISTS guard means this is a no-op for partial
+	// repayments that didn't actually close the loan.
+	if _, err := tx.Exec(ctx, `
+		UPDATE loan_guarantees
+		   SET status      = 'released',
+		       released_at = COALESCE(released_at, now()),
+		       notes       = COALESCE(notes, '') ||
+		                     CASE WHEN COALESCE(notes,'') = '' THEN '' ELSE E'\n' END ||
+		                     '[released] loan settled by repayment ' || $2
+		 WHERE loan_id = $1
+		   AND status IN ('pending_consent','accepted','called_upon')
+		   AND EXISTS (
+		     SELECT 1 FROM loans WHERE id = $1 AND status IN ('settled','closed')
+		   )
+	`, loan.ID, t.ID); err != nil {
+		return nil, nil, fmt.Errorf("release guarantees on settle: %w", err)
+	}
+
 	// Phase 4 — auto-resolve any open PTP on this loan against the new
 	// repayment. Best-effort: collections store wired via SetCollections;
 	// nil-safe so unit tests + tools that boot without the wire don't break.
