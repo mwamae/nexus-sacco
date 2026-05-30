@@ -198,9 +198,20 @@ func (s *CollateralStore) VerifyTx(ctx context.Context, tx pgx.Tx, id, actor uui
 	if err != nil {
 		return nil, err
 	}
+	// Promote directly to 'valued' when a current valuation already
+	// exists — covers the case where the officer attached the valuation
+	// before verifying. Without this the row would land at 'verified'
+	// despite having all the data needed for 'valued', and Pledge would
+	// stay disabled.
 	row := tx.QueryRow(ctx, `
 		UPDATE loan_collateral SET
-		  status              = 'verified',
+		  status = CASE
+		    WHEN EXISTS (
+		      SELECT 1 FROM collateral_valuations
+		       WHERE collateral_id = loan_collateral.id AND is_current = true
+		    ) THEN 'valued'
+		    ELSE 'verified'
+		  END,
 		  verified_by         = $2,
 		  verified_at         = now(),
 		  verification_notes  = $3,
@@ -383,12 +394,14 @@ func (s *CollateralStore) CreateValuationTx(ctx context.Context, tx pgx.Tx, in C
 	// coverage evaluator (which sums collateral.forced_sale_value) sees
 	// the latest figure without an extra join.
 	//
-	// Status transition: verified → valued. valued/pledged/etc. stay.
+	// Status transition: offered | verified → valued. valued/pledged/etc.
+	// stay. (Officers sometimes attach a valuation before verifying —
+	// promoting from either earlier state keeps the row consistent.)
 	row := tx.QueryRow(ctx, `
 		UPDATE loan_collateral SET
 		  forced_sale_value = $2,
 		  valuation_date    = $3,
-		  status = CASE WHEN status = 'verified' THEN 'valued' ELSE status END
+		  status = CASE WHEN status IN ('offered','verified') THEN 'valued' ELSE status END
 		WHERE id = $1
 		RETURNING `+collateralCols,
 		in.CollateralID, in.ForcedSaleValue, in.ValuationDate,
