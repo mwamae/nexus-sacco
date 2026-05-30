@@ -25,6 +25,7 @@ type Deps struct {
 	Webhook       *WebhookHandler
 	InboundEvents *InboundEventsHandler
 	B2C           *B2CHandler
+	STK           *STKHandler
 	TenantStore   *store.TenantStore
 	Issuer        *auth.TokenIssuer
 	IPAllowList   *middleware.IPAllowList
@@ -120,6 +121,16 @@ func Routes(d Deps) http.Handler {
 		})
 	}
 
+	// STK callback rides the /v1/c2b prefix (same Daraja-portal rule:
+	// the URL must not contain "mpesa") but is added to the existing
+	// c2b allow-list group so Safaricom's IPs reach it.
+	if d.STK != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(d.IPAllowList.Middleware)
+			r.Post("/v1/c2b/{paybill_id}/stk-callback", d.STK.Callback)
+		})
+	}
+
 	// ─────────── Staff + internal routes (keep "mpesa" prefix) ───────────
 	//
 	// Not exposed to Safaricom — these are admin UI calls + service-to-
@@ -132,6 +143,9 @@ func Routes(d Deps) http.Handler {
 		// callers don't need a tenant subdomain.
 		if d.B2C != nil {
 			r.Post("/b2c/requests", d.B2C.Enqueue)
+		}
+		if d.STK != nil {
+			r.Post("/stk/push", d.STK.Initiate)
 		}
 
 		// JWT + tenant-scoped admin endpoints.

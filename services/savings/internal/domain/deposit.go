@@ -249,9 +249,12 @@ type DepositAccount struct {
 	GroupOrgID               *uuid.UUID           `json:"group_org_id,omitempty"`
 	WithdrawalNoticeGivenAt  *time.Time           `json:"withdrawal_notice_given_at,omitempty"`
 	WithdrawalNoticeAmount   *decimal.Decimal     `json:"withdrawal_notice_amount,omitempty"`
-	CreatedAt                time.Time            `json:"created_at"`
-	UpdatedAt                time.Time            `json:"updated_at"`
-	CreatedBy                *uuid.UUID           `json:"created_by,omitempty"`
+	// DSID Phase 2.2 — joint account fields.
+	IsJoint         bool `json:"is_joint"`
+	RequiredSigners int  `json:"required_signers"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	CreatedBy       *uuid.UUID `json:"created_by,omitempty"`
 }
 
 type DepositTransaction struct {

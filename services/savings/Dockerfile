@@ -50,7 +50,10 @@ RUN go build -ldflags="-s -w" -o /out/savings            ./cmd/server && \
     go build -ldflags="-s -w" -o /out/collections-engine ./cmd/collections-engine && \
     go build -ldflags="-s -w" -o /out/guarantor-reminder ./cmd/guarantor-reminder && \
     go build -ldflags="-s -w" -o /out/collateral-revaluation-reminder ./cmd/collateral-revaluation-reminder && \
-    go build -ldflags="-s -w" -o /out/collateral-insurance-reminder   ./cmd/collateral-insurance-reminder
+    go build -ldflags="-s -w" -o /out/collateral-insurance-reminder   ./cmd/collateral-insurance-reminder && \
+    go build -ldflags="-s -w" -o /out/statement-mailer ./cmd/statement-mailer && \
+    go build -ldflags="-s -w" -o /out/standing-order-processor ./cmd/standing-order-processor && \
+    go build -ldflags="-s -w" -o /out/recurring-fee-charger    ./cmd/recurring-fee-charger
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget && adduser -D -u 10001 app
@@ -68,6 +71,9 @@ COPY --from=build /out/collections-engine /usr/local/bin/collections-engine
 COPY --from=build /out/guarantor-reminder /usr/local/bin/guarantor-reminder
 COPY --from=build /out/collateral-revaluation-reminder /usr/local/bin/collateral-revaluation-reminder
 COPY --from=build /out/collateral-insurance-reminder   /usr/local/bin/collateral-insurance-reminder
+COPY --from=build /out/statement-mailer                /usr/local/bin/statement-mailer
+COPY --from=build /out/standing-order-processor        /usr/local/bin/standing-order-processor
+COPY --from=build /out/recurring-fee-charger           /usr/local/bin/recurring-fee-charger
 ENV SAVINGS_UPLOADS_DIR=/var/lib/savings-uploads
 EXPOSE 8084
 ENTRYPOINT ["/usr/local/bin/savings"]

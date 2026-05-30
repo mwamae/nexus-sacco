@@ -168,7 +168,7 @@ services:
       ACCOUNTING_SERVICE_URL: http://accounting:8086
       ACCOUNTING_INTERNAL_TOKEN: ${ACCOUNTING_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
       WORKFLOW_SERVICE_URL: http://workflow:8083
-      NOTIFICATION_SERVICE_URL: http://notification:8085
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL:-http://host.docker.internal:8085}
       JWT_SECRET: ${JWT_SECRET:-dev-only-secret-do-not-use-in-production-eef9b4c6c0f04f4d8a8b1e7f2a3b4c5d}
       JWT_ISSUER: ${JWT_ISSUER:-nexus-identity}
       APP_DOMAIN: ${APP_DOMAIN:-nexussacco.local}
@@ -258,7 +258,7 @@ services:
     entrypoint: ["/usr/local/bin/collateral-revaluation-reminder"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
-      NOTIFICATION_SERVICE_URL: http://notification:8085
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL:-http://host.docker.internal:8085}
       NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
       SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
     depends_on:
@@ -277,7 +277,72 @@ services:
     entrypoint: ["/usr/local/bin/collateral-insurance-reminder"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
-      NOTIFICATION_SERVICE_URL: http://notification:8085
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL:-http://host.docker.internal:8085}
+      NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
+      SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # DSID Phase 2.2 — 5-min standing-order processor. Polls due
+  # recurring_deposits, dispatches to per-source handler (manual_reminder,
+  # payroll, mpesa_pull, fosa_debit). Retry+suspend per tenant_operations
+  # policy. SMS on failure + suspend. Idempotent on (so_id, period, attempt).
+  standing-order-processor:
+    build:
+      context: .
+      dockerfile: services/savings/Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/standing-order-processor"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL:-http://host.docker.internal:8085}
+      NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
+      ACCOUNTING_SERVICE_URL: ${ACCOUNTING_SERVICE_URL:-http://accounting:8086}
+      ACCOUNTING_INTERNAL_TOKEN: ${ACCOUNTING_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
+      MPESA_SERVICE_URL: ${MPESA_SERVICE_URL:-http://mpesa:8087}
+      MPESA_INTERNAL_TOKEN: ${MPESA_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-needs-32-bytes-min-xxx}
+      SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # DSID Phase 2.2 — daily recurring-fee charger. For each active
+  # deposit_product_recurring_fees row, scans every active account on
+  # the product and posts (or records insufficient_funds) once per
+  # period (idempotent on (account, fee, period_label)).
+  recurring-fee-charger:
+    build:
+      context: .
+      dockerfile: services/savings/Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/recurring-fee-charger"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      ACCOUNTING_SERVICE_URL: ${ACCOUNTING_SERVICE_URL:-http://accounting:8086}
+      ACCOUNTING_INTERNAL_TOKEN: ${ACCOUNTING_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-needs-32-bytes-min-xxx}
+      FEE_CHARGER_INTERVAL_HOURS: ${FEE_CHARGER_INTERVAL_HOURS:-24}
+      SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # DSID Phase 2.1 — hourly statement-mailer tick. For each tenant,
+  # parses tenant_operations.statement_mail_cron + fires quarterly
+  # statements via email (deposits + shares + interest + dividend as
+  # PDF attachments) to members with notification_preferences.statement_email
+  # = true. Idempotent via statement_mailings (tenant, member, period).
+  statement-mailer:
+    build:
+      context: .
+      dockerfile: services/savings/Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/statement-mailer"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL:-http://host.docker.internal:8085}
       NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
       SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
     depends_on:
@@ -295,7 +360,7 @@ services:
     entrypoint: ["/usr/local/bin/guarantor-reminder"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
-      NOTIFICATION_SERVICE_URL: http://notification:8085
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL:-http://host.docker.internal:8085}
       NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
       SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
     depends_on:
@@ -315,7 +380,7 @@ services:
     entrypoint: ["/usr/local/bin/collections-engine"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
-      NOTIFICATION_SERVICE_URL: http://notification:8085
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL:-http://host.docker.internal:8085}
       NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
       SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
     depends_on:

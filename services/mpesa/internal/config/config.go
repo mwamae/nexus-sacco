@@ -67,6 +67,11 @@ type Config struct {
 	B2CResultURL  string
 	B2CTimeoutURL string
 
+	// STKCallbackBase — public origin (scheme+host) we hand to Daraja
+	// as the CallBackURL on STK Push. The path is constructed per
+	// request: {base}/v1/c2b/{paybill_id}/stk-callback?token=…
+	STKCallbackBase string
+
 	ReadHeaderTimeout time.Duration
 }
 
@@ -98,6 +103,7 @@ func Load() (*Config, error) {
 		InitiatorCertPEM:  []byte(getEnv("MPESA_INITIATOR_CERT_PEM", "")),
 		B2CResultURL:      getEnv("MPESA_B2C_RESULT_URL", ""),
 		B2CTimeoutURL:     getEnv("MPESA_B2C_TIMEOUT_URL", ""),
+		STKCallbackBase:   getEnv("MPESA_STK_CALLBACK_BASE", ""),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if len(cfg.JWTSecret) < 32 {

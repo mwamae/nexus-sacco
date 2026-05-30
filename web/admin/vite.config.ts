@@ -37,6 +37,30 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        // DSID Phase 2.1 — statement PDFs + email live on savings.
+        // Must be registered BEFORE the generic /api/v1/members entry
+        // so vite matches the more-specific regex first.
+        '^/api/v1/members/[^/]+/statements': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        // DSID Phase 2.2 — standing orders live on savings.
+        '^/api/v1/members/[^/]+/standing-orders': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/standing-orders': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/deposit-product-recurring-fees': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/members': {
           target: memberTarget,
           changeOrigin: false,
@@ -146,6 +170,12 @@ export default defineConfig(({ mode }) => {
         },
         // Phase-1 follow-up — valuation report download.
         '/api/v1/collateral-valuations': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        // DSID Phase 2.1 — WHT remittance CSV/JSON.
+        '/api/v1/tax': {
           target: savingsTarget,
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),

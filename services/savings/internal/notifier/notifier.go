@@ -51,6 +51,29 @@ type Request struct {
 	DeepLink          *string        `json:"deep_link,omitempty"`
 	Payload           map[string]any `json:"payload,omitempty"`
 	InitiatedBy       *uuid.UUID     `json:"initiated_by,omitempty"`
+
+	// PDFAttachments — when set, the notification service generates each
+	// PDF before dispatching, and attaches the bytes to the outbound
+	// email. Each entry mirrors a PDFGenerateRequest minus the per-call
+	// boilerplate (tenant + initiator come from the parent Request).
+	PDFAttachments []PDFAttachmentSpec `json:"pdf_attachments,omitempty"`
+}
+
+// PDFAttachmentSpec — one PDF to attach to the outbound email. The
+// notification service renders it via the same /internal/v1/pdf/generate
+// path GeneratePDF uses, then attaches the resulting bytes to the
+// SMTP message. The notification side derives the filename from
+// document_type + subject_label; Filename here is caller-side only
+// (notification's request decoder is strict and would reject the
+// unknown field, so it's marked with json:"-").
+type PDFAttachmentSpec struct {
+	DocumentType     string         `json:"document_type"`
+	Filename         string         `json:"-"`
+	SubjectMemberID  *uuid.UUID     `json:"subject_member_id,omitempty"`
+	SubjectLoanID    *uuid.UUID     `json:"subject_loan_id,omitempty"`
+	SubjectAccountID *uuid.UUID     `json:"subject_account_id,omitempty"`
+	SubjectLabel     string         `json:"subject_label,omitempty"`
+	Payload          map[string]any `json:"payload,omitempty"`
 }
 
 // New creates a client. BaseURL like "http://localhost:8085". An empty
@@ -171,6 +194,33 @@ func (c *Client) GeneratePDF(ctx context.Context, req PDFGenerateRequest) (*PDFG
 		return nil, fmt.Errorf("decode pdf response: %w", err)
 	}
 	return &env.Data, nil
+}
+
+// FetchPDFBytes server-side fetches the PDF body from the notification
+// service's public-download endpoint (/d/{token}). The token IS the
+// credential; no Authorization header. Used by the savings handler to
+// stream rendered statement PDFs back to the browser without exposing
+// the notification host.
+func (c *Client) FetchPDFBytes(ctx context.Context, downloadToken string) ([]byte, error) {
+	if c == nil || c.BaseURL == "" {
+		return nil, fmt.Errorf("notifier client disabled (empty BaseURL)")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.BaseURL+"/d/"+downloadToken, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build pdf fetch: %w", err)
+	}
+	hc := &http.Client{Timeout: 30 * time.Second}
+	resp, err := hc.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("fetch pdf: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("notification pdf download returned %d: %s", resp.StatusCode, string(b))
+	}
+	return io.ReadAll(resp.Body)
 }
 
 func (c *Client) log(stage string, err error, req Request) {

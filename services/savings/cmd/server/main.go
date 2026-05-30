@@ -431,6 +431,50 @@ func main() {
 		Logger: logger,
 	}
 
+	// DSID Phase 2.1 — member statement PDFs + WHT remittance.
+	statementsStore := store.NewStatementsStore(pool.Pool)
+	memberStatementsPDFH := &handler.MemberStatementsPDFHandler{
+		DB:         pool,
+		Statements: statementsStore,
+		Notifier:   notifyClient,
+		Logger:     logger,
+	}
+	whtRemittanceH := &handler.WHTRemittanceHandler{
+		DB:     pool,
+		Logger: logger,
+	}
+
+	// DSID Phase 2.2 — Standing orders.
+	recurringDepositsStore := store.NewRecurringDepositStore(pool.Pool)
+	standingOrdersH := &handler.StandingOrdersHandler{
+		DB:                pool,
+		RecurringDeposits: recurringDepositsStore,
+		Workflow:          workflowclient.New(),
+	}
+
+	// DSID Phase 2.2 — Dormancy reactivation.
+	depositReactivationH := &handler.DepositReactivationHandler{
+		DB:       pool,
+		Workflow: workflowclient.New(),
+	}
+
+	// DSID Phase 2.2 — Joint accounts.
+	jointStore := store.NewJointAccountStore(pool.Pool)
+	jointAccountsH := &handler.JointAccountsHandler{
+		DB:              pool,
+		Joint:           jointStore,
+		Notifier:        notifyClient,
+		DefaultExpiryHr: 72,
+	}
+	depositH.Joint = jointAccountsH
+
+	// DSID Phase 2.2 — Per-product recurring fees.
+	recurringFeesStore := store.NewRecurringFeeStore(pool.Pool)
+	recurringFeesH := &handler.RecurringFeesHandler{
+		DB:   pool,
+		Fees: recurringFeesStore,
+	}
+
 	// Phase-1 follow-up — Documents / Comments / Score history.
 	loanDocStore := store.NewLoanDocumentStore(pool.Pool)
 	loanCommentsStore := store.NewLoanCommentsStore(pool.Pool)
@@ -626,6 +670,9 @@ func main() {
 		wfRegistry.Register("application_fee", wf_callbacks.NewApplicationFeeCallback(applicationFeesEx, rla))
 	}
 	wfRegistry.Register("member_bosa_exit", wf_callbacks.NewMemberBOSAExitCallback())
+	// DSID Phase 2.2
+	wfRegistry.Register("deposit_account_reactivation", wf_callbacks.NewDepositReactivationCallback())
+	wfRegistry.Register("standing_order_resume", wf_callbacks.NewStandingOrderResumeCallback())
 	logger.Info("wf_callbacks: registered", "kinds", wfRegistry.Kinds())
 
 	router := handler.Routes(handler.Deps{
@@ -708,7 +755,13 @@ func main() {
 		LoanDocs:        loanDocsH,
 		LoanComments:    loanCommentsH,
 		PublicComments:  publicCommentsH,
-		ValuationReport: valuationReportH,
+		ValuationReport:     valuationReportH,
+		MemberStatementsPDF: memberStatementsPDFH,
+		WHTRemittance:       whtRemittanceH,
+		StandingOrders:      standingOrdersH,
+		DepositReactivation: depositReactivationH,
+		JointAccounts:       jointAccountsH,
+		RecurringFees:       recurringFeesH,
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),

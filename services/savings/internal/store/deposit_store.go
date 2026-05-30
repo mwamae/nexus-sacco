@@ -49,6 +49,7 @@ const acctCols = `
 	goal_target_amount, goal_target_date, goal_description,
 	guardian_member_id, group_org_id,
 	withdrawal_notice_given_at, withdrawal_notice_amount,
+	is_joint, required_signers,
 	created_at, updated_at, created_by
 `
 
@@ -63,6 +64,7 @@ func scanAcct(row pgx.Row) (*domain.DepositAccount, error) {
 		&a.GoalTargetAmount, &a.GoalTargetDate, &a.GoalDescription,
 		&a.GuardianMemberID, &a.GroupOrgID,
 		&a.WithdrawalNoticeGivenAt, &a.WithdrawalNoticeAmount,
+		&a.IsJoint, &a.RequiredSigners,
 		&a.CreatedAt, &a.UpdatedAt, &a.CreatedBy,
 	)
 	if err != nil {

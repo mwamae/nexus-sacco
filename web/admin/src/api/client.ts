@@ -7491,6 +7491,226 @@ export async function searchLoanComments(q: string, scope: { applicationId?: str
   return { items: r.data?.data?.items ?? [] };
 }
 
+// ─── DSID Phase 2.1 — Statements + WHT remittance ───
+
+// Statement PDF URLs (used as <a> hrefs via openAuthedFile).
+export function depositStatementURL(cpId: string, from: string, to: string, accountID?: string): string {
+  const p = new URLSearchParams({ from, to });
+  if (accountID) p.set('account_id', accountID);
+  return `/api/v1/members/${cpId}/statements/deposits.pdf?${p.toString()}`;
+}
+export function shareStatementURL(cpId: string, fy: string): string {
+  return `/api/v1/members/${cpId}/statements/shares.pdf?fy=${encodeURIComponent(fy)}`;
+}
+export function interestStatementURL(cpId: string, fy: string): string {
+  return `/api/v1/members/${cpId}/statements/interest.pdf?fy=${encodeURIComponent(fy)}`;
+}
+export function dividendStatementURL(cpId: string, fy: string): string {
+  return `/api/v1/members/${cpId}/statements/dividend.pdf?fy=${encodeURIComponent(fy)}`;
+}
+
+export async function emailMemberStatement(cpId: string, body: {
+  kind: 'deposits' | 'shares' | 'interest' | 'dividend';
+  period: string;
+  account_id?: string;
+}): Promise<{ status: string; email: string; document_type: string; period: string }> {
+  const r = await api.post(`/v1/members/${cpId}/statements/email`, body);
+  return r.data.data;
+}
+
+// WHT remittance
+export type WHTRemittanceRow = {
+  member_no: string;
+  full_name: string;
+  kra_pin: string;
+  gross_amount: string;
+  wht_rate_pct: string;
+  wht_withheld: string;
+  net_amount: string;
+  run_no: string;
+  posted_at: string;
+  source_kind: string;
+};
+
+export type WHTRemittanceResponse = {
+  items: WHTRemittanceRow[];
+  total: number;
+  period: string;
+  tax_type: string;
+  total_gross: string;
+  total_wht: string;
+  total_net: string;
+};
+
+export async function getWHTRemittance(period: string, taxType: 'interest' | 'dividend' | 'both' = 'both'): Promise<WHTRemittanceResponse> {
+  const r = await api.get(`/v1/tax/wht-remittance.json?period=${encodeURIComponent(period)}&tax_type=${taxType}`);
+  return r.data.data;
+}
+
+export function whtRemittanceCSVURL(period: string, taxType: 'interest' | 'dividend' | 'both' = 'both'): string {
+  return `/api/v1/tax/wht-remittance.csv?period=${encodeURIComponent(period)}&tax_type=${taxType}`;
+}
+
+// ─── DSID Phase 2.2 — Standing orders ───
+
+export type StandingOrder = {
+  id: string;
+  counterparty_id: string;
+  target_account_id: string;
+  source: 'manual_reminder' | 'payroll' | 'mpesa_pull' | 'fosa_debit';
+  source_account_id?: string;
+  source_msisdn?: string;
+  source_payroll_employer?: string;
+  amount: string;
+  frequency: 'weekly' | 'biweekly' | 'monthly' | 'quarterly';
+  start_date: string;
+  end_date?: string;
+  next_run_at: string;
+  last_run_at?: string;
+  consecutive_failures: number;
+  status: 'active' | 'paused' | 'cancelled' | 'suspended' | 'completed';
+  reason_notes?: string;
+  last_suspended_at?: string;
+};
+
+export type StandingOrderRun = {
+  id: string;
+  standing_order_id: string;
+  attempted_at: string;
+  amount: string;
+  attempt_no: number;
+  period_label: string;
+  status: 'success' | 'failed' | 'partial' | 'skipped';
+  error_code?: string;
+  error_message?: string;
+  posted_txn_id?: string;
+  next_retry_at?: string;
+};
+
+export async function listMemberStandingOrders(cpId: string, status?: string): Promise<StandingOrder[]> {
+  const q = status ? `?status=${encodeURIComponent(status)}` : '';
+  const r = await api.get(`/v1/members/${cpId}/standing-orders${q}`);
+  return r.data.data.items ?? [];
+}
+
+export async function createStandingOrder(cpId: string, body: Partial<StandingOrder>): Promise<StandingOrder> {
+  const r = await api.post(`/v1/members/${cpId}/standing-orders`, body);
+  return r.data.data;
+}
+
+export async function patchStandingOrder(id: string, body: Partial<StandingOrder>): Promise<StandingOrder> {
+  const r = await api.patch(`/v1/standing-orders/${id}`, body);
+  return r.data.data;
+}
+
+export async function cancelStandingOrder(id: string): Promise<void> {
+  await api.delete(`/v1/standing-orders/${id}`);
+}
+
+export async function resumeStandingOrder(id: string): Promise<{ status: string; workflow_instance_id?: string }> {
+  const r = await api.post(`/v1/standing-orders/${id}/resume`);
+  return r.data.data;
+}
+
+export async function listStandingOrderRuns(id: string): Promise<StandingOrderRun[]> {
+  const r = await api.get(`/v1/standing-orders/${id}/runs`);
+  return r.data.data.items ?? [];
+}
+
+// ─── DSID Phase 2.2 — Dormancy reactivation ───
+
+export async function reactivateAccount(accountID: string, body: { reason: string; kyc_refresh_confirmed: boolean }):
+  Promise<{ status: string; workflow_instance_id: string }> {
+  const r = await api.post(`/v1/deposit-accounts/${accountID}/reactivate`, body);
+  return r.data.data;
+}
+
+// ─── DSID Phase 2.2 — Joint accounts ───
+
+export type JointOwner = {
+  id: string;
+  account_id: string;
+  counterparty_id: string;
+  signing_role: 'primary' | 'co_owner' | 'signatory';
+  added_at: string;
+  removed_at?: string;
+};
+
+export type JointSigner = {
+  id: string;
+  signer_counterparty_id: string;
+  signer_msisdn?: string;
+  signer_status: 'pending' | 'approved' | 'rejected';
+  responded_at?: string;
+};
+
+export type PendingJointWithdrawal = {
+  id: string;
+  account_id: string;
+  amount: string;
+  required_signers: number;
+  status: string;
+  expires_at: string;
+  signers: JointSigner[];
+};
+
+export async function listJointOwners(accountID: string): Promise<JointOwner[]> {
+  const r = await api.get(`/v1/deposit-accounts/${accountID}/joint-owners`);
+  return r.data.data.items ?? [];
+}
+
+export async function addJointOwner(accountID: string, body: { counterparty_id: string; signing_role?: string }): Promise<JointOwner> {
+  const r = await api.post(`/v1/deposit-accounts/${accountID}/joint-owners`, body);
+  return r.data.data;
+}
+
+export async function removeJointOwner(accountID: string, counterpartyID: string): Promise<void> {
+  await api.delete(`/v1/deposit-accounts/${accountID}/joint-owners/${counterpartyID}`);
+}
+
+export async function putJointConfig(accountID: string, body: { is_joint: boolean; required_signers: number }): Promise<void> {
+  await api.put(`/v1/deposit-accounts/${accountID}/joint-config`, body);
+}
+
+export async function listPendingJointWithdrawals(accountID: string): Promise<PendingJointWithdrawal[]> {
+  const r = await api.get(`/v1/deposit-accounts/${accountID}/pending-withdrawals`);
+  return r.data.data.items ?? [];
+}
+
+// ─── DSID Phase 2.2 — Per-product recurring fees ───
+
+export type RecurringFee = {
+  id: string;
+  product_id: string;
+  fee_kind: string;
+  amount: string;
+  frequency: 'monthly' | 'quarterly' | 'annual';
+  gl_credit_code: string;
+  active: boolean;
+  starts_on: string;
+  ends_on?: string;
+  notes?: string;
+};
+
+export async function listProductRecurringFees(productID: string): Promise<RecurringFee[]> {
+  const r = await api.get(`/v1/deposit-products/${productID}/recurring-fees`);
+  return r.data.data.items ?? [];
+}
+
+export async function createProductRecurringFee(productID: string, body: Partial<RecurringFee>): Promise<RecurringFee> {
+  const r = await api.post(`/v1/deposit-products/${productID}/recurring-fees`, body);
+  return r.data.data;
+}
+
+export async function patchRecurringFee(id: string, body: Partial<RecurringFee>): Promise<RecurringFee> {
+  const r = await api.patch(`/v1/deposit-product-recurring-fees/${id}`, body);
+  return r.data.data;
+}
+
+export async function deleteRecurringFee(id: string): Promise<void> {
+  await api.delete(`/v1/deposit-product-recurring-fees/${id}`);
+}
+
 // ─── SASRA quarterly extract ───
 
 export async function getSASRAExtract(period: string): Promise<any> {

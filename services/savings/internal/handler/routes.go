@@ -107,6 +107,17 @@ type Deps struct {
 	PublicComments  *PublicCommentsHandler
 	// Phase-1 follow-up — valuation report file upload + download.
 	ValuationReport *ValuationReportHandler
+	// DSID Phase 2.1 — member statement PDFs + email; WHT remittance.
+	MemberStatementsPDF *MemberStatementsPDFHandler
+	WHTRemittance       *WHTRemittanceHandler
+	// DSID Phase 2.2 — standing orders.
+	StandingOrders *StandingOrdersHandler
+	// DSID Phase 2.2 — dormant account reactivation.
+	DepositReactivation *DepositReactivationHandler
+	// DSID Phase 2.2 — joint accounts.
+	JointAccounts *JointAccountsHandler
+	// DSID Phase 2.2 — per-product recurring fees.
+	RecurringFees *RecurringFeesHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -185,6 +196,18 @@ func Routes(d Deps) http.Handler {
 			r.Post("/verify-id", d.PublicPledgerConsent.VerifyID)
 			r.Post("/verify-otp", d.PublicPledgerConsent.VerifyOTP)
 			r.Post("/respond", d.PublicPledgerConsent.Respond)
+		})
+	}
+
+	// DSID Phase 2.2 — joint withdrawal SMS consent (no auth).
+	if d.JointAccounts != nil {
+		ipLimiter := middleware.NewRateLimiter(20, 1, middleware.KeyByIP)
+		tokenLimiter := middleware.NewRateLimiter(10, 0.25, middleware.KeyByURLParam("token"))
+		r.Route("/p/joint-withdrawal/{token}", func(r chi.Router) {
+			r.Use(ipLimiter.Middleware)
+			r.Use(tokenLimiter.Middleware)
+			r.Get("/", d.JointAccounts.PublicGet)
+			r.Post("/respond", d.JointAccounts.PublicRespond)
 		})
 	}
 
@@ -470,6 +493,53 @@ func Routes(d Deps) http.Handler {
 				r.With(middleware.RequirePermission("loans:apply")).Post("/loan-documents/{id}/review", d.LoanDocs.Review)
 				r.With(middleware.RequirePermission("loans:apply")).Delete("/loan-documents/{id}", d.LoanDocs.Delete)
 				r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/required-documents-status", d.LoanDocs.RequiredStatus)
+			}
+
+			// DSID Phase 2.1 — member statement PDFs + email.
+			if d.MemberStatementsPDF != nil {
+				r.With(middleware.RequirePermission("members:view")).Get("/members/{counterparty_id}/statements/deposits.pdf", d.MemberStatementsPDF.DepositsPDF)
+				r.With(middleware.RequirePermission("members:view")).Get("/members/{counterparty_id}/statements/shares.pdf", d.MemberStatementsPDF.SharesPDF)
+				r.With(middleware.RequirePermission("members:view")).Get("/members/{counterparty_id}/statements/interest.pdf", d.MemberStatementsPDF.InterestPDF)
+				r.With(middleware.RequirePermission("members:view")).Get("/members/{counterparty_id}/statements/dividend.pdf", d.MemberStatementsPDF.DividendPDF)
+				r.With(middleware.RequirePermission("members:view")).Post("/members/{counterparty_id}/statements/email", d.MemberStatementsPDF.Email)
+			}
+
+			// DSID Phase 2.1 — WHT iTax remittance export.
+			if d.WHTRemittance != nil {
+				r.With(middleware.RequirePermission("loans:reports")).Get("/tax/wht-remittance.csv", d.WHTRemittance.CSV)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/tax/wht-remittance.json", d.WHTRemittance.JSON)
+			}
+
+			// DSID Phase 2.2 — Dormancy reactivation.
+			if d.DepositReactivation != nil {
+				r.With(middleware.RequirePermission("savings:approve")).Post("/deposit-accounts/{account_id}/reactivate", d.DepositReactivation.Reactivate)
+			}
+
+			// DSID Phase 2.2 — Per-product recurring fees.
+			if d.RecurringFees != nil {
+				r.With(middleware.RequirePermission("deposits:configure")).Get("/deposit-products/{product_id}/recurring-fees", d.RecurringFees.List)
+				r.With(middleware.RequirePermission("deposits:configure")).Post("/deposit-products/{product_id}/recurring-fees", d.RecurringFees.Create)
+				r.With(middleware.RequirePermission("deposits:configure")).Patch("/deposit-product-recurring-fees/{id}", d.RecurringFees.Patch)
+				r.With(middleware.RequirePermission("deposits:configure")).Delete("/deposit-product-recurring-fees/{id}", d.RecurringFees.Delete)
+			}
+
+			// DSID Phase 2.2 — Joint accounts.
+			if d.JointAccounts != nil {
+				r.With(middleware.RequirePermission("members:view")).Get("/deposit-accounts/{account_id}/joint-owners", d.JointAccounts.ListOwners)
+				r.With(middleware.RequirePermission("members:edit")).Post("/deposit-accounts/{account_id}/joint-owners", d.JointAccounts.AddOwner)
+				r.With(middleware.RequirePermission("members:edit")).Delete("/deposit-accounts/{account_id}/joint-owners/{counterparty_id}", d.JointAccounts.RemoveOwner)
+				r.With(middleware.RequirePermission("members:edit")).Put("/deposit-accounts/{account_id}/joint-config", d.JointAccounts.PutConfig)
+				r.With(middleware.RequirePermission("members:view")).Get("/deposit-accounts/{account_id}/pending-withdrawals", d.JointAccounts.ListPendingWithdrawals)
+			}
+
+			// DSID Phase 2.2 — Standing orders.
+			if d.StandingOrders != nil {
+				r.With(middleware.RequirePermission("members:edit")).Post("/members/{counterparty_id}/standing-orders", d.StandingOrders.Create)
+				r.With(middleware.RequirePermission("members:view")).Get("/members/{counterparty_id}/standing-orders", d.StandingOrders.ListByMember)
+				r.With(middleware.RequirePermission("members:edit")).Patch("/standing-orders/{id}", d.StandingOrders.Patch)
+				r.With(middleware.RequirePermission("members:edit")).Delete("/standing-orders/{id}", d.StandingOrders.Delete)
+				r.With(middleware.RequirePermission("members:view")).Get("/standing-orders/{id}/runs", d.StandingOrders.ListRuns)
+				r.With(middleware.RequirePermission("members:edit")).Post("/standing-orders/{id}/resume", d.StandingOrders.Resume)
 			}
 
 			// Phase-1 follow-up — Score history.

@@ -56,6 +56,8 @@ import {
   getPledgesGivenByCounterparty,
   type PledgeGivenRow,
 } from '../api/client';
+import StatementsTab from '../components/Members/StatementsTab';
+import StandingOrdersTab from '../components/Members/StandingOrdersTab';
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
 import { Icon } from '../components/Icon';
@@ -70,7 +72,7 @@ import { useDocumentTitle } from '../lib/useDocumentTitle';
 import { FeesSummaryView } from './Accounting/FeesSummary';
 
 // One tab strip — spec-defined, identical for both kinds.
-type TabId = 'overview' | 'profile' | 'accounts' | 'people' | 'banking' | 'documents' | 'activity' | 'fees' | 'pledges';
+type TabId = 'overview' | 'profile' | 'accounts' | 'people' | 'banking' | 'documents' | 'activity' | 'fees' | 'pledges' | 'statements' | 'standing-orders';
 const TABS: { id: TabId; label: string }[] = [
   { id: 'overview',  label: 'Overview' },
   { id: 'profile',   label: 'Profile' },
@@ -81,6 +83,8 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'fees',      label: 'Fees' },       // per-member Fees & Collections
   { id: 'activity',  label: 'Activity' },
   { id: 'pledges',   label: 'Pledges given' },  // Phase 1.5b — third-party + self collateral
+  { id: 'statements', label: 'Statements' },    // DSID Phase 2.1 — deposit/share/interest/dividend PDFs
+  { id: 'standing-orders', label: 'Standing orders' }, // DSID Phase 2.2
 ];
 
 // ─────────── URL helpers ───────────
@@ -235,6 +239,21 @@ function CounterpartyShell({
               {activeId === 'fees'      && <FeesTab entity={entity} />}
               {activeId === 'activity'  && <ActivityTab entity={entity} canSeeAudit={canSeeAudit} />}
               {activeId === 'pledges'   && <PledgesGivenTab entity={entity} currency={currency} />}
+              {activeId === 'statements' && (
+                <StatementsTab
+                  counterpartyId={entity.kind === 'individual'
+                    ? (entity.m.counterparty_id ?? entity.m.id)
+                    : (entity.o.counterparty_id ?? entity.o.id)}
+                  memberEmail={entity.kind === 'individual' ? (entity.m.email ?? undefined) : undefined}
+                />
+              )}
+              {activeId === 'standing-orders' && (
+                <StandingOrdersTab
+                  counterpartyId={entity.kind === 'individual'
+                    ? (entity.m.counterparty_id ?? entity.m.id)
+                    : (entity.o.counterparty_id ?? entity.o.id)}
+                />
+              )}
             </>
           )}
         </Tabs>

@@ -10,6 +10,7 @@ require (
 	github.com/jung-kurt/gofpdf v1.16.2
 	github.com/nexussacco/shared v0.0.0
 	github.com/pdfcpu/pdfcpu v0.12.1
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/shopspring/decimal v1.4.0
 )
 

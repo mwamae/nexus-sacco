@@ -61,6 +61,7 @@ import CreditsPage from './pages/Credits';
 import PlatformCreditsPage from './pages/PlatformCredits';
 import ChartOfAccountsPage from './pages/Accounting/ChartOfAccounts';
 import JournalEntriesPage from './pages/Accounting/JournalEntries';
+import WhtRemittancePage from './pages/Accounting/WhtRemittance';
 import TrialBalancePage from './pages/Accounting/TrialBalance';
 import BalanceSheetPage from './pages/Accounting/BalanceSheet';
 import IncomeStatementPage from './pages/Accounting/IncomeStatement';
@@ -208,6 +209,7 @@ function Gate() {
   else if (path === '/credits' || path.startsWith('/credits/')) page = <CreditsPage />;
   else if (path === '/platform/credits' || path.startsWith('/platform/credits/')) page = <PlatformCreditsPage />;
   else if (path === '/accounting/chart-of-accounts') page = <ChartOfAccountsPage />;
+  else if (path === '/accounting/wht-remittance') page = <WhtRemittancePage />;
   else if (path === '/accounting/journal-entries' || path.startsWith('/accounting/journal-entries/')) page = <JournalEntriesPage />;
   else if (path === '/accounting/trial-balance') page = <TrialBalancePage />;
   else if (path === '/accounting/balance-sheet') page = <BalanceSheetPage />;

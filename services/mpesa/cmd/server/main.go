@@ -145,6 +145,29 @@ func main() {
 		Logger:        logger,
 	}
 
+	// STK Push (Phase 2.2). Wired only when a public callback base
+	// URL is configured — without it, Daraja has nowhere to post the
+	// async result and the round-trip cannot complete.
+	stkStore := store.NewSTKRequestStore(pool.Pool)
+	var stkH *handler.STKHandler
+	if cfg.STKCallbackBase != "" {
+		stkH = &handler.STKHandler{
+			DB:            pool,
+			Paybills:      paybills,
+			Credentials:   credentials,
+			InboundEvents: inboundEvents,
+			STKRequests:   stkStore,
+			Audit:         audit,
+			Daraja:        darajaClient,
+			Sealer:        sealer,
+			InternalToken: cfg.InternalToken,
+			CallbackBase:  strings.TrimRight(cfg.STKCallbackBase, "/"),
+			Logger:        logger,
+		}
+	} else {
+		logger.Warn("stk push disabled: MPESA_STK_CALLBACK_BASE empty")
+	}
+
 	allowList, err := middleware.NewIPAllowList(cfg.TrustedIPs, logger)
 	if err != nil {
 		logger.Error("ip allow list", "err", err)
@@ -195,6 +218,7 @@ func main() {
 		Webhook:       webhookH,
 		InboundEvents: inboundH,
 		B2C:           b2cH,
+		STK:           stkH,
 		TenantStore:   tenants,
 		Issuer:        issuer,
 		IPAllowList:   allowList,

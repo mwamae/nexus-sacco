@@ -62,6 +62,34 @@ type DepositHandler struct {
 	// Withdraw computes available = current_balance - SUM(active liens)
 	// and 409s when the requested amount exceeds available.
 	CollateralLiens *store.CollateralLienStore
+
+	// DSID Phase 2.2 — joint accounts. When set, Withdraw on an
+	// account flagged is_joint=true creates a pending row + signer
+	// rows + SMS each owner, rather than executing immediately.
+	Joint JointBridge
+}
+
+// JointBridge is the small surface deposit.go needs from
+// JointAccountsHandler. Defined here to keep the two handlers
+// decoupled and avoid an import cycle.
+type JointBridge interface {
+	ListOwnersOfAccountTx(ctx context.Context, tx pgx.Tx, accountID uuid.UUID) ([]store.JointOwner, error)
+	CreateJointPendingTx(ctx context.Context, tx pgx.Tx, in JointPendingInput) (uuid.UUID, error)
+}
+
+// JointPendingInput is the bridge-side mirror of CreateJointPendingInput
+// used by JointAccountsHandler. Defined here so deposit.go imports
+// only the bridge interface.
+type JointPendingInput struct {
+	TenantID                  uuid.UUID
+	AccountID                 uuid.UUID
+	InitiatedByCounterpartyID uuid.UUID
+	InitiatedByUserID         uuid.UUID
+	Amount                    decimal.Decimal
+	Channel                   string
+	Narration                 string
+	RequiredSigners           int
+	Owners                    []store.JointOwner
 }
 
 func (h *DepositHandler) lookback() time.Duration {
@@ -747,12 +775,49 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 		// short-circuit before any approval-queueing or ledger work
 		// so a misclicked withdraw on a BOSA account is rejected the
 		// same way regardless of whether the toggles are on.
-		product, _, _, lerr := h.loadProductAccount(r.Context(), tx, accountID)
+		product, acct, _, lerr := h.loadProductAccount(r.Context(), tx, accountID)
 		if lerr != nil {
 			return lerr
 		}
 		if product.Segment == domain.SegmentBOSA {
 			return domain.ErrBOSAWithdrawForbidden
+		}
+		// DSID Phase 2.2 — withdrawals on dormant accounts are
+		// blocked until the reactivation workflow approves. Deposits
+		// remain accepted (a member returning to deposit shouldn't be
+		// turned away). Officers see the Reactivate button on the
+		// account detail page.
+		if string(acct.Status) == "dormant" {
+			return httpx.ErrConflict("Withdrawal blocked: account is dormant. File a reactivation request first.")
+		}
+		// DSID Phase 2.2 — joint accounts: withdrawals require
+		// per-rule signing. We create a pending withdrawal +
+		// per-owner signer rows + fire SMS consent tokens; the
+		// actual posting waits until quorum is reached, posted by
+		// a separate "execute approved pending withdrawals"
+		// admin endpoint or sweeper. The Joint handler does the work.
+		if acct.IsJoint && h.Joint != nil {
+			owners, oerr := h.Joint.ListOwnersOfAccountTx(r.Context(), tx, accountID)
+			if oerr != nil {
+				return oerr
+			}
+			pendingID, jerr := h.Joint.CreateJointPendingTx(r.Context(), tx, JointPendingInput{
+				TenantID:                  tid,
+				AccountID:                 accountID,
+				InitiatedByCounterpartyID: acct.CounterpartyID,
+				InitiatedByUserID:         userID,
+				Amount:                    in.Amount,
+				Channel:                   string(in.Channel),
+				Narration:                 in.Narration,
+				RequiredSigners:           acct.RequiredSigners,
+				Owners:                    owners,
+			})
+			if jerr != nil {
+				return jerr
+			}
+			// Surface to the API caller so the UI can poll status.
+			pending = &domain.PendingApproval{ID: pendingID, Kind: "joint_withdrawal_pending"}
+			return nil
 		}
 
 		// Phase 1.5b — cumulative lien check (collateral_deposit_liens

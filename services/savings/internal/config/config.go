@@ -43,6 +43,11 @@ type Config struct {
 	// row (PR #3 Unified Inbox). Blank in dev — the resolve handler
 	// falls back to a User-Agent prefix check.
 	WorkflowInternalToken string
+
+	// MPESA service URL + internal token (Phase 2.2). Used by the
+	// standing-order processor's mpesa_pull source to fire STK push.
+	MpesaURL           string
+	MpesaInternalToken string
 }
 
 func Load() (*Config, error) {
@@ -62,6 +67,8 @@ func Load() (*Config, error) {
 		AccountingURL:             getEnv("ACCOUNTING_SERVICE_URL", "http://localhost:8086"),
 		AccountingInternalToken:   getEnv("ACCOUNTING_INTERNAL_TOKEN", ""),
 		WorkflowInternalToken:     getEnv("WORKFLOW_INTERNAL_TOKEN", ""),
+		MpesaURL:                  getEnv("MPESA_SERVICE_URL", "http://localhost:8087"),
+		MpesaInternalToken:        getEnv("MPESA_INTERNAL_TOKEN", ""),
 	}
 	if len(cfg.JWTSecret) < 32 {
 		return nil, errors.New("JWT_SECRET must be at least 32 bytes")

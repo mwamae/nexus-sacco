@@ -647,6 +647,89 @@ a { color: inherit; text-decoration: none; }
 .field-hint { font-size: 11px; color: var(--fg-3); }
 .field-err { font-size: 11px; color: var(--neg); }
 
+/* ───────── Modal ───────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: oklch(0% 0 0 / 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  z-index: 1000;
+  overflow-y: auto;
+}
+.modal {
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: 0 24px 60px -8px oklch(0% 0 0 / 0.35);
+  width: 100%;
+  max-width: 520px;
+  padding: 20px 22px;
+  max-height: 84vh;
+  overflow-y: auto;
+}
+.modal h3 { font-size: 15px; font-weight: 600; }
+.modal-section {
+  margin-bottom: 16px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* ───────── Radio cards (modal pickers) ───────── */
+.radio-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.radio-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  cursor: pointer;
+  background: var(--surface);
+  transition: border-color 0.12s, background 0.12s;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.radio-card:hover { border-color: var(--border-strong); }
+.radio-card[data-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.radio-card .rc-title { font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.radio-card .rc-sub { font-size: 11px; color: var(--fg-3); }
+
+/* Inline alert (errors inside modals/forms) */
+.alert {
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  font-size: 12px;
+  margin: 8px 0;
+}
+.alert-error { background: var(--neg-bg); color: var(--neg); border: 1px solid var(--neg); }
+
+/* Cadence summary block in the standing-order form */
+.cadence-summary {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--fg-2);
+  line-height: 1.5;
+}
+.cadence-summary strong { color: var(--fg); }
+
 /* ───────── Misc ───────── */
 .divider { height: 1px; background: var(--border); margin: 12px 0; }
 .vdivider { width: 1px; background: var(--border); align-self: stretch; }
