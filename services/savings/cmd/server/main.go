@@ -386,13 +386,90 @@ func main() {
 	// can run coverage.Evaluate at approve-time. loanH.Collaterals
 	// gives the disbursement executor the same gate.
 	collateralStore := store.NewCollateralStore(pool.Pool)
+
+	// Phase 1.5b — internal lien store (deposit liens + share pledges),
+	// advanced store (charge / insurance / custody / auction), and the
+	// third-party pledger consent store. depositH gets the lien store
+	// wired in so its Withdraw handler blocks against active liens.
+	collateralLienStore := store.NewCollateralLienStore(pool.Pool)
+	collateralAdvStore := store.NewCollateralAdvancedStore(pool.Pool)
+	pledgerConsentStore := store.NewPledgerConsentStore(pool.Pool)
+
 	collateralH := &handler.CollateralHandler{
 		DB:          pool,
 		Collaterals: collateralStore,
+		Liens:       collateralLienStore,
 		Logger:      logger,
 	}
+	collateralAdvH := &handler.CollateralAdvancedHandler{
+		DB:          pool,
+		Advanced:    collateralAdvStore,
+		Collaterals: collateralStore,
+		Files:       filestoreSt,
+		Logger:      logger,
+	}
+	pledgerConsentH := &handler.PledgerConsentHandler{
+		DB:       pool,
+		Tokens:   pledgerConsentStore,
+		Files:    filestoreSt,
+		Notifier: notifyClient,
+		Logger:   logger,
+	}
+	publicPledgerConsentH := &handler.PublicPledgerConsentHandler{
+		DB:       pool,
+		Tokens:   pledgerConsentStore,
+		Notifier: notifyClient,
+		Logger:   logger,
+	}
+	collateralReportsH := &handler.CollateralReportsHandler{
+		DB:     pool,
+		Logger: logger,
+	}
+	valuationReportH := &handler.ValuationReportHandler{
+		DB:     pool,
+		Files:  filestoreSt,
+		Logger: logger,
+	}
+
+	// Phase-1 follow-up — Documents / Comments / Score history.
+	loanDocStore := store.NewLoanDocumentStore(pool.Pool)
+	loanCommentsStore := store.NewLoanCommentsStore(pool.Pool)
+	scoreHistoryStore := store.NewLoanScoreHistoryStore(pool.Pool)
+
+	loanDocsH := &handler.LoanDocumentsHandler{
+		DB:     pool,
+		Docs:   loanDocStore,
+		Files:  filestoreSt,
+		Logger: logger,
+	}
+	loanCommentsH := &handler.LoanCommentsHandler{
+		DB:            pool,
+		Comments:      loanCommentsStore,
+		Notifier:      notifyClient,
+		Logger:        logger,
+		PublicBaseURL: cfg.AppDomain,
+	}
+	publicCommentsH := &handler.PublicCommentsHandler{
+		DB:       pool,
+		Comments: loanCommentsStore,
+		Logger:   logger,
+	}
+
+	// Wire the score-history into the application handler + the
+	// auto-rescore hook into the document + guarantor consent handlers.
+	loanAppH.Docs = loanDocStore
+	loanAppH.ScoreHistory = scoreHistoryStore
+	rescoreHook := handler.RescoreInTxHook(loanAppH.RescoreApplicationTx)
+	loanDocsH.RescoreInTx = rescoreHook
+	guarantorConsentH.Docs = loanDocStore
+	guarantorConsentH.RescoreInTx = rescoreHook
+	publicConsentH.RescoreInTx = rescoreHook
+	// The collections-events handler also routes letter doc rows
+	// through the new store.
+	collectionsEventsH.Docs = loanDocStore
 	loanAppH.Collaterals = collateralStore
 	loanH.Collaterals = collateralStore
+	depositH.CollateralLiens = collateralLienStore
 	memberStmtStore := store.NewMemberStatementStore(pool.Pool)
 	memberStmtH := &handler.MemberStatementHandler{
 		DB:         pool,
@@ -622,6 +699,16 @@ func main() {
 		PublicConsent: publicConsentH,
 		// Phase 1.5a — collateral lifecycle + security-coverage card.
 		Collateral: collateralH,
+		// Phase 1.5b — charge / insurance / custody / auction + third-party pledger.
+		CollateralAdvanced:   collateralAdvH,
+		PledgerConsent:       pledgerConsentH,
+		PublicPledgerConsent: publicPledgerConsentH,
+		CollateralReports:    collateralReportsH,
+		// Phase-1 follow-up — Documents / Comments / Score history.
+		LoanDocs:        loanDocsH,
+		LoanComments:    loanCommentsH,
+		PublicComments:  publicCommentsH,
+		ValuationReport: valuationReportH,
 		Health: handler.NewHealthBuilder(
 			pool, cfg.AccountingURL, buildVersion(), bootTime, 0,
 		).Handler(500 * time.Millisecond),

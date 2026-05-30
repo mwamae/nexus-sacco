@@ -289,6 +289,12 @@ func mapRepaymentChannelToReceipt(channel string) domain.ReceiptChannel {
 		return domain.RCStandingOrder
 	case "auto_savings", "payroll", "internal", "":
 		return ""
+	case "auction_proceeds":
+		// Phase 1.5b — proceeds-of-sale from collateral auction. The
+		// repayment posting hits the GL just like any other channel;
+		// the receipt path is intentionally empty (no teller-counter
+		// receipt — the funds come in via the auctioneer's bank wire).
+		return ""
 	}
 	return ""
 }
@@ -328,7 +334,9 @@ func repaymentCashAccount(channel string) string {
 	switch strings.ToLower(channel) {
 	case "mpesa":
 		return "1030"
-	case "bank", "bank_transfer":
+	case "bank", "bank_transfer", "auction_proceeds":
+		// Phase 1.5b — auction proceeds wire into the SACCO's bank
+		// account (the auctioneer cuts a cheque + transfers).
 		return "1020"
 	case "auto_savings":
 		return "2000" // Repayment came from the member's savings account

@@ -53,6 +53,8 @@ import {
 } from '../../api/client';
 import CollateralTab from '../../components/CollateralTab';
 import SecurityCoverageCard from '../../components/SecurityCoverageCard';
+import DocumentsTab from '../../components/Loans/DocumentsTab';
+import CommentsTab from '../../components/Loans/CommentsTab';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
 
 type TabId = 'overview' | 'schedule' | 'transactions' | 'guarantors' | 'collateral' | 'documents' | 'collections' | 'restructure' | 'classification' | 'comments';
@@ -205,11 +207,11 @@ export default function LoanDetail() {
               onChanged={() => { void refresh(); }}
             />
           )}
-          {activeTab === 'documents'    && <PlaceholderTab phase="Phase 2" what="Documents (upload + download)" />}
+          {activeTab === 'documents'    && <DocumentsTab loanId={l.id} onChanged={refresh} />}
           {activeTab === 'collections'  && <CollectionsTab loanID={id} />}
           {activeTab === 'restructure'  && <RestructureTab txns={detail.transactions} currency={currency} />}
           {activeTab === 'classification' && <ClassificationTab loanID={id} />}
-          {activeTab === 'comments'     && <PlaceholderTab phase="Phase 2" what="Comments thread" />}
+          {activeTab === 'comments'     && <CommentsTab loanId={l.id} onChanged={refresh} />}
         </div>
       </div>
 

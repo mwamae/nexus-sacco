@@ -52,6 +52,13 @@ type GuarantorConsentHandler struct {
 	Guarantees *store.LoanGuaranteeStore
 	Files      *filestore.Store
 	Logger     *slog.Logger
+	// Phase-1 follow-up — route loan_documents writes through the
+	// central store. Nil-safe; when nil the handler falls back to the
+	// inline INSERT for backwards compatibility.
+	Docs *store.LoanDocumentStore
+	// Phase-1 follow-up — auto-rescore on guarantor accept/decline.
+	// Nil-safe.
+	RescoreInTx RescoreInTxHook
 }
 
 // ─────────── Admin: respond-with-proof ───────────
@@ -124,12 +131,32 @@ func (h *GuarantorConsentHandler) AdminRespond(w http.ResponseWriter, r *http.Re
 			httpx.WriteErr(w, r, httpx.ErrInternal())
 			return
 		}
-		// Persist loan_documents row.
+		// Persist loan_documents row — routed through the central
+		// store so the supersede + expiry plumbing is consistent.
 		err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 			desc := "Guarantor consent proof"
 			if note != "" {
 				desc += ": " + note
 			}
+			if h.Docs != nil {
+				appIDCopy := appID
+				descCopy := desc
+				d, derr := h.Docs.InsertTx(r.Context(), tx, store.InsertInput{
+					ApplicationID: &appIDCopy,
+					Kind:          domain.LoanDocKind("guarantor_consent_proof"),
+					Description:   &descCopy,
+					StoragePath:   saved.StoragePath,
+					Mime:          saved.MimeType,
+					SizeBytes:     saved.Size,
+					UploadedBy:    uid,
+				})
+				if derr != nil {
+					return derr
+				}
+				docID = &d.ID
+				return nil
+			}
+			// Fallback for early-boot variants without the store wired in.
 			var newDocID uuid.UUID
 			if err := tx.QueryRow(r.Context(), `
 				INSERT INTO loan_documents (
@@ -162,7 +189,14 @@ func (h *GuarantorConsentHandler) AdminRespond(w http.ResponseWriter, r *http.Re
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		var err error
 		resp, err = h.Guarantees.RespondTx(r.Context(), tx, gID, accept, declinePtr, docID, uid)
-		return err
+		if err != nil {
+			return err
+		}
+		// Phase-1 follow-up — auto-rescore on accept/decline.
+		if resp != nil && h.RescoreInTx != nil {
+			_ = h.RescoreInTx(r.Context(), tx, resp.ApplicationID, "guarantor_changed")
+		}
+		return nil
 	})
 	if err != nil {
 		httpx.WriteErr(w, r, err); return

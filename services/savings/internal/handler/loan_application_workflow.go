@@ -22,6 +22,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -354,6 +355,22 @@ func (h *LoanApplicationHandler) ResolveFromWorkflow(w http.ResponseWriter, r *h
 						return oerr
 					}
 				}
+				// Phase 1.5b — charge / insurance gate. Runs even when
+				// the coverage gate was overridden — legal filings +
+				// insurance aren't overridable (they're regulatory, not
+				// internal cover %). 409 with the missing-item reason.
+				if err := CheckCollateralChargeInsuranceGateTx(r.Context(), tx, app.ID); err != nil {
+					return err
+				}
+			}
+
+			// Phase-1 follow-up — required-documents gate. Refuses to
+			// advance until every kind in product.required_document_kinds
+			// has at least one current, non-expired loan_documents row.
+			if h.Docs != nil {
+				if err := checkRequiredDocsGateTx(r.Context(), tx, h.Docs, app.ID); err != nil {
+					return err
+				}
 			}
 
 			updated, uerr := h.Applications.UpdateStatusTx(r.Context(), tx, app.ID, store.AppTransition{
@@ -463,6 +480,48 @@ func intFromAny(v any) (int, bool) {
 		return int(i), err == nil
 	}
 	return 0, false
+}
+
+// checkRequiredDocsGateTx — called by the workflow approve callback.
+// Refuses to advance when any kind in product.required_document_kinds
+// lacks a current non-expired loan_documents row. 409 body lists the
+// missing/expired kinds so the inbox can surface them inline.
+func checkRequiredDocsGateTx(ctx context.Context, tx pgx.Tx, docs *store.LoanDocumentStore, appID uuid.UUID) error {
+	var required []string
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(p.required_document_kinds, ARRAY[]::text[])
+		  FROM loan_applications a
+		  JOIN loan_products p ON p.id = a.product_id
+		 WHERE a.id = $1
+	`, appID).Scan(&required); err != nil {
+		return err
+	}
+	if len(required) == 0 {
+		return nil
+	}
+	cfg, err := docs.LoadTenantDocConfigTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	status, err := docs.RequiredDocsStatusTx(ctx, tx, appID, required, cfg.WarningDays)
+	if err != nil {
+		return err
+	}
+	if status.AllSatisfied {
+		return nil
+	}
+	missing := []string{}
+	for _, k := range status.Required {
+		s := status.Status[k]
+		if !s.Satisfied {
+			reason := s.Reason
+			if reason == "" {
+				reason = "missing"
+			}
+			missing = append(missing, k+" ("+reason+")")
+		}
+	}
+	return httpx.ErrConflict("Cannot approve: required document(s) missing or expired — " + strings.Join(missing, ", "))
 }
 
 func strFromContext(ctx map[string]any, key string) *string {

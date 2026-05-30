@@ -3607,7 +3607,14 @@ export type CollateralDetail = {
 
 export async function getCollateralDetail(id: string): Promise<CollateralDetail> {
   const r = await api.get(`/v1/collateral/${id}`);
-  return r.data.data;
+  // Backend serializes empty slices as `null`; default so consumers
+  // can call `.length` / `.map` without guarding every site.
+  const d = r.data.data ?? {};
+  return {
+    item: d.item,
+    valuation_history: d.valuation_history ?? [],
+    events: d.events ?? [],
+  };
 }
 
 export async function createApplicationCollateral(
@@ -3657,6 +3664,53 @@ export async function valueCollateral(
   return r.data.data;
 }
 
+// Phase-1 follow-up — valuation report upload.
+// Returns { storage_path, mime, size, filename }. Caller passes the
+// storage_path on the subsequent valueCollateral() create call.
+export async function uploadValuationReport(
+  collateralId: string,
+  file: File,
+): Promise<{ storage_path: string; mime: string; size: number; filename: string }> {
+  const form = new FormData();
+  form.set('file', file);
+  const r = await api.post(`/v1/collateral/${collateralId}/valuation-report`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return r.data.data;
+}
+
+// URL for inline-streaming a valuation's report PDF/image (no token in
+// URL — relies on the SPA's bearer auth via the proxy). Pair with
+// openAuthedFile() below for the click handler.
+export function valuationReportDownloadURL(valuationId: string): string {
+  return `/api/v1/collateral-valuations/${valuationId}/report`;
+}
+
+export function collateralOwnershipDocURL(collateralId: string): string {
+  return `/api/v1/collateral/${collateralId}/ownership-doc`;
+}
+
+export function collateralVerificationPhotoURL(collateralId: string, idx: number): string {
+  return `/api/v1/collateral/${collateralId}/verification-photos/${idx}`;
+}
+
+// openAuthedFile — fetches the URL with the SPA's bearer token via
+// axios, wraps the bytes in a blob, and opens it in a new tab. Solves
+// the "<a target=_blank> sends no auth header" problem for file
+// download endpoints that gate on Authorization.
+export async function openAuthedFile(url: string): Promise<void> {
+  // axios baseURL is '/api' and `url` starts with '/api/...', so we
+  // strip the prefix to avoid double-prefixing.
+  const path = url.startsWith('/api') ? url.slice(4) : url;
+  const r = await api.get(path, { responseType: 'blob' });
+  const blob = r.data as Blob;
+  const objectURL = URL.createObjectURL(blob);
+  // Open in a new tab. Revoke the blob URL after a short delay so the
+  // browser has time to start fetching.
+  window.open(objectURL, '_blank');
+  setTimeout(() => URL.revokeObjectURL(objectURL), 30_000);
+}
+
 export async function pledgeCollateral(id: string): Promise<LoanCollateralItem> {
   const r = await api.post(`/v1/collateral/${id}/pledge`, {});
   return r.data.data;
@@ -3665,6 +3719,158 @@ export async function pledgeCollateral(id: string): Promise<LoanCollateralItem> 
 export async function releaseCollateral(id: string, reason: string): Promise<LoanCollateralItem> {
   const r = await api.post(`/v1/collateral/${id}/release`, { reason });
   return r.data.data;
+}
+
+// Phase-1 follow-up — flip 'pledged' → 'auctioned'. After this you
+// record individual auction events (handover, notice, sale, proceeds)
+// via the auction-event endpoint.
+export async function markCollateralAuctioned(id: string, reason: string): Promise<LoanCollateralItem> {
+  const r = await api.post(`/v1/collateral/${id}/mark-auctioned`, { reason });
+  return r.data.data;
+}
+
+// ─── Phase 1.5b — charge / insurance / custody / auction / pledger ───
+
+export type ChargeRegistry = 'lands_registry' | 'ntsa' | 'stockbroker_custodian' | 'kra' | 'other';
+
+export async function recordCollateralCharge(
+  id: string,
+  body: { registry: ChargeRegistry; reference: string; registered_at: string; certificate_path?: string },
+): Promise<void> {
+  await api.post(`/v1/collateral/${id}/charge`, body);
+}
+
+export async function dischargeCollateralCharge(id: string, discharge_ref: string): Promise<void> {
+  await api.post(`/v1/collateral/${id}/charge/discharge`, { discharge_ref });
+}
+
+export type CollateralInsuranceBody = {
+  provider_name: string;
+  policy_no: string;
+  effective_from: string;
+  effective_to: string;
+  premium_amount?: string;
+  sum_insured: string;
+  policy_doc_path?: string;
+  notes?: string;
+};
+
+export async function recordCollateralInsurance(id: string, body: CollateralInsuranceBody): Promise<CollateralInsurancePolicy> {
+  const r = await api.post(`/v1/collateral/${id}/insurance`, body);
+  return r.data.data;
+}
+
+export type CollateralInsurancePolicy = {
+  id: string;
+  collateral_id: string;
+  provider_name: string;
+  policy_no: string;
+  effective_from: string;
+  effective_to: string;
+  premium_amount?: string;
+  sum_insured: string;
+  status: 'active' | 'expired' | 'cancelled';
+  is_current: boolean;
+  policy_doc_path?: string;
+  notes?: string;
+  created_at: string;
+};
+
+export async function getCollateralInsuranceHistory(id: string): Promise<{ items: CollateralInsurancePolicy[] }> {
+  const r = await api.get(`/v1/collateral/${id}/insurance/history`);
+  return { items: r.data?.data?.items ?? [] };
+}
+
+export type CustodyMovement = 'checked_in' | 'checked_out' | 'returned_to_borrower';
+
+export type CustodyMovementBody = {
+  document_kind: string;
+  movement: CustodyMovement;
+  custodian_user_id?: string;
+  borrower_signature_path?: string;
+  location_code?: string;
+  notes?: string;
+};
+
+export async function recordCollateralCustody(id: string, body: CustodyMovementBody): Promise<void> {
+  await api.post(`/v1/collateral/${id}/custody`, body);
+}
+
+export type CustodyMovementRow = {
+  id: string;
+  document_kind: string;
+  movement: CustodyMovement;
+  movement_at: string;
+  movement_by: string;
+  custodian_user_id?: string;
+  borrower_signature_path?: string;
+  location_code?: string;
+  notes?: string;
+};
+
+export async function getCollateralCustodyTimeline(id: string): Promise<{ items: CustodyMovementRow[] }> {
+  const r = await api.get(`/v1/collateral/${id}/custody`);
+  return { items: r.data?.data?.items ?? [] };
+}
+
+export type AuctionEventKind =
+  | 'handover_to_auctioneer' | 'auction_notice_published' | 'auction_held'
+  | 'sold' | 'reserve_not_met' | 'rescheduled' | 'proceeds_received';
+
+export type AuctionEventBody = {
+  event_kind: AuctionEventKind;
+  occurred_at?: string;
+  amount?: string;
+  buyer_details?: string;
+  auctioneer_name?: string;
+  notes?: string;
+  doc_path?: string;
+};
+
+export async function recordCollateralAuctionEvent(id: string, body: AuctionEventBody): Promise<void> {
+  await api.post(`/v1/collateral/${id}/auction-event`, body);
+}
+
+export type AuctionEventRow = {
+  id: string;
+  event_kind: AuctionEventKind;
+  occurred_at: string;
+  amount?: string;
+  buyer_details?: string;
+  auctioneer_name?: string;
+  notes?: string;
+  doc_path?: string;
+};
+
+export async function getCollateralAuctionEvents(id: string): Promise<{ items: AuctionEventRow[] }> {
+  const r = await api.get(`/v1/collateral/${id}/auction-events`);
+  return { items: r.data?.data?.items ?? [] };
+}
+
+// Third-party pledger admin endpoints.
+export async function issuePledgerConsent(collateralId: string): Promise<{ attempt_number: number }> {
+  const r = await api.post(`/v1/collateral/${collateralId}/pledger/issue`, {});
+  return r.data.data;
+}
+
+export type PledgeGivenRow = {
+  collateral_id: string;
+  application_id: string;
+  application_no: string;
+  loan_no?: string;
+  borrower_name: string;
+  kind: string;
+  description: string;
+  estimated_value: string;
+  forced_sale_value?: string;
+  status: string;
+  pledger_consent_status?: string;
+  is_self_pledge: boolean;
+};
+
+export async function getPledgesGivenByCounterparty(counterpartyId: string): Promise<{ items: PledgeGivenRow[]; total: number }> {
+  const r = await api.get(`/v1/loan-collateral/by-counterparty/${counterpartyId}`);
+  return { items: r.data?.data?.items ?? [], total: r.data?.data?.total ?? 0 };
 }
 
 export type LoanScoreFactor = { name: string; score: number; weight: number; note: string };
@@ -6984,6 +7190,305 @@ export async function getLoanReportTopN(metric: 'outstanding' | 'disbursed' | 'c
 export function loanReportCSVURL(report: string, extra: Record<string, string> = {}): string {
   const p = new URLSearchParams({ format: 'csv', ...extra });
   return `/api/v1/loans/reports/${report}?${p.toString()}`;
+}
+
+// ─── Phase 1.5b — collateral reports ───
+
+export type CollateralExposureRow = {
+  loan_id: string;
+  loan_no: string;
+  member_name: string;
+  product_name: string;
+  outstanding: string;
+  guarantor_cover: string;
+  collateral_fsv: string;
+  security_model: string;
+  shortfall: string;
+};
+
+export async function getCollateralExposure(): Promise<{ items: CollateralExposureRow[]; total: number }> {
+  const r = await api.get('/v1/loans/reports/collateral-exposure');
+  return { items: r.data?.data?.items ?? [], total: r.data?.data?.total ?? 0 };
+}
+
+export type CollateralByKindRow = { kind: string; item_count: number; total_fsv: string };
+
+export async function getCollateralByKind(): Promise<{ items: CollateralByKindRow[]; total: number }> {
+  const r = await api.get('/v1/loans/reports/collateral-by-kind');
+  return { items: r.data?.data?.items ?? [], total: r.data?.data?.total ?? 0 };
+}
+
+export type ValuationExpiringRow = {
+  collateral_id: string;
+  loan_no: string;
+  member_name: string;
+  kind: string;
+  description: string;
+  expires_at: string;
+  days_to_expiry: number;
+};
+
+export async function getValuationsExpiring(days = 90): Promise<{ items: ValuationExpiringRow[]; total: number; window_days: number }> {
+  const r = await api.get(`/v1/loans/reports/collateral-valuations-expiring?days=${days}`);
+  return {
+    items: r.data?.data?.items ?? [],
+    total: r.data?.data?.total ?? 0,
+    window_days: r.data?.data?.window_days ?? days,
+  };
+}
+
+export type InsuranceExpiringRow = {
+  collateral_id: string;
+  loan_no: string;
+  member_name: string;
+  kind: string;
+  description: string;
+  provider: string;
+  policy_no: string;
+  expires_at: string;
+  days_to_expiry: number;
+  status: string;
+};
+
+export async function getInsuranceExpiring(days = 30): Promise<{ items: InsuranceExpiringRow[]; total: number; window_days: number }> {
+  const r = await api.get(`/v1/loans/reports/collateral-insurance-expiring?days=${days}`);
+  return {
+    items: r.data?.data?.items ?? [],
+    total: r.data?.data?.total ?? 0,
+    window_days: r.data?.data?.window_days ?? days,
+  };
+}
+
+export type ChargeStatusRow = {
+  collateral_id: string;
+  loan_no: string;
+  member_name: string;
+  kind: string;
+  description: string;
+  status: string;
+  charge_required: boolean;
+  charge_registry: string;
+  charge_reference: string;
+  charge_registered: boolean;
+  days_since_pledge: number;
+};
+
+export async function getChargeRegistrationStatus(): Promise<{ items: ChargeStatusRow[]; total: number }> {
+  const r = await api.get('/v1/loans/reports/collateral-charge-status');
+  return { items: r.data?.data?.items ?? [], total: r.data?.data?.total ?? 0 };
+}
+
+// ─── Phase-1 follow-up — Documents / Score history / Comments ───
+
+export type LoanDocumentRow = {
+  id: string;
+  application_id?: string;
+  loan_id?: string;
+  kind: string;
+  description?: string;
+  storage_path: string;
+  mime: string;
+  size_bytes: number;
+  uploaded_at: string;
+  uploaded_by?: string;
+  expires_at?: string;
+  review_status: 'pending' | 'reviewed' | 'needs_replacement' | 'flagged';
+  reviewed_by?: string;
+  reviewed_at?: string;
+  review_notes?: string;
+  is_current: boolean;
+  superseded_by_id?: string;
+};
+
+export async function listApplicationDocuments(appId: string, includeHistory = false): Promise<{ items: LoanDocumentRow[]; total: number }> {
+  const r = await api.get(`/v1/loan-applications/${appId}/documents${includeHistory ? '?include_history=true' : ''}`);
+  return { items: r.data?.data?.items ?? [], total: r.data?.data?.total ?? 0 };
+}
+
+export async function listLoanDocuments(loanId: string, includeHistory = false): Promise<{ items: LoanDocumentRow[]; total: number }> {
+  const r = await api.get(`/v1/loans/${loanId}/documents${includeHistory ? '?include_history=true' : ''}`);
+  return { items: r.data?.data?.items ?? [], total: r.data?.data?.total ?? 0 };
+}
+
+export function loanDocumentDownloadURL(id: string): string {
+  return `/api/v1/loan-documents/${id}/download`;
+}
+
+export function loanApplicationBundleURL(appId: string): string {
+  return `/api/v1/loan-applications/${appId}/documents/bundle.pdf`;
+}
+
+export function loanBundleURL(loanId: string): string {
+  return `/api/v1/loans/${loanId}/documents/bundle.pdf`;
+}
+
+export async function uploadApplicationDocument(appId: string, file: File, kind: string, description?: string, expiresAt?: string): Promise<LoanDocumentRow> {
+  const form = new FormData();
+  form.set('file', file);
+  form.set('kind', kind);
+  if (description) form.set('description', description);
+  if (expiresAt) form.set('expires_at', expiresAt);
+  const r = await api.post(`/v1/loan-applications/${appId}/documents`, form, { headers: { 'Content-Type': 'multipart/form-data' } });
+  return r.data.data;
+}
+
+export async function uploadLoanDocument(loanId: string, file: File, kind: string, description?: string, expiresAt?: string): Promise<LoanDocumentRow> {
+  const form = new FormData();
+  form.set('file', file);
+  form.set('kind', kind);
+  if (description) form.set('description', description);
+  if (expiresAt) form.set('expires_at', expiresAt);
+  const r = await api.post(`/v1/loans/${loanId}/documents`, form, { headers: { 'Content-Type': 'multipart/form-data' } });
+  return r.data.data;
+}
+
+export async function reviewLoanDocument(id: string, status: 'reviewed' | 'needs_replacement' | 'flagged', notes?: string): Promise<LoanDocumentRow> {
+  const r = await api.post(`/v1/loan-documents/${id}/review`, { status, notes });
+  return r.data.data;
+}
+
+export async function deleteLoanDocument(id: string): Promise<void> {
+  await api.delete(`/v1/loan-documents/${id}`);
+}
+
+export type RequiredDocStatus = {
+  satisfied: boolean;
+  current_doc_id?: string;
+  expires_at?: string;
+  warning?: string;
+  reason?: string;
+};
+
+export type RequiredDocsStatusResp = {
+  required: string[];
+  status: Record<string, RequiredDocStatus>;
+  all_satisfied: boolean;
+  summary: string;
+};
+
+export async function getRequiredDocsStatus(appId: string): Promise<RequiredDocsStatusResp> {
+  const r = await api.get(`/v1/loan-applications/${appId}/required-documents-status`);
+  return r.data.data;
+}
+
+// ── Score history ──
+
+export type LoanScoreHistoryEntry = {
+  id: string;
+  application_id: string;
+  scored_at: string;
+  scored_by?: string;
+  credit_score?: number;
+  risk_band?: string;
+  affordability_pass?: boolean;
+  dti_ratio?: string;
+  net_disposable_income?: string;
+  computed_max_amount?: string;
+  computed_max_installment?: string;
+  recommended_amount?: string;
+  recommended_term_months?: number;
+  scoring_details?: unknown; // raw JSON
+  scoring_flags?: unknown;
+  trigger_reason?: string;
+};
+
+export async function getScoreHistory(appId: string): Promise<{ items: LoanScoreHistoryEntry[]; total: number }> {
+  const r = await api.get(`/v1/loan-applications/${appId}/score/history`);
+  return { items: r.data?.data?.items ?? [], total: r.data?.data?.total ?? 0 };
+}
+
+export async function rescoreApplication(appId: string, trigger = 'manual_rescore'): Promise<unknown> {
+  const r = await api.post(`/v1/loan-applications/${appId}/score`, {}, {
+    headers: { 'X-Score-Trigger': trigger },
+  });
+  return r.data?.data ?? r.data;
+}
+
+// ── Comments ──
+
+export type LoanCommentRow = {
+  id: string;
+  application_id?: string;
+  loan_id?: string;
+  parent_id?: string;
+  visibility: 'internal' | 'external';
+  body: string;
+  attachment_paths?: string[];
+  author_user_id?: string;
+  author_member_id?: string;
+  author_name?: string;
+  posted_at: string;
+  edited_at?: string;
+  pinned: boolean;
+  member_read_at?: string;
+  reply_token?: string;
+  is_deleted: boolean;
+};
+
+export type LoanCommentTemplate = {
+  id: string;
+  label: string;
+  visibility: 'internal' | 'external';
+  body: string;
+};
+
+export async function listApplicationComments(appId: string): Promise<{ items: LoanCommentRow[]; total: number }> {
+  const r = await api.get(`/v1/loan-applications/${appId}/comments`);
+  return { items: r.data?.data?.items ?? [], total: r.data?.data?.total ?? 0 };
+}
+
+export async function listLoanComments(loanId: string): Promise<{ items: LoanCommentRow[]; total: number }> {
+  const r = await api.get(`/v1/loans/${loanId}/comments`);
+  return { items: r.data?.data?.items ?? [], total: r.data?.data?.total ?? 0 };
+}
+
+export async function postApplicationComment(appId: string, body: {
+  visibility: 'internal' | 'external';
+  body: string;
+  parent_id?: string;
+  attachment_paths?: string[];
+  template_id?: string;
+}): Promise<LoanCommentRow> {
+  const r = await api.post(`/v1/loan-applications/${appId}/comments`, body);
+  return r.data.data;
+}
+
+export async function postLoanComment(loanId: string, body: {
+  visibility: 'internal' | 'external';
+  body: string;
+  parent_id?: string;
+  attachment_paths?: string[];
+  template_id?: string;
+}): Promise<LoanCommentRow> {
+  const r = await api.post(`/v1/loans/${loanId}/comments`, body);
+  return r.data.data;
+}
+
+export async function editLoanComment(id: string, body: string): Promise<LoanCommentRow> {
+  const r = await api.patch(`/v1/loan-comments/${id}`, { body });
+  return r.data.data;
+}
+
+export async function pinLoanComment(id: string, pinned: boolean): Promise<LoanCommentRow> {
+  const r = await api.post(`/v1/loan-comments/${id}/pin`, { pinned });
+  return r.data.data;
+}
+
+export async function deleteLoanComment(id: string): Promise<void> {
+  await api.delete(`/v1/loan-comments/${id}`);
+}
+
+export async function listLoanCommentTemplates(): Promise<{ items: LoanCommentTemplate[] }> {
+  const r = await api.get('/v1/loan-comments/templates');
+  return { items: r.data?.data?.items ?? [] };
+}
+
+export async function searchLoanComments(q: string, scope: { applicationId?: string; loanId?: string }): Promise<{ items: LoanCommentRow[] }> {
+  const p = new URLSearchParams({ q });
+  if (scope.applicationId) p.set('application_id', scope.applicationId);
+  if (scope.loanId) p.set('loan_id', scope.loanId);
+  const r = await api.get(`/v1/loan-comments/search?${p.toString()}`);
+  return { items: r.data?.data?.items ?? [] };
 }
 
 // ─── SASRA quarterly extract ───

@@ -132,6 +132,37 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
+        // Phase 1.5a/b — collateral standalone endpoints
+        // (/v1/collateral/{id}/*, /v1/loan-collateral/by-counterparty/{id}).
+        '/api/v1/collateral': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/loan-collateral': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        // Phase-1 follow-up — valuation report download.
+        '/api/v1/collateral-valuations': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        // Phase-1 follow-up — Documents + Comments standalone endpoints
+        // (/v1/loan-documents/{id}/*, /v1/loan-comments/{id}/*,
+        // /v1/loan-comments/templates, /v1/loan-comments/search).
+        '/api/v1/loan-documents': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        '/api/v1/loan-comments': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
         '/api/v1/loans': {
           target: savingsTarget,
           changeOrigin: false,
@@ -142,6 +173,18 @@ export default defineConfig(({ mode }) => {
         // API routes which the savings service exposes outside its
         // /v1 auth wing.
         '/api/p/guarantor-consent': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        // Phase 1.5b — public third-party pledger consent flow.
+        '/api/p/pledger-consent': {
+          target: savingsTarget,
+          changeOrigin: false,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+        // Phase-1 follow-up — public loan-comments member reply route.
+        '/api/p/comments': {
           target: savingsTarget,
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/api/, ''),

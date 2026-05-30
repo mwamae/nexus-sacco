@@ -46,7 +46,10 @@ const collateralCols = `
 	proposed_by, proposed_at, verified_by, verified_at,
 	verification_notes, verification_photos,
 	pledged_by, pledged_at, released_by, released_at,
-	released_reason, rejected_reason
+	released_reason, rejected_reason,
+	pledger_counterparty_id, pledger_consent_status, pledger_consent_at, pledger_consent_doc_path,
+	charge_registry::text, charge_reference, charge_registered_at, charge_registered_by,
+	charge_discharge_ref, charge_discharged_at, charge_certificate_path
 `
 
 func scanCollateral(row pgx.Row) (*domain.LoanCollateralItem, error) {
@@ -60,6 +63,9 @@ func scanCollateral(row pgx.Row) (*domain.LoanCollateralItem, error) {
 		&c.VerificationNotes, &photosJSON,
 		&c.PledgedBy, &c.PledgedAt, &c.ReleasedBy, &c.ReleasedAt,
 		&c.ReleasedReason, &c.RejectedReason,
+		&c.PledgerCounterpartyID, &c.PledgerConsentStatus, &c.PledgerConsentAt, &c.PledgerConsentDocPath,
+		&c.ChargeRegistry, &c.ChargeReference, &c.ChargeRegisteredAt, &c.ChargeRegisteredBy,
+		&c.ChargeDischargeRef, &c.ChargeDischargedAt, &c.ChargeCertificatePath,
 	)
 	if err != nil {
 		return nil, err
@@ -244,6 +250,29 @@ func (s *CollateralStore) PledgeTx(ctx context.Context, tx pgx.Tx, id, actor uui
 		WHERE id = $1 AND status = 'valued'
 		RETURNING `+collateralCols,
 		id, actor,
+	)
+	c, err := scanCollateral(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrCollateralWrongState
+	}
+	return c, err
+}
+
+// MarkAuctionedTx flips 'pledged' → 'auctioned'. Terminal state —
+// individual auction events (handover, notice, sale, proceeds) are
+// tracked on collateral_auction_events. We re-use the released_*
+// columns to stamp the actor + timestamp so the audit shape stays
+// consistent with the release path.
+func (s *CollateralStore) MarkAuctionedTx(ctx context.Context, tx pgx.Tx, id, actor uuid.UUID, reason string) (*domain.LoanCollateralItem, error) {
+	row := tx.QueryRow(ctx, `
+		UPDATE loan_collateral SET
+		  status          = 'auctioned',
+		  released_by     = $2,
+		  released_at     = now(),
+		  released_reason = $3
+		WHERE id = $1 AND status = 'pledged'
+		RETURNING `+collateralCols,
+		id, actor, reason,
 	)
 	c, err := scanCollateral(row)
 	if errors.Is(err, pgx.ErrNoRows) {

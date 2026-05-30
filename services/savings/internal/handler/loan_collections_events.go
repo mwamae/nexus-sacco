@@ -52,6 +52,11 @@ type LoanCollectionsEventsHandler struct {
 	Collections *store.LoanCollectionsStore
 	Notifier    *notifier.Client
 	Logger      *slog.Logger
+	// Phase-1 follow-up — single seam for loan_documents writes.
+	// Letter PDF persistence routes through this now (the previous
+	// inline INSERT wrote to non-existent columns file_path/mime_type
+	// — the row was silently failing to persist).
+	Docs *store.LoanDocumentStore
 }
 
 // ─────────── helpers ───────────
@@ -679,13 +684,21 @@ func (h *LoanCollectionsEventsHandler) GenerateLetter(w http.ResponseWriter, r *
 
 	// Persist the loan_documents row + emit event + log contact, all in one tx.
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
-		// Insert document only if PDF rendered.
-		if pdfResp != nil {
-			if _, err := tx.Exec(r.Context(), `
-				INSERT INTO loan_documents (tenant_id, loan_id, kind, file_path, mime_type, uploaded_by)
-				VALUES (current_tenant_id(), $1, $2::loan_doc_kind, $3, 'application/pdf', $4)
-			`, loanID, kind.LoanDocKind(), pdfResp.StoragePath, uid); err != nil {
-				return err
+		// Insert document only if PDF rendered. Uses the central store
+		// so the supersede + expiry plumbing stays consistent with
+		// every other loan_documents writer.
+		if pdfResp != nil && h.Docs != nil {
+			desc := fmt.Sprintf("Collections letter: %s", string(kind))
+			if _, derr := h.Docs.InsertTx(r.Context(), tx, store.InsertInput{
+				LoanID:      &loanID,
+				Kind:        domain.LoanDocKind(kind.LoanDocKind()),
+				Description: &desc,
+				StoragePath: pdfResp.StoragePath,
+				Mime:        "application/pdf",
+				SizeBytes:   0, // notification service didn't return size
+				UploadedBy:  uid,
+			}); derr != nil {
+				return derr
 			}
 		}
 		contact, err := h.Collections.LogContactTx(r.Context(), tx, &domain.CollectionContact{

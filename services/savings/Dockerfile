@@ -23,6 +23,14 @@
 #                                        consent invites to guarantors
 #                                        who haven't responded yet
 #                                        (Loans Phase 5)
+#   /usr/local/bin/collateral-revaluation-reminder — daily worker that
+#                                        nudges officers when a pledged
+#                                        collateral's valuation is
+#                                        nearing expiry (Phase 1.5b)
+#   /usr/local/bin/collateral-insurance-reminder   — daily worker that
+#                                        nudges members + flips expired
+#                                        policies on collateral
+#                                        insurance (Phase 1.5b)
 #
 # Compose decides which one each container runs by overriding ENTRYPOINT.
 
@@ -40,7 +48,9 @@ RUN go build -ldflags="-s -w" -o /out/savings            ./cmd/server && \
     go build -ldflags="-s -w" -o /out/loan-snapshotter   ./cmd/loan-snapshotter && \
     go build -ldflags="-s -w" -o /out/dpd-classifier     ./cmd/dpd-classifier && \
     go build -ldflags="-s -w" -o /out/collections-engine ./cmd/collections-engine && \
-    go build -ldflags="-s -w" -o /out/guarantor-reminder ./cmd/guarantor-reminder
+    go build -ldflags="-s -w" -o /out/guarantor-reminder ./cmd/guarantor-reminder && \
+    go build -ldflags="-s -w" -o /out/collateral-revaluation-reminder ./cmd/collateral-revaluation-reminder && \
+    go build -ldflags="-s -w" -o /out/collateral-insurance-reminder   ./cmd/collateral-insurance-reminder
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget && adduser -D -u 10001 app
@@ -56,6 +66,8 @@ COPY --from=build /out/loan-snapshotter   /usr/local/bin/loan-snapshotter
 COPY --from=build /out/dpd-classifier     /usr/local/bin/dpd-classifier
 COPY --from=build /out/collections-engine /usr/local/bin/collections-engine
 COPY --from=build /out/guarantor-reminder /usr/local/bin/guarantor-reminder
+COPY --from=build /out/collateral-revaluation-reminder /usr/local/bin/collateral-revaluation-reminder
+COPY --from=build /out/collateral-insurance-reminder   /usr/local/bin/collateral-insurance-reminder
 ENV SAVINGS_UPLOADS_DIR=/var/lib/savings-uploads
 EXPOSE 8084
 ENTRYPOINT ["/usr/local/bin/savings"]

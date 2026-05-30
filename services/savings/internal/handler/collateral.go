@@ -32,6 +32,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -52,7 +53,11 @@ import (
 type CollateralHandler struct {
 	DB          *db.Pool
 	Collaterals *store.CollateralStore
-	Logger      *slog.Logger
+	// Phase 1.5b — internal lien/pledge placement for fixed_deposit_lien
+	// and listed_shares kinds. Nil-safe; when nil the handler treats
+	// those kinds as descriptive-text only.
+	Liens  *store.CollateralLienStore
+	Logger *slog.Logger
 }
 
 // hasPerm — local helper, mirrors middleware.RequirePermission but
@@ -81,6 +86,17 @@ type createCollateralReq struct {
 	EstimatedValue string  `json:"estimated_value"`
 	OwnershipPath  *string `json:"ownership_path,omitempty"`
 	Notes          *string `json:"notes,omitempty"`
+
+	// Phase 1.5b — third-party pledger (NULL ⇒ self-pledge).
+	PledgerCounterpartyID *string `json:"pledger_counterparty_id,omitempty"`
+
+	// Phase 1.5b — internal-kind pledge fields. Required when
+	// kind = 'fixed_deposit_lien' (deposit_account_id + liened_amount)
+	// or kind = 'listed_shares' (share_account_id + pledged_share_count).
+	DepositAccountID  *string `json:"deposit_account_id,omitempty"`
+	LienedAmount      *string `json:"liened_amount,omitempty"`
+	ShareAccountID    *string `json:"share_account_id,omitempty"`
+	PledgedShareCount *int    `json:"pledged_share_count,omitempty"`
 }
 
 func (h *CollateralHandler) CreateForApplication(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +119,58 @@ func (h *CollateralHandler) CreateForApplication(w http.ResponseWriter, r *http.
 		httpx.WriteErr(w, r, httpx.ErrBadRequest("estimated_value must be a positive decimal"))
 		return
 	}
+
+	// Phase 1.5b — third-party pledger sanity check.
+	var pledgerID *uuid.UUID
+	if in.PledgerCounterpartyID != nil && *in.PledgerCounterpartyID != "" {
+		pid, perr := uuid.Parse(*in.PledgerCounterpartyID)
+		if perr != nil {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid pledger_counterparty_id"))
+			return
+		}
+		pledgerID = &pid
+	}
+
+	// Phase 1.5b — parse internal-kind fields when present.
+	isInternalKind := in.Kind == "fixed_deposit_lien" || in.Kind == "listed_shares"
+	var (
+		depositAccountID  uuid.UUID
+		lienedAmount      decimal.Decimal
+		shareAccountID    uuid.UUID
+		pledgedShareCount int
+	)
+	if in.Kind == "fixed_deposit_lien" {
+		if in.DepositAccountID == nil || in.LienedAmount == nil {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("fixed_deposit_lien requires deposit_account_id + liened_amount"))
+			return
+		}
+		dID, perr := uuid.Parse(*in.DepositAccountID)
+		if perr != nil {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid deposit_account_id"))
+			return
+		}
+		depositAccountID = dID
+		la, derr := decimal.NewFromString(*in.LienedAmount)
+		if derr != nil || la.LessThanOrEqual(decimal.Zero) {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("liened_amount must be a positive decimal"))
+			return
+		}
+		lienedAmount = la
+	}
+	if in.Kind == "listed_shares" {
+		if in.ShareAccountID == nil || in.PledgedShareCount == nil || *in.PledgedShareCount <= 0 {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("listed_shares requires share_account_id + positive pledged_share_count"))
+			return
+		}
+		sID, perr := uuid.Parse(*in.ShareAccountID)
+		if perr != nil {
+			httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid share_account_id"))
+			return
+		}
+		shareAccountID = sID
+		pledgedShareCount = *in.PledgedShareCount
+	}
+
 	uid, _ := middleware.UserIDFrom(r)
 	tid, _ := middleware.TenantIDFrom(r)
 
@@ -111,12 +179,13 @@ func (h *CollateralHandler) CreateForApplication(w http.ResponseWriter, r *http.
 		// Verify the application exists + the product allows the kind.
 		var productID uuid.UUID
 		var accepted []string
+		var applicantCID uuid.UUID
 		if err := tx.QueryRow(r.Context(), `
-			SELECT a.product_id, p.accepted_collateral_kinds
+			SELECT a.product_id, p.accepted_collateral_kinds, a.counterparty_id
 			  FROM loan_applications a
 			  JOIN loan_products p ON p.id = a.product_id
 			 WHERE a.id = $1
-		`, appID).Scan(&productID, &accepted); err != nil {
+		`, appID).Scan(&productID, &accepted, &applicantCID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return httpx.ErrNotFound("application not found")
 			}
@@ -124,6 +193,17 @@ func (h *CollateralHandler) CreateForApplication(w http.ResponseWriter, r *http.
 		}
 		if !kindAccepted(accepted, in.Kind) {
 			return httpx.ErrBadRequest("collateral kind not accepted by this product")
+		}
+
+		// Internal-kind validation — the pledger's account is the source
+		// of truth. For self-pledge that's the applicant; for third-party
+		// it's the pledger_counterparty_id.
+		expectedOwner := applicantCID
+		if pledgerID != nil {
+			expectedOwner = *pledgerID
+		}
+		if isInternalKind && h.Liens == nil {
+			return httpx.ErrConflict("internal lien feature not configured on this deployment")
 		}
 
 		c, err := h.Collaterals.CreateTx(r.Context(), tx, store.CreateCollateralInput{
@@ -138,18 +218,155 @@ func (h *CollateralHandler) CreateForApplication(w http.ResponseWriter, r *http.
 		if err != nil {
 			return err
 		}
-		if err := h.Collaterals.AppendEventTx(r.Context(), tx, store.AppendEventInput{
-			CollateralID: c.ID,
-			Kind:         "proposed",
-			ActorUserID:  &uid,
-			Details: map[string]interface{}{
-				"kind":            in.Kind,
-				"estimated_value": est.String(),
-			},
-		}); err != nil {
+
+		// Stamp third-party pledger metadata + initial consent_status=pending.
+		if pledgerID != nil {
+			if _, err := tx.Exec(r.Context(), `
+				UPDATE loan_collateral SET
+				  pledger_counterparty_id = $2,
+				  pledger_consent_status  = 'pending'
+				 WHERE id = $1
+			`, c.ID, *pledgerID); err != nil {
+				return err
+			}
+		}
+
+		switch in.Kind {
+		case "fixed_deposit_lien":
+			// 1. Ownership check — account belongs to the expected owner.
+			var ownerID uuid.UUID
+			var balance decimal.Decimal
+			if err := tx.QueryRow(r.Context(), `
+				SELECT counterparty_id, current_balance
+				  FROM deposit_accounts WHERE id = $1
+			`, depositAccountID).Scan(&ownerID, &balance); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return httpx.ErrBadRequest("deposit_account_id not found")
+				}
+				return err
+			}
+			if ownerID != expectedOwner {
+				return httpx.ErrConflict("deposit account does not belong to the pledger")
+			}
+			// 2. Available balance after existing liens.
+			existingLiens, lerr := h.Liens.SumActiveDepositLiensTx(r.Context(), tx, depositAccountID)
+			if lerr != nil {
+				return lerr
+			}
+			available := balance.Sub(existingLiens)
+			if lienedAmount.GreaterThan(available) {
+				return httpx.ErrConflict(fmt.Sprintf(
+					"available balance is KES %s after existing liens; cannot lien KES %s",
+					available.StringFixed(2), lienedAmount.StringFixed(2),
+				))
+			}
+			// 3. Place the lien + jump collateral to 'pledged' (system-verified).
+			if _, lerr := h.Liens.PlaceDepositLienTx(r.Context(), tx, store.PlaceDepositLienInput{
+				CollateralID:     c.ID,
+				DepositAccountID: depositAccountID,
+				LienedAmount:     lienedAmount,
+				PlacedBy:         uid,
+			}); lerr != nil {
+				return lerr
+			}
+			if _, err := tx.Exec(r.Context(), `
+				UPDATE loan_collateral SET
+				  status            = 'pledged',
+				  forced_sale_value = $2,
+				  pledged_by        = $3,
+				  pledged_at        = now(),
+				  -- internal kinds are auto-verified by the system; stamp
+				  -- the actor + timestamp so the timeline reads cleanly.
+				  verified_by       = $3,
+				  verified_at       = now()
+				 WHERE id = $1
+			`, c.ID, lienedAmount, uid); err != nil {
+				return err
+			}
+			_ = h.Collaterals.AppendEventTx(r.Context(), tx, store.AppendEventInput{
+				CollateralID: c.ID, Kind: "pledged", ActorUserID: &uid,
+				Details: map[string]interface{}{
+					"kind":               "fixed_deposit_lien",
+					"deposit_account_id": depositAccountID.String(),
+					"liened_amount":      lienedAmount.String(),
+				},
+			})
+
+		case "listed_shares":
+			// 1. Ownership + available share count.
+			var ownerID uuid.UUID
+			var heldShares, pledgedShares int
+			if err := tx.QueryRow(r.Context(), `
+				SELECT counterparty_id, shares_held, shares_pledged
+				  FROM share_accounts WHERE id = $1
+			`, shareAccountID).Scan(&ownerID, &heldShares, &pledgedShares); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return httpx.ErrBadRequest("share_account_id not found")
+				}
+				return err
+			}
+			if ownerID != expectedOwner {
+				return httpx.ErrConflict("share account does not belong to the pledger")
+			}
+			available := heldShares - pledgedShares
+			if pledgedShareCount > available {
+				return httpx.ErrConflict(fmt.Sprintf(
+					"available shares = %d after existing pledges; cannot pledge %d",
+					available, pledgedShareCount,
+				))
+			}
+			// 2. Place pledge (bumps share_accounts.shares_pledged in
+			// the same tx) + jump to 'pledged'.
+			if _, perr := h.Liens.PlaceSharePledgeTx(r.Context(), tx, store.PlaceSharePledgeInput{
+				CollateralID:      c.ID,
+				ShareAccountID:    shareAccountID,
+				PledgedShareCount: pledgedShareCount,
+				PlacedBy:          uid,
+			}); perr != nil {
+				return perr
+			}
+			// Forced-sale-value uses estimated_value as a system stand-in;
+			// member can attach a panel valuation later if needed for
+			// reporting purity, but coverage maths work off it as-is.
+			if _, err := tx.Exec(r.Context(), `
+				UPDATE loan_collateral SET
+				  status            = 'pledged',
+				  forced_sale_value = $2,
+				  pledged_by        = $3,
+				  pledged_at        = now(),
+				  verified_by       = $3,
+				  verified_at       = now()
+				 WHERE id = $1
+			`, c.ID, est, uid); err != nil {
+				return err
+			}
+			_ = h.Collaterals.AppendEventTx(r.Context(), tx, store.AppendEventInput{
+				CollateralID: c.ID, Kind: "pledged", ActorUserID: &uid,
+				Details: map[string]interface{}{
+					"kind":                "listed_shares",
+					"share_account_id":    shareAccountID.String(),
+					"pledged_share_count": pledgedShareCount,
+				},
+			})
+
+		default:
+			// External kinds — record the proposed event; lifecycle runs
+			// through the verify-then-value chain.
+			_ = h.Collaterals.AppendEventTx(r.Context(), tx, store.AppendEventInput{
+				CollateralID: c.ID, Kind: "proposed", ActorUserID: &uid,
+				Details: map[string]interface{}{
+					"kind":            in.Kind,
+					"estimated_value": est.String(),
+				},
+			})
+		}
+
+		// Re-fetch the row to return the (possibly mutated) status.
+		fresh, err := h.Collaterals.GetTx(r.Context(), tx, c.ID)
+		if err != nil {
 			return err
 		}
-		created = c
+		created = fresh
 		return nil
 	})
 	if err != nil {
@@ -253,6 +470,14 @@ func (h *CollateralHandler) Get(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		out.Item = c
+		// Normalise nil slices to empty so JSON encodes as [] rather
+		// than null — the React drawer reads .length immediately.
+		if hist == nil {
+			hist = []domain.CollateralValuation{}
+		}
+		if ev == nil {
+			ev = []domain.CollateralEvent{}
+		}
 		out.ValuationHistory = hist
 		out.Events = ev
 		return nil
@@ -315,6 +540,35 @@ func (h *CollateralHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, updated)
 }
 
+// ensurePledgerConsentedTx returns nil when either:
+//   (a) the collateral is self-pledged (no pledger_counterparty_id), or
+//   (b) the third-party pledger has accepted / offline-consented.
+//
+// Phase 1.5b — blocks Verify / Valuation / Pledge from advancing a
+// row whose pledger hasn't said yes. Declined stays terminal until
+// the officer creates a fresh collateral row.
+func ensurePledgerConsentedTx(ctx context.Context, tx pgx.Tx, collateralID uuid.UUID) error {
+	var pledger *uuid.UUID
+	var status *string
+	if err := tx.QueryRow(ctx, `
+		SELECT pledger_counterparty_id, pledger_consent_status
+		  FROM loan_collateral WHERE id = $1
+	`, collateralID).Scan(&pledger, &status); err != nil {
+		return err
+	}
+	if pledger == nil {
+		return nil // self-pledged — always OK
+	}
+	if status == nil || *status == "pending" {
+		return httpx.ErrConflict("third-party pledger consent is still pending; cannot advance status")
+	}
+	if *status == "declined" {
+		return httpx.ErrConflict("third-party pledger declined; create a new collateral row")
+	}
+	// accepted | offline_consented — clear to advance.
+	return nil
+}
+
 // ─────────── Verify ───────────
 
 type verifyCollateralReq struct {
@@ -341,6 +595,9 @@ func (h *CollateralHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	uid, _ := middleware.UserIDFrom(r)
 	var updated *domain.LoanCollateralItem
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		if err := ensurePledgerConsentedTx(r.Context(), tx, id); err != nil {
+			return err
+		}
 		c, err := h.Collaterals.VerifyTx(r.Context(), tx, id, uid, in.Notes, in.Photos)
 		if err != nil {
 			return mapCollateralErr(err)
@@ -466,6 +723,9 @@ func (h *CollateralHandler) Valuation(w http.ResponseWriter, r *http.Request) {
 		Valuation *domain.CollateralValuation  `json:"valuation"`
 	}
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		if err := ensurePledgerConsentedTx(r.Context(), tx, id); err != nil {
+			return err
+		}
 		// Forbid valuation against released/auctioned items.
 		cur, err := h.Collaterals.GetTx(r.Context(), tx, id)
 		if err != nil {
@@ -526,6 +786,9 @@ func (h *CollateralHandler) Pledge(w http.ResponseWriter, r *http.Request) {
 	uid, _ := middleware.UserIDFrom(r)
 	var updated *domain.LoanCollateralItem
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		if err := ensurePledgerConsentedTx(r.Context(), tx, id); err != nil {
+			return err
+		}
 		c, err := h.Collaterals.PledgeTx(r.Context(), tx, id, uid)
 		if err != nil {
 			return mapCollateralErr(err)
@@ -576,6 +839,69 @@ func (h *CollateralHandler) Release(w http.ResponseWriter, r *http.Request) {
 			CollateralID: id, Kind: "released", ActorUserID: &uid,
 			Details: map[string]interface{}{"reason": in.Reason},
 		})
+		// Phase 1.5b — also release any backing lien/pledge so the
+		// borrower's deposit balance / share count frees up.
+		if h.Liens != nil {
+			if err := h.Liens.ReleaseLiensForCollateralTx(r.Context(), tx, id, uid, in.Reason); err != nil {
+				return err
+			}
+		}
+		updated = c
+		return nil
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, updated)
+}
+
+// ─────────── Mark auctioned ───────────
+
+type markAuctionedReq struct {
+	Reason string `json:"reason"`
+}
+
+// MarkAuctioned flips status pledged → auctioned. Terminal state;
+// granular auction-event tracking (handover, notice, sale, proceeds)
+// then runs through POST /v1/collateral/{id}/auction-event. Also
+// releases any backing internal lien/pledge so the borrower's locked
+// balance frees up the same way the release path does.
+func (h *CollateralHandler) MarkAuctioned(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid id"))
+		return
+	}
+	var in markAuctionedReq
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	if in.Reason == "" {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("reason is required"))
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	uid, _ := middleware.UserIDFrom(r)
+	var updated *domain.LoanCollateralItem
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		c, err := h.Collaterals.MarkAuctionedTx(r.Context(), tx, id, uid, in.Reason)
+		if err != nil {
+			return mapCollateralErr(err)
+		}
+		_ = h.Collaterals.AppendEventTx(r.Context(), tx, store.AppendEventInput{
+			CollateralID: id, Kind: "auctioned", ActorUserID: &uid,
+			Details: map[string]interface{}{"reason": in.Reason},
+		})
+		// Free any backing lien/pledge so the borrower's deposit / share
+		// count unlocks (the underlying asset has gone to auction; the
+		// lien on the internal account doesn't belong here anymore).
+		if h.Liens != nil {
+			if err := h.Liens.ReleaseLiensForCollateralTx(r.Context(), tx, id, uid, "collateral auctioned"); err != nil {
+				return err
+			}
+		}
 		updated = c
 		return nil
 	})
@@ -603,6 +929,77 @@ func (h *CollateralHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ─────────── Pledges given by counterparty (Member 360 tab) ───────────
+
+type pledgeGivenRow struct {
+	CollateralID    uuid.UUID `json:"collateral_id"`
+	ApplicationID   uuid.UUID `json:"application_id"`
+	ApplicationNo   string    `json:"application_no"`
+	LoanNo          *string   `json:"loan_no,omitempty"`
+	BorrowerName    string    `json:"borrower_name"`
+	Kind            string    `json:"kind"`
+	Description     string    `json:"description"`
+	EstimatedValue  string    `json:"estimated_value"`
+	ForcedSaleValue *string   `json:"forced_sale_value,omitempty"`
+	Status          string    `json:"status"`
+	ConsentStatus   *string   `json:"pledger_consent_status,omitempty"`
+	IsSelfPledge    bool      `json:"is_self_pledge"`
+}
+
+// PledgesGivenByCounterparty returns the collateral items this
+// counterparty is on the hook for — either as borrower (self-pledge)
+// or as third-party pledger (pledger_counterparty_id = counterparty).
+// Drives the Member 360 → "Pledges given" tab.
+func (h *CollateralHandler) PledgesGivenByCounterparty(w http.ResponseWriter, r *http.Request) {
+	cpID, err := uuid.Parse(chi.URLParam(r, "counterparty_id"))
+	if err != nil {
+		httpx.WriteErr(w, r, httpx.ErrBadRequest("invalid counterparty_id"))
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var out []pledgeGivenRow
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		rows, err := tx.Query(r.Context(), `
+			SELECT c.id, a.id, a.application_no,
+			       l.loan_no,
+			       COALESCE(cd_b.full_name, ''),
+			       c.kind::text, c.description,
+			       c.estimated_value::text, c.forced_sale_value::text,
+			       c.status,
+			       c.pledger_consent_status,
+			       (c.pledger_counterparty_id IS NULL) AS is_self_pledge
+			  FROM loan_collateral c
+			  JOIN loan_applications a ON a.id = c.application_id
+			  LEFT JOIN loans l ON l.application_id = a.id
+			  LEFT JOIN counterparty_directory cd_b ON cd_b.counterparty_id = a.counterparty_id
+			 WHERE (c.pledger_counterparty_id = $1
+			        OR (c.pledger_counterparty_id IS NULL AND a.counterparty_id = $1))
+			   AND c.status IN ('offered','verified','valued','pledged')
+			 ORDER BY c.created_at DESC
+		`, cpID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row pledgeGivenRow
+			if err := rows.Scan(&row.CollateralID, &row.ApplicationID, &row.ApplicationNo,
+				&row.LoanNo, &row.BorrowerName, &row.Kind, &row.Description,
+				&row.EstimatedValue, &row.ForcedSaleValue, &row.Status,
+				&row.ConsentStatus, &row.IsSelfPledge); err != nil {
+				return err
+			}
+			out = append(out, row)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	httpx.OK(w, map[string]any{"items": out, "total": len(out)})
 }
 
 // ─────────── Security coverage card ───────────

@@ -57,6 +57,11 @@ type DepositHandler struct {
 	// DuplicateLookback is how far back we look for a same-channel-ref
 	// duplicate before flagging a deposit. Default 10 minutes.
 	DuplicateLookback time.Duration
+
+	// Phase 1.5b — extra lien check on withdraw. Nil-safe; when set,
+	// Withdraw computes available = current_balance - SUM(active liens)
+	// and 409s when the requested amount exceeds available.
+	CollateralLiens *store.CollateralLienStore
 }
 
 func (h *DepositHandler) lookback() time.Duration {
@@ -749,6 +754,28 @@ func (h *DepositHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 		if product.Segment == domain.SegmentBOSA {
 			return domain.ErrBOSAWithdrawForbidden
 		}
+
+		// Phase 1.5b — cumulative lien check (collateral_deposit_liens
+		// + bosa_liens). Computed early so the operator gets an
+		// actionable 409 before any approval-queue work.
+		if h.CollateralLiens != nil {
+			_, acct, _, lerr := h.loadProductAccount(r.Context(), tx, accountID)
+			if lerr != nil {
+				return lerr
+			}
+			liened, lerr := h.CollateralLiens.SumActiveDepositLiensTx(r.Context(), tx, accountID)
+			if lerr != nil {
+				return lerr
+			}
+			available := acct.CurrentBalance.Sub(liened)
+			if in.Amount.GreaterThan(available) {
+				return httpx.ErrConflict(fmt.Sprintf(
+					"Withdrawal blocked: KES %s of this account is liened to loan collateral. Available: KES %s.",
+					liened.StringFixed(2), available.StringFixed(2),
+				))
+			}
+		}
+
 		toggles, err := h.Approvals.GetTogglesTx(r.Context(), tx)
 		if err != nil {
 			return err

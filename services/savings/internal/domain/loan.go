@@ -265,6 +265,10 @@ type LoanProduct struct {
 	// AcceptedCollateralKinds — NULL/empty means all kinds. Non-empty
 	// limits which loan_collateral_kind values count as security.
 	AcceptedCollateralKinds    []string        `json:"accepted_collateral_kinds,omitempty"`
+	// Migration 0050 — required-docs gate. Empty = no required docs.
+	// Non-empty = each named loan_doc_kind value must have a current,
+	// non-expired loan_documents row before the workflow approves.
+	RequiredDocumentKinds      []string        `json:"required_document_kinds,omitempty"`
 	MinMembershipMonths      int                       `json:"min_membership_months"`
 	MinSharesRequired        int                       `json:"min_shares_required"`
 	AllowConcurrent          bool                      `json:"allow_concurrent"`
@@ -408,6 +412,116 @@ type LoanCollateralItem struct {
 	// Display-only — joined from collateral_valuations where is_current = true.
 	// Empty when the loader didn't join (e.g. legacy create-return path).
 	CurrentValuation *CollateralValuation `json:"current_valuation,omitempty"`
+
+	// Phase 1.5b — third-party pledger. NULL pledger_counterparty_id ⇒
+	// the borrower self-pledged; non-NULL ⇒ a third party did, and the
+	// consent flow must complete before the collateral can flip past
+	// 'offered'. pledger_consent_status values: pending | accepted |
+	// declined | offline_consented.
+	PledgerCounterpartyID  *uuid.UUID `json:"pledger_counterparty_id,omitempty"`
+	PledgerConsentStatus   *string    `json:"pledger_consent_status,omitempty"`
+	PledgerConsentAt       *time.Time `json:"pledger_consent_at,omitempty"`
+	PledgerConsentDocPath  *string    `json:"pledger_consent_doc_path,omitempty"`
+
+	// Phase 1.5b — charge registration (legal filing).
+	ChargeRegistry        *string    `json:"charge_registry,omitempty"`
+	ChargeReference       *string    `json:"charge_reference,omitempty"`
+	ChargeRegisteredAt    *time.Time `json:"charge_registered_at,omitempty"`
+	ChargeRegisteredBy    *uuid.UUID `json:"charge_registered_by,omitempty"`
+	ChargeDischargeRef    *string    `json:"charge_discharge_ref,omitempty"`
+	ChargeDischargedAt    *time.Time `json:"charge_discharged_at,omitempty"`
+	ChargeCertificatePath *string    `json:"charge_certificate_path,omitempty"`
+}
+
+// CollateralDepositLien — one row per collateral item that pledges a
+// portion of a deposit account. The withdraw gate sums these (plus
+// bosa_liens) against the requested debit.
+type CollateralDepositLien struct {
+	ID               uuid.UUID       `json:"id"`
+	TenantID         uuid.UUID       `json:"tenant_id"`
+	CollateralID     uuid.UUID       `json:"collateral_id"`
+	DepositAccountID uuid.UUID       `json:"deposit_account_id"`
+	LienedAmount     decimal.Decimal `json:"liened_amount"`
+	Status           string          `json:"status"`
+	PlacedAt         time.Time       `json:"placed_at"`
+	PlacedBy         uuid.UUID       `json:"placed_by"`
+	ReleasedAt       *time.Time      `json:"released_at,omitempty"`
+	ReleasedBy       *uuid.UUID      `json:"released_by,omitempty"`
+	ReleasedReason   *string         `json:"released_reason,omitempty"`
+	ExercisedAt      *time.Time      `json:"exercised_at,omitempty"`
+	ExercisedBy      *uuid.UUID      `json:"exercised_by,omitempty"`
+	ExerciseReason   *string         `json:"exercise_reason,omitempty"`
+}
+
+// CollateralSharePledge — same shape as DepositLien but in share-count
+// units against a share_accounts row.
+type CollateralSharePledge struct {
+	ID                uuid.UUID  `json:"id"`
+	TenantID          uuid.UUID  `json:"tenant_id"`
+	CollateralID      uuid.UUID  `json:"collateral_id"`
+	ShareAccountID    uuid.UUID  `json:"share_account_id"`
+	PledgedShareCount int        `json:"pledged_share_count"`
+	Status            string     `json:"status"`
+	PlacedAt          time.Time  `json:"placed_at"`
+	PlacedBy          uuid.UUID  `json:"placed_by"`
+	ReleasedAt        *time.Time `json:"released_at,omitempty"`
+	ReleasedBy        *uuid.UUID `json:"released_by,omitempty"`
+	ReleasedReason    *string    `json:"released_reason,omitempty"`
+	ExercisedAt       *time.Time `json:"exercised_at,omitempty"`
+	ExercisedBy       *uuid.UUID `json:"exercised_by,omitempty"`
+	ExerciseReason    *string    `json:"exercise_reason,omitempty"`
+}
+
+// CollateralInsurancePolicy — one row per (collateral, attempt). At
+// most one is_current = true per collateral (partial unique index).
+type CollateralInsurancePolicy struct {
+	ID              uuid.UUID        `json:"id"`
+	TenantID        uuid.UUID        `json:"tenant_id"`
+	CollateralID    uuid.UUID        `json:"collateral_id"`
+	ProviderName    string           `json:"provider_name"`
+	PolicyNo        string           `json:"policy_no"`
+	EffectiveFrom   time.Time        `json:"effective_from"`
+	EffectiveTo     time.Time        `json:"effective_to"`
+	PremiumAmount   *decimal.Decimal `json:"premium_amount,omitempty"`
+	SumInsured      decimal.Decimal  `json:"sum_insured"`
+	Status          string           `json:"status"`
+	IsCurrent       bool             `json:"is_current"`
+	PolicyDocPath   *string          `json:"policy_doc_path,omitempty"`
+	Notes           *string          `json:"notes,omitempty"`
+	CreatedAt       time.Time        `json:"created_at"`
+	CreatedBy       uuid.UUID        `json:"created_by"`
+}
+
+// CollateralCustodyMovement — append-only chain-of-possession for the
+// physical document(s) backing a collateral item.
+type CollateralCustodyMovement struct {
+	ID                    uuid.UUID  `json:"id"`
+	TenantID              uuid.UUID  `json:"tenant_id"`
+	CollateralID          uuid.UUID  `json:"collateral_id"`
+	DocumentKind          string     `json:"document_kind"`
+	Movement              string     `json:"movement"`
+	MovementAt            time.Time  `json:"movement_at"`
+	MovementBy            uuid.UUID  `json:"movement_by"`
+	CustodianUserID       *uuid.UUID `json:"custodian_user_id,omitempty"`
+	BorrowerSignaturePath *string    `json:"borrower_signature_path,omitempty"`
+	LocationCode          *string    `json:"location_code,omitempty"`
+	Notes                 *string    `json:"notes,omitempty"`
+}
+
+// CollateralAuctionEvent — append-only event log on the disposal path.
+type CollateralAuctionEvent struct {
+	ID             uuid.UUID        `json:"id"`
+	TenantID       uuid.UUID        `json:"tenant_id"`
+	CollateralID   uuid.UUID        `json:"collateral_id"`
+	LoanID         *uuid.UUID       `json:"loan_id,omitempty"`
+	EventKind      string           `json:"event_kind"`
+	OccurredAt     time.Time        `json:"occurred_at"`
+	Amount         *decimal.Decimal `json:"amount,omitempty"`
+	BuyerDetails   *string          `json:"buyer_details,omitempty"`
+	AuctioneerName *string          `json:"auctioneer_name,omitempty"`
+	Notes          *string          `json:"notes,omitempty"`
+	DocPath        *string          `json:"doc_path,omitempty"`
+	CreatedBy      uuid.UUID        `json:"created_by"`
 }
 
 // CollateralValuation — one row per (collateral_id, valuation date).
@@ -453,6 +567,76 @@ type LoanDocument struct {
 	SizeBytes     int64        `json:"size_bytes"`
 	UploadedAt    time.Time    `json:"uploaded_at"`
 	UploadedBy    *uuid.UUID   `json:"uploaded_by,omitempty"`
+
+	// Migration 0050 — review state + expiry + versioning.
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	ReviewStatus   string     `json:"review_status"`
+	ReviewedBy     *uuid.UUID `json:"reviewed_by,omitempty"`
+	ReviewedAt     *time.Time `json:"reviewed_at,omitempty"`
+	ReviewNotes    *string    `json:"review_notes,omitempty"`
+	IsCurrent      bool       `json:"is_current"`
+	SupersededByID *uuid.UUID `json:"superseded_by_id,omitempty"`
+}
+
+// LoanScoreHistoryEntry — append-only row in loan_application_score_history.
+// Mirrors the loan_applications scoring columns at point-in-time, so the
+// timeline can render the same waterfall + factor breakdown for historical
+// scores.
+type LoanScoreHistoryEntry struct {
+	ID                      uuid.UUID        `json:"id"`
+	TenantID                uuid.UUID        `json:"tenant_id"`
+	ApplicationID           uuid.UUID        `json:"application_id"`
+	ScoredAt                time.Time        `json:"scored_at"`
+	ScoredBy                *uuid.UUID       `json:"scored_by,omitempty"`
+	CreditScore             *int             `json:"credit_score,omitempty"`
+	RiskBand                *string          `json:"risk_band,omitempty"`
+	AffordabilityPass       *bool            `json:"affordability_pass,omitempty"`
+	DTIRatio                *decimal.Decimal `json:"dti_ratio,omitempty"`
+	NetDisposableIncome     *decimal.Decimal `json:"net_disposable_income,omitempty"`
+	ComputedMaxAmount       *decimal.Decimal `json:"computed_max_amount,omitempty"`
+	ComputedMaxInstallment  *decimal.Decimal `json:"computed_max_installment,omitempty"`
+	RecommendedAmount       *decimal.Decimal `json:"recommended_amount,omitempty"`
+	RecommendedTermMonths   *int             `json:"recommended_term_months,omitempty"`
+	ScoringDetails          []byte           `json:"scoring_details,omitempty"`
+	ScoringFlags            []byte           `json:"scoring_flags,omitempty"`
+	TriggerReason           *string          `json:"trigger_reason,omitempty"`
+}
+
+// LoanComment — one row per posted comment. visibility 'internal' is
+// officer-only; 'external' fires an SMS to the member with a link to
+// /m/c/{reply_token}.
+type LoanComment struct {
+	ID              uuid.UUID    `json:"id"`
+	TenantID        uuid.UUID    `json:"tenant_id"`
+	ApplicationID   *uuid.UUID   `json:"application_id,omitempty"`
+	LoanID          *uuid.UUID   `json:"loan_id,omitempty"`
+	ParentID        *uuid.UUID   `json:"parent_id,omitempty"`
+	Visibility      string       `json:"visibility"`
+	Body            string       `json:"body"`
+	AttachmentPaths []string     `json:"attachment_paths,omitempty"`
+	AuthorUserID    *uuid.UUID   `json:"author_user_id,omitempty"`
+	AuthorMemberID  *uuid.UUID   `json:"author_member_id,omitempty"`
+	AuthorName      string       `json:"author_name,omitempty"` // joined on read
+	PostedAt        time.Time    `json:"posted_at"`
+	EditedAt        *time.Time   `json:"edited_at,omitempty"`
+	EditHistory     []byte       `json:"edit_history,omitempty"` // raw JSONB
+	Pinned          bool         `json:"pinned"`
+	MemberReadAt    *time.Time   `json:"member_read_at,omitempty"`
+	ReplyToken      *uuid.UUID   `json:"reply_token,omitempty"`
+	IsDeleted       bool         `json:"is_deleted"`
+}
+
+// LoanCommentTemplate — per-tenant pre-canned bodies for the composer
+// dropdown. Server interpolates the {member_name} etc. placeholders at
+// post time.
+type LoanCommentTemplate struct {
+	ID         uuid.UUID `json:"id"`
+	TenantID   uuid.UUID `json:"tenant_id"`
+	Label      string    `json:"label"`
+	Visibility string    `json:"visibility"`
+	Body       string    `json:"body"`
+	IsActive   bool      `json:"is_active"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type Loan struct {

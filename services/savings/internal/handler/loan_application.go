@@ -42,6 +42,8 @@ type LoanApplicationHandler struct {
 	Loans          *store.LoanStore // Phase 5 — needed by topup/refinance to read parent loans
 	Consent        *store.GuarantorConsentStore // Phase 5 — token issuance for consent SMS
 	Collaterals    *store.CollateralStore       // Phase 1.5a — coverage gate at approval time
+	Docs           *store.LoanDocumentStore     // Phase-1 follow-up — required-docs gate at approval time
+	ScoreHistory   *store.LoanScoreHistoryStore // Phase-1 follow-up — append-only re-score audit
 	Notifier       *notifier.Client
 	Logger         *slog.Logger
 
@@ -251,6 +253,12 @@ func (h *LoanApplicationHandler) Create(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			return err
 		}
+		// Phase-1 follow-up — seed the score history timeline with
+		// the initial scoring result.
+		if h.ScoreHistory != nil {
+			creatorPtr := &created.CreatedBy
+			_ = h.appendScoreHistoryTx(r.Context(), tx, scored.application, scored.score, creatorPtr, "initial_score")
+		}
 		// Project the repayment schedule using product config + requested
 		// amount/term so the reviewer (and applicant) see what they will pay.
 		snap := store.ComputeScheduleSnapshot(
@@ -364,6 +372,11 @@ func (h *LoanApplicationHandler) ReScore(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	tid, _ := middleware.TenantIDFrom(r)
+	uid, _ := middleware.UserIDFrom(r)
+	trigger := r.Header.Get("X-Score-Trigger")
+	if trigger == "" {
+		trigger = "manual_rescore"
+	}
 	var resp createAppResp
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		app, err := h.Applications.GetTx(r.Context(), tx, id)
@@ -377,6 +390,10 @@ func (h *LoanApplicationHandler) ReScore(w http.ResponseWriter, r *http.Request)
 		scored, err := h.runScoringTx(r.Context(), tx, app, product)
 		if err != nil {
 			return err
+		}
+		// Phase-1 follow-up — append-only score history row.
+		if h.ScoreHistory != nil {
+			_ = h.appendScoreHistoryTx(r.Context(), tx, scored.application, scored.score, &uid, trigger)
 		}
 		guars, err := h.Guarantees.ByApplicationTx(r.Context(), tx, app.ID)
 		if err != nil {
@@ -403,6 +420,94 @@ func (h *LoanApplicationHandler) ReScore(w http.ResponseWriter, r *http.Request)
 		resp.Collateral = []domain.LoanCollateralItem{}
 	}
 	httpx.OK(w, resp)
+}
+
+// appendScoreHistoryTx — write one row into loan_application_score_history
+// using the (already-persisted) application's scoring columns. Best-effort;
+// callers ignore failures (the history is non-load-bearing). Trigger reason
+// comes from the caller — see ReScore + Create.
+func (h *LoanApplicationHandler) appendScoreHistoryTx(
+	ctx context.Context, tx pgx.Tx,
+	app *domain.LoanApplication, _ domain.ScoreResult,
+	scoredBy *uuid.UUID, trigger string,
+) error {
+	if h.ScoreHistory == nil {
+		return nil
+	}
+	return h.ScoreHistory.InsertTx(ctx, tx, store.ScoreHistoryInsert{
+		ApplicationID:           app.ID,
+		ScoredBy:                scoredBy,
+		CreditScore:             app.CreditScore,
+		RiskBand:                app.RiskBand,
+		AffordabilityPass:       app.AffordabilityPass,
+		DTIRatio:                app.DTIRatio,
+		NetDisposableIncome:     app.NetDisposableIncome,
+		ComputedMaxAmount:       app.ComputedMaxAmount,
+		ComputedMaxInstallment:  app.ComputedMaxInstallment,
+		RecommendedAmount:       app.RecommendedAmount,
+		RecommendedTermMonths:   app.RecommendedTermMonths,
+		ScoringDetailsJSON:      app.ScoringDetails,
+		ScoringFlagsJSON:        app.ScoringFlags,
+		TriggerReason:           trigger,
+	})
+}
+
+// RescoreApplicationTx — exposed so other handlers can trigger an
+// auto-rescore inside their own tx (the document-upload + guarantor-
+// consent paths use this). Best-effort within the caller's tx: returns
+// any error but the caller is expected to ignore it so the upstream
+// change still commits.
+//
+// trigger is the reason text written to the score-history row.
+func (h *LoanApplicationHandler) RescoreApplicationTx(ctx context.Context, tx pgx.Tx, appID uuid.UUID, trigger string) error {
+	if h == nil || h.Applications == nil || h.LoanProducts == nil {
+		return nil
+	}
+	app, err := h.Applications.GetTx(ctx, tx, appID)
+	if err != nil {
+		return err
+	}
+	// Skip terminal applications — rescoring an approved/disbursed app
+	// shouldn't churn the score history.
+	if isLoanAppTerminal(app.Status) {
+		return nil
+	}
+	product, err := h.LoanProducts.GetTx(ctx, tx, app.ProductID)
+	if err != nil {
+		return err
+	}
+	scored, err := h.runScoringTx(ctx, tx, app, product)
+	if err != nil {
+		return err
+	}
+	if h.ScoreHistory != nil {
+		_ = h.appendScoreHistoryTx(ctx, tx, scored.application, scored.score, nil, trigger)
+	}
+	return nil
+}
+
+// GetScoreHistory — drives the Score tab's timeline. Returns rows newest first.
+func (h *LoanApplicationHandler) GetScoreHistory(w http.ResponseWriter, r *http.Request) {
+	id, err := parseUUIDParam(r, "app_id")
+	if err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	tid, _ := middleware.TenantIDFrom(r)
+	var items []domain.LoanScoreHistoryEntry
+	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
+		if h.ScoreHistory == nil {
+			return nil
+		}
+		var lerr error
+		items, lerr = h.ScoreHistory.ListByApplicationTx(r.Context(), tx, id)
+		return lerr
+	})
+	if err != nil {
+		writeLoanAppErr(w, r, err)
+		return
+	}
+	httpx.OK(w, map[string]any{"items": items, "total": len(items)})
 }
 
 // runScoringTx is the shared scoring path used by Create + ReScore.
@@ -841,7 +946,16 @@ func (h *LoanApplicationHandler) GuaranteeRespond(w http.ResponseWriter, r *http
 	err = h.DB.WithTenantTx(r.Context(), tid, func(tx pgx.Tx) error {
 		var err error
 		out, err = h.Guarantees.RespondTx(r.Context(), tx, gID, in.Accept, in.DeclineReason, nil, uid)
-		return err
+		if err != nil {
+			return err
+		}
+		// Phase-1 follow-up — auto-rescore on guarantor-state change.
+		// Best-effort within this tx; ignore non-fatal errors so the
+		// guarantee response always commits.
+		if out != nil {
+			_ = h.RescoreApplicationTx(r.Context(), tx, out.ApplicationID, "guarantor_changed")
+		}
+		return nil
 	})
 	if err != nil {
 		writeLoanAppErr(w, r, err)

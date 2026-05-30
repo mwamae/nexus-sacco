@@ -9,6 +9,8 @@ import Dashboard from './pages/Dashboard';
 import ResetPassword from './pages/ResetPassword';
 import AcceptInvite from './pages/AcceptInvite';
 import GuarantorConsent from './pages/GuarantorConsent';
+import PledgerConsent from './pages/PledgerConsent';
+import MemberCommentThread from './pages/MemberCommentThread';
 import Roles from './pages/Roles';
 import Users from './pages/Users';
 import Members from './pages/Members';
@@ -92,9 +94,14 @@ function Gate() {
   // Anonymous pages — live outside the auth gate.
   if (path === '/reset') return <ResetPassword />;
   if (path === '/invite/accept') return <AcceptInvite />;
+  // Phase 1.5b — SMS pledger-consent link. Must be checked BEFORE the
+  // generic /g/ guarantor handler since /g/pledger/{token} has a sub-prefix.
+  if (path.startsWith('/g/pledger/')) return <PledgerConsent />;
   // Phase 5 — SMS guarantor-consent link lands here. The token in
   // the URL is the only credential; the page handles ID + OTP itself.
   if (path.startsWith('/g/')) return <GuarantorConsent />;
+  // Phase-1 follow-up — member SMS reply link for external loan comments.
+  if (path.startsWith('/m/c/')) return <MemberCommentThread />;
 
   if (status === 'loading') {
     return (

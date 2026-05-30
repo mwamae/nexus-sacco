@@ -52,6 +52,9 @@ import {
   type DocVerification,
   type DocumentKind,
   type OrgDocKind,
+  // Phase 1.5b — Pledges given tab data.
+  getPledgesGivenByCounterparty,
+  type PledgeGivenRow,
 } from '../api/client';
 import { Avatar } from '../components/Avatar';
 import { Badge, StatusBadge } from '../components/Badge';
@@ -67,7 +70,7 @@ import { useDocumentTitle } from '../lib/useDocumentTitle';
 import { FeesSummaryView } from './Accounting/FeesSummary';
 
 // One tab strip — spec-defined, identical for both kinds.
-type TabId = 'overview' | 'profile' | 'accounts' | 'people' | 'banking' | 'documents' | 'activity' | 'fees';
+type TabId = 'overview' | 'profile' | 'accounts' | 'people' | 'banking' | 'documents' | 'activity' | 'fees' | 'pledges';
 const TABS: { id: TabId; label: string }[] = [
   { id: 'overview',  label: 'Overview' },
   { id: 'profile',   label: 'Profile' },
@@ -77,6 +80,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'documents', label: 'Documents & KYC' },
   { id: 'fees',      label: 'Fees' },       // per-member Fees & Collections
   { id: 'activity',  label: 'Activity' },
+  { id: 'pledges',   label: 'Pledges given' },  // Phase 1.5b — third-party + self collateral
 ];
 
 // ─────────── URL helpers ───────────
@@ -230,6 +234,7 @@ function CounterpartyShell({
               {activeId === 'documents' && <DocumentsTab entity={entity} />}
               {activeId === 'fees'      && <FeesTab entity={entity} />}
               {activeId === 'activity'  && <ActivityTab entity={entity} canSeeAudit={canSeeAudit} />}
+              {activeId === 'pledges'   && <PledgesGivenTab entity={entity} currency={currency} />}
             </>
           )}
         </Tabs>
@@ -1453,5 +1458,73 @@ function RelationView({ r }: { r: ApiRelation }) {
       <Row k="Email" v={r.email || '—'} />
       <Row k="ID #" v={r.id_doc_number || '—'} mono />
     </KVS>
+  );
+}
+
+// ─────────── Phase 1.5b — Pledges given tab ───────────
+
+function PledgesGivenTab({ entity, currency }: { entity: Entity; currency: string }) {
+  const counterpartyID = entity.kind === 'individual'
+    ? (entity.m.counterparty_id ?? entity.m.id)
+    : (entity.o.counterparty_id ?? entity.o.id);
+
+  const [items, setItems] = useState<PledgeGivenRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    void getPledgesGivenByCounterparty(counterpartyID)
+      .then((r) => setItems(r.items))
+      .catch((e: any) => setErr(e?.response?.data?.error?.message || e?.message || 'Failed to load.'));
+  }, [counterpartyID]);
+
+  if (err) return <div className="alert alert-error">{err}</div>;
+  if (!items) return <div className="muted">Loading…</div>;
+  if (items.length === 0) return <div className="empty">No collateral pledged by this member.</div>;
+
+  const fmt = (s?: string) => {
+    if (!s) return '—';
+    const n = parseFloat(s);
+    if (Number.isNaN(n)) return s;
+    return n.toLocaleString('en-KE', { maximumFractionDigits: 2 });
+  };
+
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h3>Pledges given</h3>
+        <span className="card-sub">{items.length} item{items.length === 1 ? '' : 's'}</span>
+      </div>
+      <div className="card-body flush">
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>Loan / app</th>
+              <th>Borrower</th>
+              <th>Kind</th>
+              <th>Description</th>
+              <th>Status</th>
+              <th>Consent</th>
+              <th className="num">FSV</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((r) => (
+              <tr key={r.collateral_id}>
+                <td className="mono">{r.loan_no ?? r.application_no}</td>
+                <td>
+                  {r.is_self_pledge
+                    ? <span className="muted tiny">self-pledge</span>
+                    : r.borrower_name}
+                </td>
+                <td>{r.kind.replace(/_/g, ' ')}</td>
+                <td>{r.description}</td>
+                <td className="tiny">{r.status}</td>
+                <td className="tiny">{r.pledger_consent_status ?? '—'}</td>
+                <td className="num mono">{r.forced_sale_value ? `${currency} ${fmt(r.forced_sale_value)}` : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }

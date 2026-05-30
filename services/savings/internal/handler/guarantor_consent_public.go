@@ -58,6 +58,9 @@ type PublicGuarantorConsentHandler struct {
 	Consent  *store.GuarantorConsentStore
 	Notifier *notifier.Client
 	Logger   *slog.Logger
+	// Phase-1 follow-up — auto-rescore on guarantor accept/decline.
+	// Nil-safe.
+	RescoreInTx RescoreInTxHook
 }
 
 // ─────────── token lookup helper ───────────
@@ -330,6 +333,16 @@ func (h *PublicGuarantorConsentHandler) Respond(w http.ResponseWriter, r *http.R
 				ctxBundle.Token.GuaranteeID, in.Decision, declinePtr,
 			); err != nil {
 				return err
+			}
+			// Phase-1 follow-up — auto-rescore. We need the application_id
+			// for the guarantee; look it up cheaply.
+			if h.RescoreInTx != nil {
+				var appID uuid.UUID
+				if err := tx.QueryRow(ctx, `
+					SELECT application_id FROM loan_guarantees WHERE id = $1
+				`, ctxBundle.Token.GuaranteeID).Scan(&appID); err == nil {
+					_ = h.RescoreInTx(ctx, tx, appID, "guarantor_changed")
+				}
 			}
 		case "opted_offline":
 			// Status stays. The SACCO admin gets notified separately

@@ -41,6 +41,9 @@ import {
 } from '../../../api/client';
 import CollateralTab from '../../../components/CollateralTab';
 import SecurityCoverageCard from '../../../components/SecurityCoverageCard';
+import DocumentsTab from '../../../components/Loans/DocumentsTab';
+import ScoreTab from '../../../components/Loans/ScoreTab';
+import CommentsTab from '../../../components/Loans/CommentsTab';
 import { useDocumentTitle } from '../../../lib/useDocumentTitle';
 
 type TabId = 'overview' | 'income' | 'guarantors' | 'collateral' | 'documents' | 'score' | 'schedule' | 'timeline' | 'comments';
@@ -238,11 +241,11 @@ export default function LoanApplicationDetail() {
               onChanged={() => { void refresh(); }}
             />
           )}
-          {activeTab === 'documents'  && <DocumentsTab />}
-          {activeTab === 'score'      && <ScoreTab a={a} />}
+          {activeTab === 'documents'  && <DocumentsTab applicationId={a.id} onChanged={refresh} />}
+          {activeTab === 'score'      && <ScoreTab application={a} onRescored={refresh} />}
           {activeTab === 'schedule'   && <ScheduleTab d={detail} currency={currency} />}
           {activeTab === 'timeline'   && <TimelineTab a={a} />}
-          {activeTab === 'comments'   && <CommentsTab />}
+          {activeTab === 'comments'   && <CommentsTab applicationId={a.id} onChanged={refresh} />}
         </div>
       </div>
 
@@ -526,17 +529,10 @@ function CollateralTabWithCoverage({
   );
 }
 
-function DocumentsTab() {
-  return (
-    <div className="empty">
-      Documents tab — Phase 2 wires upload/download. The
-      loan_documents table already exists; this just needs the
-      multipart endpoint + file-list wiring.
-    </div>
-  );
-}
+// Documents/Score/Comments tabs now live in src/components/Loans/.
+// Re-imported below.
 
-function ScoreTab({ a }: { a: LoanApplication }) {
+function ScoreTabLegacy({ a }: { a: LoanApplication }) {
   if (!a.scoring_details && !a.scoring_flags) {
     return <div className="empty">No scoring data yet. Hit Re-score in the header to compute.</div>;
   }
@@ -609,14 +605,7 @@ function TimelineTab({ a }: { a: LoanApplication }) {
   );
 }
 
-function CommentsTab() {
-  return (
-    <div className="empty">
-      Comments tab — Phase 2 wires the loan_comments table (or audit-
-      log-backed thread; design TBD).
-    </div>
-  );
-}
+// CommentsTab now lives in components/Loans/CommentsTab.tsx.
 
 // ─────────────── Modals ───────────────
 

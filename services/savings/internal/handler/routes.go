@@ -91,6 +91,22 @@ type Deps struct {
 	// Collateral — Phase 1.5a lifecycle endpoints (verify/value/pledge/
 	// release) + security-coverage card. Mounted under /v1.
 	Collateral *CollateralHandler
+	// Phase 1.5b — charge / insurance / custody / auction endpoints.
+	CollateralAdvanced *CollateralAdvancedHandler
+	// Phase 1.5b — third-party pledger admin endpoints (issue SMS,
+	// record offline consent).
+	PledgerConsent *PledgerConsentHandler
+	// Phase 1.5b — public pledger consent endpoints (no auth).
+	PublicPledgerConsent *PublicPledgerConsentHandler
+	// Phase 1.5b — collateral reports (exposure, by-kind, valuations
+	// expiring, insurance expiring, charge registration status).
+	CollateralReports *CollateralReportsHandler
+	// Phase-1 follow-up — Documents / Comments / Score history.
+	LoanDocs        *LoanDocumentsHandler
+	LoanComments    *LoanCommentsHandler
+	PublicComments  *PublicCommentsHandler
+	// Phase-1 follow-up — valuation report file upload + download.
+	ValuationReport *ValuationReportHandler
 	// Health is the /healthz handler — produced by NewHealthBuilder().Handler(...)
 	// in main. Falls back to a trivial {status:ok} when nil (early-boot
 	// tests + the FinanceHealth-only main.go variants).
@@ -157,6 +173,31 @@ func Routes(d Deps) http.Handler {
 			r.Post("/verify-id", d.PublicConsent.VerifyID)
 			r.Post("/verify-otp", d.PublicConsent.VerifyOTP)
 			r.Post("/respond", d.PublicConsent.Respond)
+		})
+	}
+	if d.PublicPledgerConsent != nil {
+		ipLimiter := middleware.NewRateLimiter(20, 1, middleware.KeyByIP)
+		tokenLimiter := middleware.NewRateLimiter(10, 0.25, middleware.KeyByURLParam("token"))
+		r.Route("/p/pledger-consent/{token}", func(r chi.Router) {
+			r.Use(ipLimiter.Middleware)
+			r.Use(tokenLimiter.Middleware)
+			r.Get("/", d.PublicPledgerConsent.Get)
+			r.Post("/verify-id", d.PublicPledgerConsent.VerifyID)
+			r.Post("/verify-otp", d.PublicPledgerConsent.VerifyOTP)
+			r.Post("/respond", d.PublicPledgerConsent.Respond)
+		})
+	}
+
+	// Phase-1 follow-up — public member-reply route for external comments.
+	// Token in URL is the credential; no auth header required.
+	if d.PublicComments != nil {
+		ipLimiter := middleware.NewRateLimiter(20, 1, middleware.KeyByIP)
+		tokenLimiter := middleware.NewRateLimiter(15, 0.5, middleware.KeyByURLParam("token"))
+		r.Route("/p/comments/{token}", func(r chi.Router) {
+			r.Use(ipLimiter.Middleware)
+			r.Use(tokenLimiter.Middleware)
+			r.Get("/", d.PublicComments.Get)
+			r.Post("/reply", d.PublicComments.Reply)
 		})
 	}
 
@@ -374,8 +415,91 @@ func Routes(d Deps) http.Handler {
 				// Approve-time pledge + post-settlement release.
 				r.With(middleware.RequirePermission("loans:approve")).Post("/collateral/{id}/pledge", d.Collateral.Pledge)
 				r.With(middleware.RequirePermission("loans:approve")).Post("/collateral/{id}/release", d.Collateral.Release)
+				// Phase-1 follow-up — terminal flip to 'auctioned' before
+				// recording the granular auction events. loans:auction
+				// guards because it also frees the internal lien.
+				r.With(middleware.RequirePermission("loans:auction")).Post("/collateral/{id}/mark-auctioned", d.Collateral.MarkAuctioned)
 				// Security-coverage card for the application detail page.
 				r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/security-coverage", d.Collateral.SecurityCoverage)
+				// Phase 1.5b — Member 360 "Pledges given" tab.
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-collateral/by-counterparty/{counterparty_id}", d.Collateral.PledgesGivenByCounterparty)
+			}
+
+			// Phase 1.5b — charge / insurance / custody / auction sub-endpoints.
+			if d.CollateralAdvanced != nil {
+				// Charge registration — legal-filing recording.
+				r.With(middleware.RequirePermission("loans:charge_registration")).Post("/collateral/{id}/charge", d.CollateralAdvanced.RecordCharge)
+				r.With(middleware.RequirePermission("loans:charge_registration")).Post("/collateral/{id}/charge/discharge", d.CollateralAdvanced.DischargeCharge)
+				// Insurance — record + history.
+				r.With(middleware.RequirePermission("loans:insurance_record")).Post("/collateral/{id}/insurance", d.CollateralAdvanced.RecordInsurance)
+				r.With(middleware.RequirePermission("loans:view")).Get("/collateral/{id}/insurance/history", d.CollateralAdvanced.GetInsuranceHistory)
+				// Custody — movements + timeline.
+				r.With(middleware.RequirePermission("loans:custody")).Post("/collateral/{id}/custody", d.CollateralAdvanced.RecordCustody)
+				r.With(middleware.RequirePermission("loans:view")).Get("/collateral/{id}/custody", d.CollateralAdvanced.GetCustodyTimeline)
+				// Auction event log.
+				r.With(middleware.RequirePermission("loans:auction")).Post("/collateral/{id}/auction-event", d.CollateralAdvanced.RecordAuctionEvent)
+				r.With(middleware.RequirePermission("loans:view")).Get("/collateral/{id}/auction-events", d.CollateralAdvanced.GetAuctionEvents)
+			}
+
+			// Phase 1.5b — third-party pledger admin endpoints.
+			if d.PledgerConsent != nil {
+				r.With(middleware.RequirePermission("loans:apply")).Post("/collateral/{id}/pledger/issue", d.PledgerConsent.IssueForCollateral)
+				r.With(middleware.RequirePermission("loans:apply")).Post("/collateral/{id}/pledger/offline-consent", d.PledgerConsent.AdminRecordOfflineConsent)
+			}
+
+			// Phase-1 follow-up — valuation report upload + download +
+			// other collateral file streams (ownership doc + verification
+			// photos). The latter two read the path off loan_collateral
+			// and stream from filestore; both are loans:view only.
+			if d.ValuationReport != nil {
+				r.With(middleware.RequirePermission("loans:value_collateral")).Post("/collateral/{id}/valuation-report", d.ValuationReport.Upload)
+				r.With(middleware.RequirePermission("loans:view")).Get("/collateral-valuations/{id}/report", d.ValuationReport.Download)
+				r.With(middleware.RequirePermission("loans:view")).Get("/collateral/{id}/ownership-doc", d.ValuationReport.OwnershipDocDownload)
+				r.With(middleware.RequirePermission("loans:view")).Get("/collateral/{id}/verification-photos/{idx}", d.ValuationReport.VerificationPhotoDownload)
+			}
+
+			// Phase-1 follow-up — Documents tab.
+			if d.LoanDocs != nil {
+				r.With(middleware.RequirePermission("loans:apply")).Post("/loan-applications/{app_id}/documents", d.LoanDocs.UploadForApplication)
+				r.With(middleware.RequirePermission("loans:apply")).Post("/loans/{loan_id}/documents", d.LoanDocs.UploadForLoan)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/documents", d.LoanDocs.ListForApplication)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/documents", d.LoanDocs.ListForLoan)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-documents/{id}/download", d.LoanDocs.Download)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/documents/bundle.pdf", d.LoanDocs.BundleApplication)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/documents/bundle.pdf", d.LoanDocs.BundleLoan)
+				r.With(middleware.RequirePermission("loans:apply")).Post("/loan-documents/{id}/review", d.LoanDocs.Review)
+				r.With(middleware.RequirePermission("loans:apply")).Delete("/loan-documents/{id}", d.LoanDocs.Delete)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/required-documents-status", d.LoanDocs.RequiredStatus)
+			}
+
+			// Phase-1 follow-up — Score history.
+			if d.LoanApp != nil {
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/score/history", d.LoanApp.GetScoreHistory)
+			}
+
+			// Phase-1 follow-up — Comments tab.
+			if d.LoanComments != nil {
+				r.With(middleware.RequirePermission("loans:apply")).Post("/loan-applications/{app_id}/comments", d.LoanComments.PostForApplication)
+				r.With(middleware.RequirePermission("loans:apply")).Post("/loans/{loan_id}/comments", d.LoanComments.PostForLoan)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-applications/{app_id}/comments", d.LoanComments.ListForApplication)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loans/{loan_id}/comments", d.LoanComments.ListForLoan)
+				r.With(middleware.RequirePermission("loans:apply")).Patch("/loan-comments/{id}", d.LoanComments.Edit)
+				r.With(middleware.RequirePermission("loans:apply")).Post("/loan-comments/{id}/pin", d.LoanComments.Pin)
+				r.With(middleware.RequirePermission("loans:apply")).Delete("/loan-comments/{id}", d.LoanComments.SoftDelete)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-comments/templates", d.LoanComments.ListTemplates)
+				r.With(middleware.RequirePermission("loans:view")).Get("/loan-comments/search", d.LoanComments.Search)
+			}
+
+			// Phase 1.5b — collateral reports. Mounted under
+			// /v1/loans/reports/collateral-* alongside the existing
+			// Phase 2 loan reports. Permission loans:reports.
+			if d.CollateralReports != nil {
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/collateral-exposure", d.CollateralReports.Exposure)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/collateral-exposure.csv", d.CollateralReports.ExposureCSV)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/collateral-by-kind", d.CollateralReports.ByKind)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/collateral-valuations-expiring", d.CollateralReports.ValuationsExpiring)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/collateral-insurance-expiring", d.CollateralReports.InsuranceExpiring)
+				r.With(middleware.RequirePermission("loans:reports")).Get("/loans/reports/collateral-charge-status", d.CollateralReports.ChargeRegistrationStatus)
 			}
 
 			// Guarantor consent

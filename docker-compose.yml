@@ -247,6 +247,43 @@ services:
       postgres:
         condition: service_healthy
 
+  # Loans Phase 1.5b — daily worker that nudges officers when a
+  # pledged collateral's valuation is nearing expiry. Threshold via
+  # tenant_operations.collateral_revaluation_warning_days (default 60).
+  collateral-revaluation-reminder:
+    build:
+      context: .
+      dockerfile: services/savings/Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/collateral-revaluation-reminder"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      NOTIFICATION_SERVICE_URL: http://notification:8085
+      NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
+      SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Loans Phase 1.5b — daily worker that nudges members when their
+  # collateral insurance is nearing expiry, and flips expired policies
+  # to the 'expired' status. Threshold via
+  # tenant_operations.collateral_insurance_warning_days (default 30).
+  collateral-insurance-reminder:
+    build:
+      context: .
+      dockerfile: services/savings/Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/collateral-insurance-reminder"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus_dev_password}@postgres:5432/${POSTGRES_DB:-nexus_sacco}?sslmode=disable
+      NOTIFICATION_SERVICE_URL: http://notification:8085
+      NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:-dev-internal-secret-do-not-use-in-production}
+      SAVINGS_LOG_LEVEL: ${SAVINGS_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Loans Phase 5 — hourly worker resending SMS consent invites to
   # guarantors who haven't responded yet. Per-tenant thresholds in
   # tenant_operations (default 48h first reminder, 6 days second).

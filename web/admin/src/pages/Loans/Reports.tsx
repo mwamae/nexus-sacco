@@ -25,11 +25,21 @@ import {
   getLoanReportGuarantorExposure,
   getLoanReportTopN,
   loanReportCSVURL,
+  // Phase 1.5b — collateral reports.
+  getCollateralExposure,
+  getCollateralByKind,
+  getValuationsExpiring,
+  getInsuranceExpiring,
+  getChargeRegistrationStatus,
   extractError,
 } from '../../api/client';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
 
-type TabId = 'par' | 'aging' | 'vintage' | 'officers' | 'disbursements' | 'repayments' | 'guarantors' | 'top-n';
+type TabId =
+  | 'par' | 'aging' | 'vintage' | 'officers' | 'disbursements' | 'repayments'
+  | 'guarantors' | 'top-n'
+  | 'collateral-exposure' | 'collateral-by-kind' | 'valuations-expiring'
+  | 'insurance-expiring' | 'charge-registration-status';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'par',           label: 'PAR' },
@@ -40,6 +50,12 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'repayments',    label: 'Repayments' },
   { id: 'guarantors',    label: 'Guarantors' },
   { id: 'top-n',         label: 'Top-N' },
+  // Phase 1.5b — collateral reports.
+  { id: 'collateral-exposure',         label: 'Collateral exposure' },
+  { id: 'collateral-by-kind',          label: 'Collateral by kind' },
+  { id: 'valuations-expiring',         label: 'Valuations expiring' },
+  { id: 'insurance-expiring',          label: 'Insurance expiring' },
+  { id: 'charge-registration-status',  label: 'Charge registration' },
 ];
 
 function tabFromHash(): TabId {
@@ -110,6 +126,11 @@ export default function LoanReports() {
           {tab === 'repayments'    && <RepaymentsTab />}
           {tab === 'guarantors'    && <GuarantorsTab />}
           {tab === 'top-n'         && <TopNTab />}
+          {tab === 'collateral-exposure'        && <CollateralExposureTab />}
+          {tab === 'collateral-by-kind'         && <CollateralByKindTab />}
+          {tab === 'valuations-expiring'        && <ValuationsExpiringTab />}
+          {tab === 'insurance-expiring'         && <InsuranceExpiringTab />}
+          {tab === 'charge-registration-status' && <ChargeRegistrationStatusTab />}
         </div>
       </div>
     </div>
@@ -653,4 +674,242 @@ function fmtCompact(n: number): string {
   if (abs >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (abs >= 1_000) return (n / 1_000).toFixed(1) + 'K';
   return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
+// ─────────────── Phase 1.5b — Collateral exposure ───────────────
+
+function CollateralExposureTab() {
+  const { tenant } = useAuth();
+  const currency = tenant?.currency_code ?? 'KES';
+  const [data, setData] = useState<{ items: any[]; total: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    void getCollateralExposure().then(setData).catch((e) => setErr(extractError(e)));
+  }, []);
+  if (err) return <div className="alert alert-error">{err}</div>;
+  if (!data) return <div className="empty">Loading…</div>;
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h3>Collateral exposure</h3>
+        <div className="card-hd-actions">
+          <a className="btn btn-sm" href={loanReportCSVURL('collateral-exposure')}>Download CSV</a>
+        </div>
+      </div>
+      <div className="card-body flush">
+        {data.items.length === 0 ? <div className="empty">No active loans.</div> : (
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Loan no</th><th>Member</th><th>Product</th><th>Model</th>
+                <th className="num">Outstanding</th>
+                <th className="num">Guarantor cover</th>
+                <th className="num">Collateral FSV</th>
+                <th className="num">Shortfall</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.items.map((r: any) => {
+                const sf = parseFloat(r.shortfall);
+                return (
+                  <tr key={r.loan_id} style={sf > 0 ? { background: 'var(--danger-bg, #fdecea)' } : {}}>
+                    <td className="mono">{r.loan_no}</td>
+                    <td>{r.member_name}</td>
+                    <td>{r.product_name}</td>
+                    <td className="tiny">{r.security_model}</td>
+                    <td className="num mono">{currency} {fmt(r.outstanding)}</td>
+                    <td className="num mono">{currency} {fmt(r.guarantor_cover)}</td>
+                    <td className="num mono">{currency} {fmt(r.collateral_fsv)}</td>
+                    <td className="num mono" style={sf > 0 ? { color: 'var(--danger-fg, #b42318)', fontWeight: 600 } : {}}>
+                      {currency} {fmt(r.shortfall)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────── Collateral by kind ───────────────
+
+function CollateralByKindTab() {
+  const { tenant } = useAuth();
+  const currency = tenant?.currency_code ?? 'KES';
+  const [data, setData] = useState<{ items: any[] } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    void getCollateralByKind().then(setData).catch((e) => setErr(extractError(e)));
+  }, []);
+  if (err) return <div className="alert alert-error">{err}</div>;
+  if (!data) return <div className="empty">Loading…</div>;
+  const total = data.items.reduce((s, r: any) => s + (parseFloat(r.total_fsv) || 0), 0);
+  return (
+    <div className="card">
+      <div className="card-hd"><h3>Collateral distribution by kind</h3></div>
+      <div className="card-body">
+        {data.items.length === 0 ? <div className="empty">No pledged or valued collateral.</div> : (
+          <table className="tbl">
+            <thead><tr><th>Kind</th><th className="num">Items</th><th className="num">Total FSV</th><th className="num">Share</th></tr></thead>
+            <tbody>
+              {data.items.map((r: any) => {
+                const fsv = parseFloat(r.total_fsv) || 0;
+                const pct = total > 0 ? (fsv / total) * 100 : 0;
+                return (
+                  <tr key={r.kind}>
+                    <td>{r.kind}</td>
+                    <td className="num">{r.item_count}</td>
+                    <td className="num mono">{currency} {fmt(r.total_fsv)}</td>
+                    <td className="num">{pct.toFixed(1)}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────── Valuations expiring ───────────────
+
+function ValuationsExpiringTab() {
+  const [days, setDays] = useState(90);
+  const [data, setData] = useState<{ items: any[]; total: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    void getValuationsExpiring(days).then(setData).catch((e) => setErr(extractError(e)));
+  }, [days]);
+  if (err) return <div className="alert alert-error">{err}</div>;
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h3>Valuations expiring</h3>
+        <div className="card-hd-actions">
+          <label className="tiny muted">Window&nbsp;</label>
+          <select className="select" value={days} onChange={(e) => setDays(parseInt(e.target.value, 10))}>
+            <option value={30}>30 days</option>
+            <option value={60}>60 days</option>
+            <option value={90}>90 days</option>
+            <option value={180}>180 days</option>
+          </select>
+        </div>
+      </div>
+      <div className="card-body flush">
+        {!data ? <div className="empty">Loading…</div> :
+          data.items.length === 0 ? <div className="empty">Nothing due in the next {days} days.</div> : (
+          <table className="tbl">
+            <thead><tr><th>Loan / app</th><th>Member</th><th>Kind</th><th>Description</th><th>Expires</th><th className="num">Days</th></tr></thead>
+            <tbody>
+              {data.items.map((r: any) => (
+                <tr key={r.collateral_id}>
+                  <td className="mono">{r.loan_no}</td>
+                  <td>{r.member_name}</td>
+                  <td>{r.kind}</td>
+                  <td>{r.description}</td>
+                  <td className="tiny mono">{r.expires_at}</td>
+                  <td className="num">{r.days_to_expiry}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────── Insurance expiring ───────────────
+
+function InsuranceExpiringTab() {
+  const [days, setDays] = useState(30);
+  const [data, setData] = useState<{ items: any[]; total: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    void getInsuranceExpiring(days).then(setData).catch((e) => setErr(extractError(e)));
+  }, [days]);
+  if (err) return <div className="alert alert-error">{err}</div>;
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h3>Insurance expiring</h3>
+        <div className="card-hd-actions">
+          <label className="tiny muted">Window&nbsp;</label>
+          <select className="select" value={days} onChange={(e) => setDays(parseInt(e.target.value, 10))}>
+            <option value={14}>14 days</option>
+            <option value={30}>30 days</option>
+            <option value={60}>60 days</option>
+            <option value={90}>90 days</option>
+          </select>
+        </div>
+      </div>
+      <div className="card-body flush">
+        {!data ? <div className="empty">Loading…</div> :
+          data.items.length === 0 ? <div className="empty">No policies expiring in the next {days} days.</div> : (
+          <table className="tbl">
+            <thead><tr><th>Loan / app</th><th>Member</th><th>Kind</th><th>Provider</th><th>Policy no</th><th>Expires</th><th className="num">Days</th><th>Status</th></tr></thead>
+            <tbody>
+              {data.items.map((r: any) => (
+                <tr key={r.collateral_id} style={r.status === 'expired' ? { background: 'var(--danger-bg, #fdecea)' } : {}}>
+                  <td className="mono">{r.loan_no}</td>
+                  <td>{r.member_name}</td>
+                  <td>{r.kind}</td>
+                  <td>{r.provider}</td>
+                  <td className="mono tiny">{r.policy_no}</td>
+                  <td className="tiny mono">{r.expires_at}</td>
+                  <td className="num">{r.days_to_expiry}</td>
+                  <td className="tiny">{r.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────── Charge registration status ───────────────
+
+function ChargeRegistrationStatusTab() {
+  const [data, setData] = useState<{ items: any[]; total: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    void getChargeRegistrationStatus().then(setData).catch((e) => setErr(extractError(e)));
+  }, []);
+  if (err) return <div className="alert alert-error">{err}</div>;
+  if (!data) return <div className="empty">Loading…</div>;
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <h3>Charge registration status — pledged but not yet filed</h3>
+        <div className="card-hd-actions">
+          <span className="tiny muted">{data.total} items need action</span>
+        </div>
+      </div>
+      <div className="card-body flush">
+        {data.items.length === 0 ? <div className="empty">All required charges are filed.</div> : (
+          <table className="tbl">
+            <thead><tr><th>Loan / app</th><th>Member</th><th>Kind</th><th>Description</th><th>Status</th><th className="num">Days since pledge</th></tr></thead>
+            <tbody>
+              {data.items.map((r: any) => (
+                <tr key={r.collateral_id} style={r.days_since_pledge > 30 ? { background: 'var(--warning-bg, #fff4d6)' } : {}}>
+                  <td className="mono">{r.loan_no}</td>
+                  <td>{r.member_name}</td>
+                  <td>{r.kind}</td>
+                  <td>{r.description}</td>
+                  <td className="tiny">{r.status}</td>
+                  <td className="num">{r.days_since_pledge}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
 }
